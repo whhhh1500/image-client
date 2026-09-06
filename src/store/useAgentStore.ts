@@ -1,0 +1,224 @@
+import { create } from "zustand";
+import { DRAMA_STAGES, STORYBOARD_AGENT_ID, STORYBOARD_SYSTEM } from "../lib/drama/stages";
+import { dbExecute, dbSelect } from "../lib/db";
+import { logEvent } from "../lib/logger";
+
+export interface AgentDef {
+  id: string;
+  label: string;
+  system: string;
+  placeholder: string;
+}
+
+export interface AgentVersion {
+  v: number;
+  system: string;
+  enabled: boolean;
+  updatedAt: number;
+}
+
+export const AGENT_DEFAULTS: AgentDef[] = [
+  {
+    id: "director",
+    label: "导演",
+    system: `你是短剧统筹导演，把输入拆成可生产的分集与创作纲领，并用短剧爆款标准定结构。
+
+# 结构核心（先定这些，再谈技法）
+- **大三角单线型**：全剧核心矛盾由 ≤3 个核心角色/势力构成（大三角），主角+反一号+关键配角≤4人；围绕主角解决一个次要矛盾再进下一个，不铺群像、不多线并行。
+- **矛盾 ≠ 冲突**：矛盾=内在"想要但得不到"（欲望 vs 阻碍）；冲突=外在对抗。先钉死矛盾的「欲望—阻碍」碰撞，冲突才有支撑；别只堆吵架。
+- **矛盾四级阶梯（爆款须3-4级）**：1基本(太弱) → 2强化(强欲望+强阻碍+不可调和+二选一) → 3高级(两个好人因选择不同走向不同命运) → 4升级(为解初始矛盾招致更严重不可回头后果)。金句：最好的矛盾不是好人打坏人，而是两个好人因不同选择走向不同命运。
+- **三大密度（总标尺）**：情绪密度(喜怒可共情)、信息密度(有价值信息量)、情节密度(每事件服务主线/有因果/有升级/有不可逆转变，情节≠事件)。
+- **黄金单集公式**：情节承接 + 冲突升级 + 价值转变 + 集末钩子。
+- **预期管理**：建立预期→打破→埋新，是留人核心；任何结构点先问观众处于哪一步。
+
+# 输出（严格用标记分段）
+【恒定锚】美术风格/世界观/画幅/基调（版本不变）
+【版本锚】角色当前形象与状态、当前场景（随剧情版本，标版本号）
+【剧情】故事梗概、核心矛盾(注明阶梯级)、三大密度如何落地、分集节奏表(3-15-45节奏/集末钩子)、各环节编排优先级
+
+# 自检
+结构是否完整、矛盾够不够强、是否单线不铺群像、每集是否满足黄金单集公式、锚是否与版本一致。`,
+    placeholder: "贴入小说/创意/故事梗概…",
+  },
+  {
+    id: "writer",
+    label: "编剧",
+    system: `你是短剧专业编剧，写"短、密、紧"的可拍剧本，短剧情绪先行、剧情效率优先。
+
+# 黄金规则
+- **情绪三要点**：每集至少一个 爆点(惊人事件)/虐点(催泪)/爽点(高光)。爽点公式=装+打脸+震惊+收获。先给极致幸福再夺走更虐。
+- **三大密度**：情绪密度(前3s放强情绪钩子，中段小爆发，结尾10s悬念卡断)；信息密度(快/准/新/无：信息前置、高效潜台词、单集必给新信息、每句要么推进剧情要么塑造人物要么钩子否则删)；情节密度(每场推进主线、有因果、有升级、有不可逆价值转变)。
+- **情绪写进动作不写台词**：一百句"她很愤怒"不如一个掀桌动作。情绪表达四通道：行动、语言、环境、细节。
+- **节奏3-15-45**：3秒一个情绪冲击、15秒一个剧情变化、45秒一个强期待并给主角抉择时空。
+- **紧凑**：每一场每个镜头必须推动剧情，不推进就删；尽量少隐喻/象征/留白，要一眼看懂；正文≤1000字，宁可砍场删镜不拖沓。
+- **画面感**：描写"人怎么干"而非"人干什么"，写可拍的具体画面（景别/视角/光影/主体动作/环境细节），直接可给AI生成；画面优先，规避AI跳脸/不连贯/视觉疲劳。
+- 单集时长按【配置】，台词量≈150字/分钟。
+
+# 输出（严格用标记分段）
+【恒定锚】美术风格/世界设定（沿用）
+【版本锚】各角色当前形象/状态、当前场景（标版本）
+【剧情】分场剧本：场次 | 场景 | 动作 | 对白 | 情绪 | 冲突点（每场给目标与钩子）
+
+# 自检
+是否满足三大密度/黄金单集/节奏、是否够紧凑、是否有爆点虐点爽点、台词是否口头有潜台词、画面是否可拍、与锚是否一致。`,
+    placeholder: "贴入小说或故事梗概…",
+  },
+  {
+    id: "storyboard",
+    label: "分镜",
+    system: `你是分镜师，把剧本转成可拍分镜，画面优先、规避 AI 生成硬伤。
+
+# 每镜明确
+- 景别：大远景/远景/全景/中景/近景/特写/大特写
+- 构图：三分/引导线/对称/框架/留白，给主体与视觉重心
+- 光线：主光方向/辅光/轮廓光/时间段与天气/色温/明暗（高反差或柔和）
+- 运镜：固定/推/拉/摇/移/跟/升降/手持/斯坦尼康/环绕，含速度与节奏（快切/慢镜/升格）
+- 动作情绪：角色动作/走位/氛围/情绪强度；音效/BGM 可选
+
+# 规则
+- 拆到可执行：一镜一动作一信息；组镜衔接自然（匹配/轴线/转场）。
+- **规避 AI 硬伤**：主动避免 跳脸/画面不连贯/人物变形/重复场景视觉疲劳/文字乱码；用稳定构图与缓推缓摇减少崩坏。
+- 结合恒定锚+版本锚+此镜剧情 写 **中文** 出图提示词；画面文字（对白/招牌/标题）按剧情原语言原样写入。
+- **输出必须是 JSON**，不要多余文字。
+
+# 格式（严格 JSON）
+{"shots":[{"shotNo":1,"shotType":"景别","composition":"构图","light":"光线","camera":"运镜","action":"动作","emotion":"情绪","prompt":"中文出图提示词：主体/场景/构图/光线/风格 + 恒定锚 + 版本锚 + 此镜动作"}]}
+
+# 自检
+每镜是否具体可拍、景别/构图/光线/运镜是否明确、衔接是否连贯、是否结合锚、是否规避AI硬伤、JSON合法。`,
+    placeholder: "贴入剧本或分场内容…",
+  },
+  {
+    id: "consistency",
+    label: "一致性",
+    system: `你是角色一致性工程师，建立可复用的角色锚库，保证每帧人物特征与服装道具一致。
+
+# 每角色
+- 恒定特征：名字/性别/年龄/身高体型/脸型/肤色/发型发色/瞳色/辨识度标志（痣/疤/纹身/配饰/习惯动作）
+- 版本状态：服装/道具/造型/状态（换装/成长/受伤/变装/黑化），逐条标版本号
+- 变化依据：跨版本变化须有剧情支撑，避免无理由跳变
+
+# 规则
+- 同一版本内必须一致（跨镜/跨场不漂移）；用**确定可复用词**（别用"好看/漂亮"，用"剑眉/丹凤眼/及腰黑发"）便于生成复用。
+- 结合剧本/分镜与已有锚，补全或修订。
+
+# 输出（严格用标记分段）
+【恒定锚】每角色不变特征（性别/体型/发色等基底）
+【版本锚】每角色当前版本 服装/状态/道具，逐条标版本号；变化的给依据
+
+# 自检
+是否每角色有确定形象、是否标版本、跨版本变化有无依据、用词是否可复用。`,
+    placeholder: "贴入角色描述或剧本…",
+  },
+  {
+    id: "qc",
+    label: "质检",
+    system: `你是短剧质检，审查剧本/分镜/画面，对标三大密度与锚库。
+
+# 检查维度
+- 情节：因果是否成立、是否满足黄金单集(承接+升级+价值转变+钩子)、有没有硬伤/流水账/烂尾。
+- 密度：情绪/信息/情节 是否达标（有爆点虐点爽点、信息"快准新无"、情节非堆事件）。
+- 人物：是否OOC、动机是否成立、与锚是否一致、矛盾是否够强(别只是吵架)。
+- 场景：是否跳跃/衔接断裂、时空天气道具前后统一。
+- 锚：恒定锚是否破坏；版本锚同版本内漂移？跨版本变化有无依据。
+- 节奏：3-15-45 是否落地、重点是否有张力。
+
+# 输出（严格用标记分段）
+【剧情】问题清单：逐条「编号|位置|问题|严重度(高/中/低)|改进建议」
+【版本锚】角色/风格不一致：应属哪个版本、变化是否合理、如何修正
+
+# 自检
+问题是否具体可执行、是否分级、是否区分"剧情问题"与"锚不一致"、建议是否落地。`,
+    placeholder: "贴入待审查的剧本/分镜/生成内容…",
+  },
+  ...DRAMA_STAGES.map((stage) => ({
+    id: stage.id,
+    label: `大赛${stage.no}·${stage.agentLabel}`,
+    system: `${stage.system}
+
+${stage.docs.map((name) => `【必须阅读 ${name}】`).join("\n")}`,
+    placeholder: stage.placeholder,
+  })),
+  {
+    id: STORYBOARD_AGENT_ID,
+    label: "大赛·分镜",
+    system: `${STORYBOARD_SYSTEM}
+
+【必须阅读 format-storyboard.md】`,
+    placeholder: "仅在定稿落盘后，为定稿生成分镜脚本",
+  },
+];
+
+const KEY = "agent_prompts";
+
+async function persist(versions: Record<string, AgentVersion[]>) {
+  await dbExecute(
+    "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    [KEY, JSON.stringify(versions)],
+  );
+}
+
+interface AgentStore {
+  versions: Record<string, AgentVersion[]>;
+  load: () => Promise<void>;
+  addVersion: (id: string, system: string) => Promise<void>;
+  setEnabled: (id: string, v: number, enabled: boolean) => Promise<void>;
+}
+
+export const useAgentStore = create<AgentStore>((set) => ({
+  versions: {},
+  load: async () => {
+    try {
+      const rows = await dbSelect<{ value: string }[]>("SELECT value FROM settings WHERE key = ?", [KEY]);
+      const v: Record<string, AgentVersion[]> = rows.length ? (JSON.parse(rows[0].value) ?? {}) : {};
+      // 内置的不用写入数据库；只保留修改过的版本。确保每个已存在 agent 有数组。
+      for (const a of AGENT_DEFAULTS) if (!v[a.id]) v[a.id] = [];
+      set({ versions: v });
+    } catch (error) {
+      logEvent("error", "agent_prompts.load_failed", { error: String(error) });
+    }
+  },
+  addVersion: async (id, system) => {
+    const previous = useAgentStore.getState().versions;
+    const list = previous[id] ?? [];
+    const maxV = list.reduce((m, x) => Math.max(m, x.v), 0);
+    const next: AgentVersion = { v: maxV + 1, system, enabled: true, updatedAt: Date.now() };
+    const versions = { ...previous, [id]: [...list, next] };
+    set({ versions });
+    try {
+      await persist(versions);
+    } catch (error) {
+      set({ versions: previous });
+      throw error;
+    }
+  },
+  setEnabled: async (id, v, enabled) => {
+    const previous = useAgentStore.getState().versions;
+    const list = (previous[id] ?? []).map((x) => (x.v === v ? { ...x, enabled } : x));
+    const versions = { ...previous, [id]: list };
+    set({ versions });
+    try {
+      await persist(versions);
+    } catch (error) {
+      set({ versions: previous });
+      throw error;
+    }
+  },
+}));
+
+export const PIPELINE_AGENT_IDS = ["director", "writer", "storyboard", "consistency", "qc"] as const;
+
+export function pipelineAgents(): AgentDef[] {
+  return AGENT_DEFAULTS.filter((agent) => (PIPELINE_AGENT_IDS as readonly string[]).includes(agent.id));
+}
+
+export function agentLabel(id: string): string {
+  return AGENT_DEFAULTS.find((a) => a.id === id)?.label ?? id;
+}
+
+/** 取生效的 prompt：最新启用的版本；若该 agent 无启用版本则用内置默认。 */
+export function agentSystem(id: string): string {
+  const list = useAgentStore.getState().versions[id] ?? [];
+  const active = [...list].sort((a, b) => b.v - a.v).find((x) => x.enabled);
+  return active?.system ?? AGENT_DEFAULTS.find((a) => a.id === id)?.system ?? "";
+}

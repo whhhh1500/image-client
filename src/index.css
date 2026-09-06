@@ -1,0 +1,151 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  --night: #050815;
+  --night-soft: #091021;
+  --line: rgba(148, 163, 184, 0.1);
+  --cyan: #9ee7f1;
+  --violet: #c9b8ff;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  overflow: hidden;
+  background: var(--night);
+}
+
+body::before {
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  content: "";
+  background:
+    radial-gradient(circle at 12% 8%, rgba(109, 193, 213, 0.09), transparent 30%),
+    radial-gradient(circle at 86% 22%, rgba(155, 130, 225, 0.08), transparent 28%),
+    radial-gradient(circle at 54% 110%, rgba(69, 111, 164, 0.1), transparent 38%),
+    #050815;
+}
+
+body::after {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  content: "";
+  opacity: 0.22;
+  background-image:
+    linear-gradient(rgba(148, 163, 184, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.018) 1px, transparent 1px);
+  background-size: 48px 48px;
+  mask-image: linear-gradient(to bottom, black, transparent 82%);
+}
+
+.app-shell {
+  background: rgba(5, 8, 21, 0.74);
+}
+
+.app-header {
+  background: rgba(7, 12, 28, 0.74);
+  backdrop-filter: blur(22px) saturate(120%);
+  box-shadow: 0 1px 0 rgba(158, 231, 241, 0.04), 0 16px 50px rgba(0, 0, 0, 0.16);
+}
+
+.dream-panel,
+.dream-dialog,
+.app-shell .rounded-2xl[class*="border"] {
+  background-color: rgba(9, 16, 33, 0.64);
+  border-color: rgba(148, 163, 184, 0.09);
+  box-shadow: 0 18px 55px rgba(1, 4, 14, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.018);
+  backdrop-filter: blur(16px) saturate(112%);
+}
+
+.dream-dialog {
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.5), 0 0 60px rgba(78, 151, 173, 0.04);
+}
+
+.workflow-guide {
+  background: rgba(7, 13, 29, 0.48);
+  box-shadow: inset 0 -1px 0 rgba(148, 163, 184, 0.035);
+}
+
+.app-shell button,
+.dream-dialog button {
+  transition: background-color 160ms ease, border-color 160ms ease,
+    color 160ms ease, transform 160ms ease, opacity 160ms ease;
+}
+
+.app-shell button:active,
+.dream-dialog button:active {
+  transform: translateY(1px);
+}
+
+/* Unify legacy bright action colors into one quiet technological palette. */
+.app-shell button[class*="bg-indigo-500"],
+.app-shell button[class*="bg-emerald-500"],
+.app-shell button[class*="bg-fuchsia-500"] {
+  background: rgba(113, 190, 207, 0.14) !important;
+  border: 1px solid rgba(158, 231, 241, 0.18);
+  color: #d9f9ff;
+  box-shadow: none;
+}
+
+.app-shell button[class*="bg-indigo-500"]:hover,
+.app-shell button[class*="bg-emerald-500"]:hover,
+.app-shell button[class*="bg-fuchsia-500"]:hover {
+  background: rgba(132, 204, 220, 0.2) !important;
+  border-color: rgba(158, 231, 241, 0.3);
+}
+
+input,
+textarea,
+select {
+  caret-color: var(--cyan);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: rgba(100, 116, 139, 0.7);
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(71, 85, 105, 0.72) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: rgba(71, 85, 105, 0.65);
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.78);
+  background-clip: padding-box;
+}
+
+::selection {
+  color: #e8fbff;
+  background: rgba(87, 171, 191, 0.32);
+}

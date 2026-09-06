@@ -1,0 +1,47 @@
+{
+  "name": "image-client",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "test": "vitest run",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "release:icon": "tauri icon src-tauri/icons/app-icon-source.png",
+    "release:build": "node scripts/build-release.mjs",
+    "release:check": "node scripts/build-release.mjs --check-only",
+    "ffmpeg:download": "node scripts/download-ffmpeg.mjs",
+    "promptlib:build": "node scripts/build-promptlib.mjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2",
+    "@tauri-apps/plugin-opener": "^2",
+    "lucide-react": "^0.469.0",
+    "mediabunny": "^1.55.3",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "zustand": "^5.0.2"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0",
+    "@tauri-apps/cli": "^2",
+    "@testing-library/react": "16.3.3",
+    "@testing-library/user-event": "14.6.1",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^4.6.0",
+    "jsdom": "26.1.0",
+    "tailwindcss": "^4.0.0",
+    "typescript": "~5.8.3",
+    "vite": "^7.0.4",
+    "vitest": "^4.1.11"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}

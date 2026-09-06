@@ -1,0 +1,397 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "novel-analysis.v1.schema.json",
+  "title": "Novel analysis v1 model response",
+  "description": "The 14 model-produced novel analysis artifacts. canon_diff is intentionally derived from adopted canonical deltas and is not a provider envelope.",
+  "oneOf": [
+    { "$ref": "#/$defs/chapter_summary_envelope" },
+    { "$ref": "#/$defs/chapter_beats_envelope" },
+    { "$ref": "#/$defs/world_facts_envelope" },
+    { "$ref": "#/$defs/character_facts_envelope" },
+    { "$ref": "#/$defs/faction_facts_envelope" },
+    { "$ref": "#/$defs/location_facts_envelope" },
+    { "$ref": "#/$defs/prop_facts_envelope" },
+    { "$ref": "#/$defs/timeline_delta_envelope" },
+    { "$ref": "#/$defs/continuity_delta_envelope" },
+    { "$ref": "#/$defs/open_threads_envelope" },
+    { "$ref": "#/$defs/adaptation_proposal_envelope" },
+    { "$ref": "#/$defs/comic_chapter_plan_envelope" },
+    { "$ref": "#/$defs/scene_plan_envelope" },
+    { "$ref": "#/$defs/page_panel_plan_envelope" }
+  ],
+  "$defs": {
+    "owner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ownerType", "ownerId"],
+      "properties": {
+        "ownerType": { "enum": ["novel_work", "novel_chapter_revision", "comic_adaptation", "comic_chapter"] },
+        "ownerId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "envelope_base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "artifactType", "owner", "content", "warnings"],
+      "properties": {
+        "schemaVersion": { "const": "novel-analysis.v1" },
+        "artifactType": { "type": "string" },
+        "owner": { "$ref": "#/$defs/owner" },
+        "content": { "type": "object" },
+        "warnings": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "evidence_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["novelChapterRevisionId", "startUtf8Byte", "endUtf8Byte", "evidenceExcerpt", "confidence"],
+      "properties": {
+        "novelChapterRevisionId": { "type": "string", "minLength": 1 },
+        "startUtf8Byte": { "type": "integer", "minimum": 0 },
+        "endUtf8Byte": { "type": "integer", "minimum": 1 },
+        "evidenceExcerpt": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "fact_candidate": {
+      "type": "object",
+      "required": ["stableKey", "resolutionKind", "evidenceRefs", "conflictState"],
+      "properties": {
+        "stableKey": { "type": "string", "minLength": 1 },
+        "resolutionKind": { "enum": ["new_entity_candidate", "field_delta", "no_change", "conflict", "unresolved"] },
+        "existingNovelEntityId": { "type": "string", "minLength": 1 },
+        "candidateNovelEntityId": { "type": "string", "minLength": 1 },
+        "evidenceRefs": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/evidence_ref" } },
+        "conflictState": { "enum": ["none", "possible", "confirmed"] }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "resolutionKind": { "const": "new_entity_candidate" } }, "required": ["resolutionKind"] },
+          "then": { "required": ["candidateNovelEntityId"], "not": { "required": ["existingNovelEntityId"] } }
+        },
+        {
+          "if": { "properties": { "resolutionKind": { "enum": ["field_delta", "no_change"] } }, "required": ["resolutionKind"] },
+          "then": { "required": ["existingNovelEntityId"], "not": { "required": ["candidateNovelEntityId"] } }
+        }
+      ]
+    },
+    "array_empty_reason": {
+      "allOf": [
+        {
+          "if": { "properties": { "items": { "maxItems": 0 } }, "required": ["items"] },
+          "then": { "required": ["emptyReason"] },
+          "else": { "not": { "required": ["emptyReason"] } }
+        }
+      ]
+    },
+    "summary_content": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "keyEvents"],
+      "properties": {
+        "summary": { "type": "string", "minLength": 1 },
+        "keyEvents": { "type": "array", "items": { "$ref": "#/$defs/key_event" } },
+        "emptyReason": { "type": "string", "minLength": 1 }
+      },
+      "allOf": [{ "$ref": "#/$defs/array_empty_reason" }]
+    },
+    "key_event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stableKey", "summary", "evidenceRefs"],
+      "properties": {
+        "stableKey": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string", "minLength": 1 },
+        "evidenceRefs": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/evidence_ref" } }
+      }
+    },
+    "beats_content": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["beats"],
+      "properties": {
+        "beats": { "type": "array", "items": { "$ref": "#/$defs/beat" } },
+        "emptyReason": { "type": "string", "minLength": 1 }
+      },
+      "allOf": [{ "$ref": "#/$defs/array_empty_reason" }]
+    },
+    "beat": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stableKey", "order", "title", "participants", "action", "outcome", "evidenceRefs"],
+      "properties": {
+        "stableKey": { "type": "string", "minLength": 1 },
+        "order": { "type": "integer", "minimum": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "participants": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "action": { "type": "string", "minLength": 1 },
+        "outcome": { "type": "string", "minLength": 1 },
+        "evidenceRefs": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/evidence_ref" } }
+      }
+    },
+    "fact_collection_content": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["items"],
+      "properties": {
+        "items": { "type": "array" },
+        "emptyReason": { "type": "string", "minLength": 1 }
+      },
+      "allOf": [{ "$ref": "#/$defs/array_empty_reason" }]
+    },
+    "world_fact": {
+      "allOf": [
+        { "$ref": "#/$defs/fact_candidate" },
+        {
+          "type": "object",
+          "properties": { "ruleKey": { "type": "string", "minLength": 1 }, "statement": { "type": "string", "minLength": 1 } },
+          "required": ["ruleKey", "statement"],
+          "unevaluatedProperties": false
+        }
+      ]
+    },
+    "character_fact": {
+      "allOf": [
+        { "$ref": "#/$defs/fact_candidate" },
+        {
+          "type": "object",
+          "properties": {
+            "identity": { "type": "string", "minLength": 1 },
+            "goals": { "type": "array", "items": { "type": "string" } },
+            "secrets": { "type": "array", "items": { "type": "string" } },
+            "relations": { "type": "array", "items": { "type": "string" } }
+          },
+          "required": ["identity", "goals", "secrets", "relations"],
+          "not": { "required": ["state"] },
+          "unevaluatedProperties": false
+        }
+      ]
+    },
+    "faction_fact": {
+      "allOf": [
+        { "$ref": "#/$defs/fact_candidate" },
+        {
+          "type": "object",
+          "properties": {
+            "members": { "type": "array", "items": { "type": "string" } },
+            "goals": { "type": "array", "items": { "type": "string" } },
+            "relations": { "type": "array", "items": { "type": "string" } }
+          },
+          "required": ["members", "goals", "relations"],
+          "unevaluatedProperties": false
+        }
+      ]
+    },
+    "location_fact": {
+      "allOf": [
+        { "$ref": "#/$defs/fact_candidate" },
+        {
+          "type": "object",
+          "properties": {
+            "visualAnchors": { "type": "array", "items": { "type": "string" } },
+            "rules": { "type": "array", "items": { "type": "string" } }
+          },
+          "required": ["visualAnchors", "rules"],
+          "not": { "required": ["state"] },
+          "unevaluatedProperties": false
+        }
+      ]
+    },
+    "prop_fact": {
+      "allOf": [
+        { "$ref": "#/$defs/fact_candidate" },
+        {
+          "type": "object",
+          "properties": {
+            "origin": { "type": "string", "minLength": 1 },
+            "intrinsicAbilities": { "type": "array", "items": { "type": "string" } },
+            "narrativeRole": { "type": "string", "minLength": 1 }
+          },
+          "required": ["origin", "intrinsicAbilities", "narrativeRole"],
+          "not": { "required": ["currentHolder"] },
+          "unevaluatedProperties": false
+        }
+      ]
+    },
+    "timeline_content": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["events"],
+      "properties": { "events": { "type": "array", "items": { "$ref": "#/$defs/timeline_event" } }, "emptyReason": { "type": "string", "minLength": 1 } },
+      "allOf": [{ "$ref": "#/$defs/array_empty_reason" }]
+    },
+    "timeline_event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stableKey", "order", "timeRelation", "statement", "evidenceRefs", "conflictState"],
+      "properties": {
+        "stableKey": { "type": "string", "minLength": 1 }, "order": { "type": "integer", "minimum": 1 },
+        "timeRelation": { "type": "string", "minLength": 1 }, "statement": { "type": "string", "minLength": 1 },
+        "evidenceRefs": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/evidence_ref" } },
+        "conflictState": { "enum": ["none", "possible", "confirmed"] }
+      }
+    },
+    "continuity_content": {
+      "type": "object", "additionalProperties": false, "required": ["changes"],
+      "properties": { "changes": { "type": "array", "items": { "$ref": "#/$defs/continuity_change" } }, "emptyReason": { "type": "string", "minLength": 1 } },
+      "allOf": [{ "$ref": "#/$defs/array_empty_reason" }]
+    },
+    "continuity_change": {
+      "type": "object", "additionalProperties": false,
+      "required": ["stableKey", "novelEntityId", "fieldPath", "before", "after", "timeNode", "evidenceRefs", "conflictState"],
+      "properties": {
+        "stableKey": { "type": "string", "minLength": 1 }, "novelEntityId": { "type": "string", "minLength": 1 },
+        "fieldPath": { "type": "string", "minLength": 1 }, "before": {}, "after": {}, "timeNode": { "type": "string", "minLength": 1 },
+        "evidenceRefs": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/evidence_ref" } },
+        "conflictState": { "enum": ["none", "possible", "confirmed"] }
+      }
+    },
+    "open_threads_content": {
+      "type": "object", "additionalProperties": false, "required": ["threads"],
+      "properties": { "threads": { "type": "array", "items": { "$ref": "#/$defs/open_thread" } }, "emptyReason": { "type": "string", "minLength": 1 } },
+      "allOf": [{ "$ref": "#/$defs/array_empty_reason" }]
+    },
+    "open_thread": {
+      "type": "object", "additionalProperties": false,
+      "required": ["stableKey", "state", "statement", "evidenceRefs"],
+      "properties": { "stableKey": { "type": "string", "minLength": 1 }, "state": { "enum": ["opened", "advanced", "resolved"] }, "statement": { "type": "string", "minLength": 1 }, "evidenceRefs": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/evidence_ref" } } }
+    },
+    "adaptation_content": {
+      "type": "object", "additionalProperties": false, "required": ["decisions"],
+      "properties": { "decisions": { "type": "array", "items": { "$ref": "#/$defs/adaptation_decision" } }, "emptyReason": { "type": "string", "minLength": 1 } },
+      "allOf": [{ "$ref": "#/$defs/array_empty_reason" }]
+    },
+    "adaptation_decision": {
+      "type": "object", "additionalProperties": false,
+      "required": ["stableKey", "action", "rationale", "sourceRanges", "targetHint"],
+      "properties": { "stableKey": { "type": "string", "minLength": 1 }, "action": { "enum": ["keep", "compress", "merge", "delay", "omit"] }, "rationale": { "type": "string", "minLength": 1 }, "sourceRanges": { "type": "array", "items": { "$ref": "#/$defs/evidence_ref" } }, "targetHint": { "type": "string", "minLength": 1 } }
+    },
+    "chapter_plan_content": {
+      "type": "object", "additionalProperties": false, "required": ["chapters"],
+      "properties": { "chapters": { "type": "array", "items": { "$ref": "#/$defs/chapter_plan" } }, "emptyReason": { "type": "string", "minLength": 1 } },
+      "allOf": [{
+        "if": { "properties": { "chapters": { "maxItems": 0 } }, "required": ["chapters"] },
+        "then": { "required": ["emptyReason"] },
+        "else": { "not": { "required": ["emptyReason"] } }
+      }]
+    },
+    "chapter_plan": {
+      "type": "object", "additionalProperties": false,
+      "required": ["stableKey", "sourceSelections", "goal", "turn", "hook", "pageBudget"],
+      "properties": { "stableKey": { "type": "string", "minLength": 1 }, "sourceSelections": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/evidence_ref" } }, "goal": { "type": "string", "minLength": 1 }, "turn": { "type": "string", "minLength": 1 }, "hook": { "type": "string", "minLength": 1 }, "pageBudget": { "type": "integer", "minimum": 1 } }
+    },
+    "scene_plan_content": {
+      "type": "object", "additionalProperties": false, "required": ["comicChapterDraftId", "scenes"],
+      "properties": { "comicChapterDraftId": { "type": "string", "minLength": 1 }, "scenes": { "type": "array", "items": { "$ref": "#/$defs/scene_plan" } }, "emptyReason": { "type": "string", "minLength": 1 } },
+      "allOf": [{ "$ref": "#/$defs/array_empty_reason" }]
+    },
+    "scene_plan": {
+      "type": "object", "additionalProperties": false,
+      "required": ["stableKey", "order", "goal", "beats", "locationKeys", "characterKeys", "stateDelta"],
+      "properties": { "stableKey": { "type": "string", "minLength": 1 }, "order": { "type": "integer", "minimum": 1 }, "goal": { "type": "string", "minLength": 1 }, "beats": { "type": "array" }, "locationKeys": { "type": "array", "items": { "type": "string" } }, "characterKeys": { "type": "array", "items": { "type": "string" } }, "stateDelta": { "type": "array" } }
+    },
+    "page_panel_content": {
+      "type": "object", "additionalProperties": false, "required": ["comicChapterDraftId", "pages"],
+      "properties": { "comicChapterDraftId": { "type": "string", "minLength": 1 }, "pages": { "type": "array", "items": { "$ref": "#/$defs/page_plan" } }, "emptyReason": { "type": "string", "minLength": 1 } },
+      "allOf": [{
+        "if": { "properties": { "pages": { "maxItems": 0 } }, "required": ["pages"] },
+        "then": { "required": ["emptyReason"] },
+        "else": { "not": { "required": ["emptyReason"] } }
+      }]
+    },
+    "page_plan": {
+      "type": "object", "additionalProperties": false,
+      "required": ["stableKey", "pageNo", "layout", "panels"],
+      "properties": { "stableKey": { "type": "string", "minLength": 1 }, "pageNo": { "type": "integer", "minimum": 1 }, "layout": { "$ref": "#/$defs/comic_page_layout_plan" }, "panels": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/page_panel_spec" } } }
+    },
+    "normalized_point": {
+      "type": "object", "additionalProperties": false, "required": ["x", "y"],
+      "properties": { "x": { "type": "number", "minimum": 0, "maximum": 1 }, "y": { "type": "number", "minimum": 0, "maximum": 1 } }
+    },
+    "normalized_bounds": {
+      "type": "object", "additionalProperties": false, "required": ["x", "y", "width", "height"],
+      "properties": { "x": { "type": "number", "minimum": 0, "maximum": 1 }, "y": { "type": "number", "minimum": 0, "maximum": 1 }, "width": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }, "height": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 } }
+    },
+    "comic_page_geometry_panel": {
+      "type": "object", "additionalProperties": false, "required": ["panelNo", "polygon", "bounds", "textZone"],
+      "properties": {
+        "panelNo": { "type": "integer", "minimum": 1 },
+        "polygon": { "type": "array", "minItems": 3, "maxItems": 8, "items": { "$ref": "#/$defs/normalized_point" } },
+        "bounds": { "$ref": "#/$defs/normalized_bounds" },
+        "textZone": { "$ref": "#/$defs/normalized_bounds" },
+        "parentPanelNo": { "type": "integer", "minimum": 1 },
+        "bleed": { "type": "object", "additionalProperties": false, "properties": { "top": { "type": "boolean" }, "right": { "type": "boolean" }, "bottom": { "type": "boolean" }, "left": { "type": "boolean" } } }
+      }
+    },
+    "comic_page_geometry": {
+      "type": "object", "additionalProperties": false,
+      "required": ["coordinateSystem", "panelCount", "readingOrder", "gutter", "safeArea", "panels"],
+      "properties": {
+        "coordinateSystem": { "const": "normalized-0-1" },
+        "panelCount": { "type": "integer", "minimum": 1 },
+        "readingOrder": { "type": "array", "minItems": 1, "items": { "type": "integer", "minimum": 1 } },
+        "gutter": { "type": "number", "minimum": 0 },
+        "safeArea": { "$ref": "#/$defs/normalized_bounds" },
+        "panels": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/comic_page_geometry_panel" } }
+      }
+    },
+    "comic_target_panel_mapping": {
+      "type": "object", "additionalProperties": false,
+      "required": ["targetPanelNo", "sourcePanelNos", "mode", "isDominant"],
+      "properties": { "targetPanelNo": { "type": "integer", "minimum": 1 }, "sourcePanelNos": { "type": "array", "minItems": 1, "items": { "type": "integer", "minimum": 1 } }, "mode": { "enum": ["one_to_one", "merge", "split"] }, "isDominant": { "type": "boolean" } }
+    },
+    "comic_page_layout_plan": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schemaVersion", "templateId", "layoutKind", "source", "panelCount", "readingOrder", "dominantPanel", "rationale", "instructions", "targetPanelMappings", "geometry"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "templateId": { "enum": ["reference_story_5", "hero_middle_5", "diagonal_action_5", "reveal_focus_4", "conversation_ladder_6", "detail_to_wide_5", "full_bleed_insets_4", "nine_grid_9", "custom_irregular"] },
+        "layoutKind": { "enum": ["template", "custom_irregular"] },
+        "source": { "enum": ["auto", "manual"] },
+        "panelCount": { "type": "integer", "minimum": 1 },
+        "readingOrder": { "type": "array", "minItems": 1, "items": { "type": "integer", "minimum": 1 } },
+        "dominantPanel": { "type": "integer", "minimum": 1 },
+        "rationale": { "type": "string", "minLength": 1 },
+        "instructions": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "targetPanelMappings": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/comic_target_panel_mapping" } },
+        "geometry": { "$ref": "#/$defs/comic_page_geometry" },
+        "geometrySource": { "enum": ["template", "free"] },
+        "dominantPanelProvenance": { "enum": ["template", "explicit", "largest_area"] },
+        "dominantSourcePanelNo": { "type": "integer", "minimum": 1 },
+        "validationWarnings": { "type": "array", "items": { "type": "string" } }
+      },
+      "allOf": [
+        { "if": { "properties": { "layoutKind": { "const": "custom_irregular" } }, "required": ["layoutKind"] }, "then": { "properties": { "templateId": { "const": "custom_irregular" } }, "required": ["geometry"] } },
+        { "if": { "properties": { "layoutKind": { "const": "template" } }, "required": ["layoutKind"] }, "then": { "properties": { "templateId": { "not": { "const": "custom_irregular" } } } } }
+      ]
+    },
+    "page_panel_spec": {
+      "type": "object", "additionalProperties": false, "required": ["stableKey", "panelNo"],
+      "properties": {
+        "stableKey": { "type": "string", "minLength": 1 },
+        "panelNo": { "type": "integer", "minimum": 1 },
+        "planningSceneStableKey": { "type": "string", "minLength": 1 },
+        "sourceRanges": { "type": "array", "items": { "$ref": "#/$defs/evidence_ref" } },
+        "narrativeFunction": { "enum": ["setup", "action", "reaction", "dialogue", "detail", "clue", "evidence", "detail_reveal", "hero", "reveal", "cliffhanger", "impact", "result", "ending", "full_bleed"] },
+        "action": { "type": "string" }, "shot": { "type": "string" }, "visualBeat": { "type": "string" },
+        "characterKeys": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "dialogues": { "type": "array", "items": { "oneOf": [{ "type": "string" }, { "type": "object", "additionalProperties": false, "required": ["text"], "properties": { "speaker": { "type": "string" }, "text": { "type": "string" } } }] } },
+        "captions": { "type": "array", "items": { "type": "string" } }, "soundEffects": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "chapter_summary_envelope": { "allOf": [{ "$ref": "#/$defs/envelope_base" }, { "properties": { "artifactType": { "const": "chapter_summary" }, "owner": { "properties": { "ownerType": { "const": "novel_chapter_revision" } }, "required": ["ownerType"] }, "content": { "$ref": "#/$defs/summary_content" } } }] },
+    "chapter_beats_envelope": { "allOf": [{ "$ref": "#/$defs/envelope_base" }, { "properties": { "artifactType": { "const": "chapter_beats" }, "owner": { "properties": { "ownerType": { "const": "novel_chapter_revision" } }, "required": ["ownerType"] }, "content": { "$ref": "#/$defs/beats_content" } } }] },
+    "world_facts_envelope": { "allOf": [{ "$ref": "#/$defs/envelope_base" }, { "properties": { "artifactType": { "const": "world_facts" }, "owner": { "properties": { "ownerType": { "const": "novel_work" } }, "required": ["ownerType"] }, "content": { "allOf": [{ "$ref": "#/$defs/fact_collection_content" }], "properties": { "items": { "items": { "$ref": "#/$defs/world_fact" } } } } } }] },
+    "character_facts_envelope": { "allOf": [{ "$ref": "#/$defs/envelope_base" }, { "properties": { "artifactType": { "const": "character_facts" }, "owner": { "properties": { "ownerType": { "const": "novel_work" } }, "required": ["ownerType"] }, "content": { "allOf": [{ "$ref": "#/$defs/fact_collection_content" }], "properties": { "items": { "items": { "$ref": "#/$defs/character_fact" } } } } } }] },
+    "faction_facts_envelope": { "allOf": [{ "$ref": "#/$defs/envelope_base" }, { "properties": { "artifactType": { "const": "faction_facts" }, "owner": { "properties": { "ownerType": { "const": "novel_work" } }, "required": ["ownerType"] }, "content": { "allOf": [{ "$ref": "#/$defs/fact_collection_content" }], "properties": { "items": { "items": { "$ref": "#/$defs/faction_fact" } } } } } }] },
+    "location_facts_envelope": { "allOf": [{ "$ref": "#/$defs/envelope_base" }, { "properties": { "artifactType": { "const": "location_facts" }, "owner": { "properties": { "ownerType": { "const": "novel_work" } }, "required": ["ownerType"] }, "content": { "allOf": [{ "$ref": "#/$defs/fact_collection_content" }], "properties": { "items": { "items": { "$ref": "#/$defs/location_fact" } } } } } }] },
+    "prop_facts_envelope": { "allOf": [{ "$ref": "#/$defs/envelope_base" }, { "properties": { "artifactType": { "const": "prop_facts" }, "owner": { "properties": { "ownerType": { "const": "novel_work" } }, "required": ["ownerType"] }, "content": { "allOf": [{ "$ref": "#/$defs/fact_collection_content" }], "properties": { "items": { "items": { "$ref": "#/$defs/prop_fact" } } } } } }] },
+    "timeline_delta_envelope": { "allOf": [{ "$ref": "#/$defs/envelope_base" }, { "properties": { "artifactType": { "const": "timeline_delta" }, "owner": { "properties": { "ownerType": { "const": "novel_chapter_revision" } }, "required": ["ownerType"] }, "content": { "$ref": "#/$defs/timeline_content" } } }] },
+    "continuity_delta_envelope": { "allOf": [{ "$ref": "#/$defs/envelope_base" }, { "properties": { "artifactType": { "const": "continuity_delta" }, "owner": { "properties": { "ownerType": { "const": "novel_chapter_revision" } }, "required": ["ownerType"] }, "content": { "$ref": "#/$defs/continuity_content" } } }] },
+    "open_threads_envelope": { "allOf": [{ "$ref": "#/$defs/envelope_base" }, { "properties": { "artifactType": { "const": "open_threads" }, "owner": { "properties": { "ownerType": { "const": "novel_chapter_revision" } }, "required": ["ownerType"] }, "content": { "$ref": "#/$defs/open_threads_content" } } }] },
+    "adaptation_proposal_envelope": { "allOf": [{ "$ref": "#/$defs/envelope_base" }, { "properties": { "artifactType": { "const": "adaptation_proposal" }, "owner": { "properties": { "ownerType": { "const": "comic_adaptation" } }, "required": ["ownerType"] }, "content": { "$ref": "#/$defs/adaptation_content" } } }] },
+    "comic_chapter_plan_envelope": { "allOf": [{ "$ref": "#/$defs/envelope_base" }, { "properties": { "artifactType": { "const": "comic_chapter_plan" }, "owner": { "properties": { "ownerType": { "const": "comic_chapter" } }, "required": ["ownerType"] }, "content": { "$ref": "#/$defs/chapter_plan_content" } } }] },
+    "scene_plan_envelope": { "allOf": [{ "$ref": "#/$defs/envelope_base" }, { "properties": { "artifactType": { "const": "scene_plan" }, "owner": { "properties": { "ownerType": { "const": "comic_chapter" } }, "required": ["ownerType"] }, "content": { "$ref": "#/$defs/scene_plan_content" } } }] },
+    "page_panel_plan_envelope": { "allOf": [{ "$ref": "#/$defs/envelope_base" }, { "properties": { "artifactType": { "const": "page_panel_plan" }, "owner": { "properties": { "ownerType": { "const": "comic_chapter" } }, "required": ["ownerType"] }, "content": { "$ref": "#/$defs/page_panel_content" } } }] }
+  }
+}

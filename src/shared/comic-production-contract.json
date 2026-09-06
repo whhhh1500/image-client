@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "comicPageText": {
+    "maxPageTextCodePoints": 180,
+    "maxTextItemCodePoints": 48,
+    "maxTextItems": 12
+  },
+  "comicPageGeometry": {
+    "coordinateSystem": "normalized-0-1",
+    "precision": 6,
+    "maxPolygonVertices": 8,
+    "minPanelWidth": 0.12,
+    "minPanelHeight": 0.1,
+    "minPanelArea": 0.015,
+    "minGutter": 0.012,
+    "minSafeInset": 0.04,
+    "minTextZoneWidth": 0.08,
+    "minTextZoneHeight": 0.05
+  }
+}
