@@ -24,6 +24,7 @@ export function applyProjectProfile(project: Project) {
   useVideoStore.getState().set({
     model: project.videoModel,
     aspectRatio: project.aspectRatio,
+    resolution: project.videoResolution || "720p",
   });
 }
 

@@ -302,6 +302,7 @@ fn build_router(state: ApiState) -> Router {
         .route("/health", get(health))
         .route("/system/info", get(system_info))
         .route("/system/config", get(config).put(save_config_api))
+        .route("/system/llm", get(llm_config).put(save_llm_config))
         .route("/system/provider", axum::routing::put(set_provider))
         .route("/system/logs", get(logs_info))
         .route("/system/history-sync", get(history_sync_status))
@@ -508,6 +509,8 @@ fn route_catalog() -> Value {
         {"method":"GET","path":"/api/v1/system/info","domain":"system","name":"system_info"},
         {"method":"GET","path":"/api/v1/system/config","domain":"system","name":"get_config"},
         {"method":"PUT","path":"/api/v1/system/config","domain":"system","name":"update_config"},
+        {"method":"GET","path":"/api/v1/system/llm","domain":"system","name":"get_llm_config"},
+        {"method":"PUT","path":"/api/v1/system/llm","domain":"system","name":"update_llm_config"},
         {"method":"GET","path":"/api/v1/system/logs","domain":"system","name":"logs_info"},
         {"method":"GET","path":"/api/v1/system/history-sync","domain":"system","name":"history_sync_status"},
         {"method":"PUT","path":"/api/v1/system/provider","domain":"system","name":"set_active_provider"},
@@ -554,6 +557,63 @@ async fn save_config_api(
     Ok(Json(serde_json::to_value(status).unwrap_or(Value::Null)))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LlmConfigReq {
+    url: String,
+    key: String,
+    model: String,
+}
+
+fn validate_llm_config(body: &LlmConfigReq) -> Result<(), String> {
+    let url =
+        reqwest::Url::parse(body.url.trim()).map_err(|error| format!("LLM 地址无效: {error}"))?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return Err("LLM 地址必须是 HTTP(S) 地址".into());
+    }
+    if body.key.trim().is_empty() || body.key.chars().count() > 16_384 {
+        return Err("LLM Key 不能为空且不得超过 16384 个字符".into());
+    }
+    if body.model.trim().is_empty() || body.model.chars().count() > 200 {
+        return Err("LLM 模型不能为空且不得超过 200 个字符".into());
+    }
+    Ok(())
+}
+
+async fn llm_config(State(state): State<ApiState>) -> Json<Value> {
+    let cfg = state.cfg.read().unwrap();
+    Json(json!({
+        "ready": !cfg.llm_api_url.is_empty() && !cfg.llm_api_key.is_empty(),
+        "url": if cfg.llm_api_url.is_empty() { Value::Null } else { json!(cfg.llm_api_url) },
+        "model": cfg.llm_model,
+        "source": cfg.source,
+    }))
+}
+
+async fn save_llm_config(
+    State(state): State<ApiState>,
+    Json(body): Json<LlmConfigReq>,
+) -> Result<Json<Value>, ApiError> {
+    validate_llm_config(&body).map_err(err)?;
+    let mut config = state.cfg.read().unwrap().clone();
+    config.llm_api_url = body.url.trim().trim_end_matches('/').to_string();
+    config.llm_api_key = body.key.trim().to_string();
+    config.llm_model = body.model.trim().to_string();
+    config.source = "api".into();
+    config.persist_backend().map_err(err)?;
+    *state.cfg.write().unwrap() = config.clone();
+    crate::logging::info(
+        "configuration.llm_updated",
+        json!({
+            "url": crate::logging::safe_url(&config.llm_api_url),
+            "model": config.llm_model,
+        }),
+    );
+    Ok(Json(
+        json!({ "ready": true, "url": config.llm_api_url, "model": config.llm_model, "source": config.source }),
+    ))
+}
+
 async fn image_models(State(state): State<ApiState>) -> Result<Json<Value>, ApiError> {
     let cfg = state.cfg.read().unwrap().clone();
     commands::list_image_models_with_config(&cfg)
@@ -562,8 +622,15 @@ async fn image_models(State(state): State<ApiState>) -> Result<Json<Value>, ApiE
         .map_err(err)
 }
 
-async fn video_models() -> Json<Value> {
-    Json(json!({ "items": crate::config::known_video_models() }))
+async fn video_models(State(state): State<ApiState>) -> Result<Json<Value>, ApiError> {
+    let cfg = state.cfg.read().unwrap().clone();
+    let items = commands::list_video_models_with_config(&cfg)
+        .await
+        .map_err(err)?;
+    Ok(Json(json!({
+        "items": items,
+        "capabilities": crate::video::model_capabilities(),
+    })))
 }
 
 async fn llm_models() -> Json<Value> {
@@ -622,11 +689,11 @@ async fn tools() -> Json<Value> {
         "tools": [
             tool("director", "统筹导演", "/api/v1/agents/director/runs", json!({"input":{"type":"string"}}), vec!["input"]),
             tool("writer", "生成分场剧本", "/api/v1/agents/writer/runs", json!({"input":{"type":"string"}}), vec!["input"]),
-            tool("storyboard", "生成分镜 JSON", "/api/v1/agents/storyboard/runs", json!({"input":{"type":"string"}}), vec!["input"]),
-            tool("consistency", "建立角色一致性锚", "/api/v1/agents/consistency/runs", json!({"input":{"type":"string"}}), vec!["input"]),
-            tool("qc", "内容质检", "/api/v1/agents/qc/runs", json!({"input":{"type":"string"}}), vec!["input"]),
+            tool("storyboard", "生成 Markdown 视频分镜", "/api/v1/agents/storyboard/runs", json!({"input":{"type":"string"}}), vec!["input"]),
+            tool("consistency", "建立固定锚定与剧情状态锚点", "/api/v1/agents/consistency/runs", json!({"input":{"type":"string"}}), vec!["input"]),
+            tool("qc", "执行逐镜与内容质量检查", "/api/v1/agents/qc/runs", json!({"input":{"type":"string"}}), vec!["input"]),
             tool("generate_image", "生成图片", "/api/v1/media/images/generations", json!({"prompt":{"type":"string"},"referencePath":{"type":"string"},"model":{"type":"string"},"size":{"type":"string"}}), vec!["prompt"]),
-            tool("generate_video", "生成视频分段", "/api/v1/media/videos/generations", json!({"prompt":{"type":"string"},"durationS":{"type":"integer"},"referencePath":{"type":"string"},"model":{"type":"string"}}), vec!["prompt"])
+            tool("generate_video", "生成视频分段", "/api/v1/media/videos/generations", json!({"prompt":{"type":"string"},"durationS":{"type":"integer"},"images":{"type":"array"},"videos":{"type":"array"},"audios":{"type":"array"},"model":{"type":"string"}}), vec!["prompt"])
         ]
     }))
 }
@@ -690,7 +757,7 @@ async fn run_step(
     let url = format!("{}/chat/completions", cfg.llm_api_url.trim_end_matches('/'));
     let model = body.model.unwrap_or(cfg.llm_model.clone());
     let system = body.system.unwrap_or_else(|| default_system.to_string());
-    let result = crate::llm::complete_text(
+    let raw_result = crate::llm::complete_text(
         &url,
         &cfg.llm_api_key,
         &model,
@@ -700,6 +767,12 @@ async fn run_step(
     )
     .await
     .map_err(err)?;
+    let (result, normalized_reference_shots) = if agent_id == "storyboard" {
+        agent_prompts::normalize_storyboard_reference_assets(&raw_result)
+    } else {
+        (raw_result, Vec::new())
+    };
+    agent_prompts::validate_agent_output(agent_id, &result).map_err(err)?;
     let asset = commands::save_text_with_config(&cfg, label, &result, Some(&model)).map_err(err)?;
     let now = chrono::Utc::now().timestamp_millis();
     let params_value = json!({
@@ -719,6 +792,10 @@ async fn run_step(
         ),
         "updatedAt": now,
         "origin": "rest_api",
+        "workflowStatus": "unreviewed",
+        "normalization": {
+            "correctedReferenceShots": normalized_reference_shots,
+        },
     });
     crate::history::persist_assets(
         std::slice::from_ref(&asset),
@@ -729,7 +806,12 @@ async fn run_step(
     )
     .map_err(err)?;
     emit_history_changed(&state, operation, std::slice::from_ref(&asset.id));
-    Ok(Json(json!({ "result": result, "asset": asset })))
+    Ok(Json(json!({
+        "result": result,
+        "asset": asset,
+        "workflowStatus": "unreviewed",
+        "normalization": { "correctedReferenceShots": normalized_reference_shots },
+    })))
 }
 
 async fn director(
@@ -848,6 +930,7 @@ async fn orchestrate(
         "provenance": crate::history::generated_provenance(&input, &input, Some(&system), json!([]), json!([])),
         "updatedAt": chrono::Utc::now().timestamp_millis(),
         "origin": "rest_api",
+        "workflowStatus": "unreviewed",
     });
     crate::history::persist_assets(
         std::slice::from_ref(&asset),
@@ -978,7 +1061,13 @@ struct VideoReq {
     aspect_ratio: Option<String>,
     resolution: Option<String>,
     model: Option<String>,
-    reference_path: Option<String>,
+    mode: Option<String>,
+    #[serde(default)]
+    images: Vec<String>,
+    #[serde(default)]
+    videos: Vec<String>,
+    #[serde(default)]
+    audios: Vec<String>,
     project_id: Option<String>,
 }
 
@@ -990,7 +1079,19 @@ async fn video(
     optional_text(body.aspect_ratio.as_deref(), "aspectRatio", 32)?;
     optional_text(body.resolution.as_deref(), "resolution", 32)?;
     optional_text(body.model.as_deref(), "model", MAX_MODEL_CHARS)?;
-    optional_text(body.reference_path.as_deref(), "referencePath", 4_096)?;
+    optional_text(body.mode.as_deref(), "mode", 32)?;
+    for (field, values) in [
+        ("images", &body.images),
+        ("videos", &body.videos),
+        ("audios", &body.audios),
+    ] {
+        if values.len() > 30 {
+            return Err(err(format!("{field} 最多允许 30 项")));
+        }
+        for value in values {
+            optional_text(Some(value), field, 4_096)?;
+        }
+    }
     optional_text(body.project_id.as_deref(), "projectId", 200)?;
     if body
         .duration_s
@@ -1000,7 +1101,7 @@ async fn video(
     }
     let cfg = state.cfg.read().unwrap().clone();
     let prompt = body.prompt.clone();
-    let reference_path = body.reference_path.clone();
+    let images = body.images.clone();
     let model = body
         .model
         .clone()
@@ -1013,32 +1114,44 @@ async fn video(
         duration_s: body.duration_s.unwrap_or(5),
         aspect_ratio: body.aspect_ratio.clone(),
         resolution: body.resolution.clone(),
-        reference: reference_path.clone(),
+        mode: body.mode.clone(),
+        images: images.clone(),
+        videos: body.videos.clone(),
+        audios: body.audios.clone(),
     };
     let assets = video::generate_segments(&cfg, &request, &dir)
         .await
         .map_err(err)?;
-    let source = if reference_path
-        .as_deref()
-        .is_some_and(|value| !value.trim().is_empty())
-    {
-        "API图生视频"
-    } else {
+    let source = if images.is_empty() && body.videos.is_empty() && body.audios.is_empty() {
         "API文生视频"
+    } else {
+        "API参考素材视频"
     };
-    let source_materials = reference_path.as_deref().map_or_else(
-        || json!([]),
-        |path| json!([{ "kind": "file", "label": "API视频参考图", "path": path }]),
-    );
+    let source_materials =
+        images
+            .iter()
+            .map(|path| json!({ "kind": "file", "label": "API视频参考图 URL", "path": path }))
+            .chain(body.videos.iter().map(
+                |path| json!({ "kind": "file", "label": "API视频参考视频 URL", "path": path }),
+            ))
+            .chain(body.audios.iter().map(
+                |path| json!({ "kind": "file", "label": "API视频参考音频 URL", "path": path }),
+            ))
+            .collect::<Vec<_>>();
     let params_value = json!({
         "prompt": prompt,
         "duration_s": request.duration_s,
         "aspectRatio": body.aspect_ratio,
         "resolution": body.resolution,
-        "referencePath": reference_path,
+        "mode": body.mode,
+        "images": images,
+        "videos": body.videos,
+        "audios": body.audios,
         "model": model,
-        "provenance": crate::history::generated_provenance(&prompt, &prompt, None, source_materials, json!([])),
+        "providerTaskIds": assets.iter().filter_map(|asset| asset.id.strip_prefix("zzone:")).collect::<Vec<_>>(),
+        "provenance": crate::history::generated_provenance(&prompt, &prompt, None, Value::Array(source_materials), json!([])),
         "origin": "rest_api",
+        "workflowStatus": "direct_api_unreviewed",
     });
     crate::history::persist_assets(
         &assets,
@@ -1211,15 +1324,48 @@ mod tests {
 
     #[tokio::test]
     async fn retired_comic_workflows_have_no_http_dispatch_route() {
-        for path in ["/api/novel_analysis_start","/api/novel_production_start","/api/novel_adaptation_analysis_start","/api/comic_visual_batch_resume","/api/v1/novel/production/start","/api/v1/comic/visual/render"] {
-            let response=app().oneshot(Request::builder().method("POST").uri(path).header("content-type","application/json").body(Body::from("{}")).unwrap()).await.unwrap();
-            assert_eq!(response.status(),StatusCode::NOT_FOUND,"{path}");
+        for path in [
+            "/api/novel_analysis_start",
+            "/api/novel_production_start",
+            "/api/novel_adaptation_analysis_start",
+            "/api/comic_visual_batch_resume",
+            "/api/v1/novel/production/start",
+            "/api/v1/comic/visual/render",
+        ] {
+            let response = app()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(path)
+                        .header("content-type", "application/json")
+                        .body(Body::from("{}"))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
         }
         // These are the separate, supported short-drama and media routes.
         // GET is rejected by these POST-only routes before any provider runs.
-        for path in ["/api/director","/api/script","/api/storyboard","/api/v1/agents/orchestrations","/api/image","/api/video"] {
-            let response=app().oneshot(Request::builder().method("GET").uri(path).body(Body::empty()).unwrap()).await.unwrap();
-            assert_eq!(response.status(),StatusCode::METHOD_NOT_ALLOWED,"{path}");
+        for path in [
+            "/api/director",
+            "/api/script",
+            "/api/storyboard",
+            "/api/v1/agents/orchestrations",
+            "/api/image",
+            "/api/video",
+        ] {
+            let response = app()
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED, "{path}");
         }
     }
 
@@ -1235,7 +1381,7 @@ mod tests {
         assert_eq!(info["historyPersistence"], "sqlite");
         assert_eq!(info["historySynchronization"]["mode"], "event_driven");
         assert_eq!(info["historySynchronization"]["polling"], false);
-        assert_eq!(info["routes"].as_array().unwrap().len(), 24);
+        assert_eq!(info["routes"].as_array().unwrap().len(), 26);
 
         let (status, sync) = get_json("/api/v1/system/history-sync").await;
         assert_eq!(status, StatusCode::OK);

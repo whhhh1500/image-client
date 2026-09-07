@@ -19,6 +19,7 @@ describe("project profile", () => {
       imageModel: "image-model",
       imageQuality: "high",
       videoModel: "video-model",
+      videoResolution: "720p",
     });
     expect(text).toContain("项目简介：一部悬疑短剧");
     expect(text).toContain("目标画幅：16:9");

@@ -1,5 +1,5 @@
 import { confirmAction } from "./lib/confirm";
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { BookOpen, Clapperboard, FolderCog, Image as ImageIcon, Images, Plus, RefreshCw, Settings, Trash2 } from "lucide-react";
 import StatusBar from "./components/StatusBar";
 import AppDocsDialog, { type AppDocsView } from "./components/AppDocsDialog";
@@ -24,16 +24,19 @@ import { useProjectStore } from "./store/useProjectStore";
 import { usePromptlibStore } from "./store/usePromptlibStore";
 import { useGenerationStore } from "./store/useGenerationStore";
 import { useVideoStore } from "./store/useVideoStore";
+import type { VideoParams } from "./store/useVideoStore";
 import { applyProjectProfile } from "./lib/projectProfile";
 import { logEvent } from "./lib/logger";
 import { listen } from "@tauri-apps/api/event";
+import type { StoryboardShot } from "./lib/video/storyboard";
+import { buildReviewedVideoHandoff } from "./lib/video/handoff";
 
 type Mode = "image" | "video";
 type Tab = "generate" | "comic" | "pipeline" | "assets";
 
 const GeneratePanel = lazy(() => import("./pages/GeneratePanel"));
 const VideoPanel = lazy(() => import("./pages/VideoPanel"));
-const AgentPanel = lazy(() => import("./pages/AgentPanel"));
+const VideoMarkdownWorkspace = lazy(() => import("./components/video/VideoMarkdownWorkspace"));
 const AssetsPage = lazy(() => import("./pages/AssetsPage"));
 const NovelComicPage = lazy(() => import("./pages/NovelComicPage"));
 
@@ -51,10 +54,19 @@ function App() {
   const [docsView, setDocsView] = useState<AppDocsView | null>(null);
   const [historyRefreshing, setHistoryRefreshing] = useState(false);
   const [historyRefreshNotice, setHistoryRefreshNotice] = useState<string | null>(null);
-  const assetCount = useLibraryStore((s) => s.assets.length);
+  const libraryAssets = useLibraryStore((s) => s.assets);
   const projects = useProjectStore((s) => s.projects);
   const activeProjectId = useProjectStore((s) => s.activeId);
   const activeProject = projects.find((p) => p.id === activeProjectId) ?? null;
+  const assetCount = useMemo(() => {
+    const defaultProjectId = projects[0]?.id;
+    const allowedAssetKinds = mode === "image" ? ["text", "image"] : ["text", "video"];
+    return libraryAssets.filter((asset) => {
+      const belongsToActiveProject = asset.projectId === activeProjectId
+        || (!asset.projectId && activeProjectId === defaultProjectId);
+      return belongsToActiveProject && allowedAssetKinds.includes(asset.asset.kind);
+    }).length;
+  }, [activeProjectId, libraryAssets, mode, projects]);
 
   useEffect(() => {
     let cancelled = false;
@@ -127,10 +139,12 @@ function App() {
   const openAsset = (asset: LibAsset) => {
     if (asset.asset.kind === "video") {
       setMode("video");
-      useVideoStore.getState().load((asset.params ?? {}) as Partial<import("./store/useVideoStore").VideoParams>);
-    } else {
+      useVideoStore.getState().load((asset.params ?? {}) as Partial<VideoParams>);
+    } else if (asset.asset.kind === "image") {
       setMode("image");
       useGenerationStore.getState().load({ ...(asset.params ?? {}), ...(asset.model ? { model: asset.model } : {}) } as Partial<import("./store/useGenerationStore").GenParams>);
+    } else {
+      return;
     }
     setTab("generate");
   };
@@ -142,19 +156,41 @@ function App() {
     setTab("generate");
   };
 
+  const sendStoryboardToVideo = (shots: StoryboardShot[], source: LibAsset, approval: { anchorAssetId?: string; qcAssetId?: string; approvedModel: string; approvedAspectRatio: string; approvedResolution: string }) => {
+    const handoff = buildReviewedVideoHandoff(shots, useLibraryStore.getState().assets, source, approval);
+    if (!handoff.shots?.length) return;
+    useVideoStore.getState().set(handoff);
+    setMode("video");
+    setTab("generate");
+  };
+
+  const clearProjectScopedGenerationState = () => {
+    useGenerationStore.getState().set({ prompt: "", referencePath: "" });
+    useVideoStore.getState().set({
+      shots: [{ id: "shot-1", shotNo: 1, prompt: "", durationS: 5 }],
+      images: [],
+      videos: [],
+      audios: [],
+      storyboardSourceAssetId: undefined,
+      productionManifest: undefined,
+      // With no retained references, reset newer stores to the backwards-compatible text mode.
+      mode: "text",
+    });
+  };
+
   const switchProject = async (id: string) => {
     await useProjectStore.getState().switch(id);
     const project = useProjectStore.getState().projects.find((p) => p.id === id);
     if (project) applyProjectProfile(project);
-    // 清空上一个项目遗留的私有生成参数，避免串项目（保留 musicPath）。
-    useGenerationStore.getState().set({ prompt: "", referencePath: "" });
-    useVideoStore.getState().set({ prompt: "", referencePath: "", musicEnabled: false });
+    // 清空上一个项目的私有生成参数，避免跨项目引用资产。
+    clearProjectScopedGenerationState();
   };
 
   const createProject = async () => {
     const id = await useProjectStore.getState().create();
     const project = useProjectStore.getState().projects.find((p) => p.id === id);
     if (project) applyProjectProfile(project);
+    clearProjectScopedGenerationState();
     setProjectSettingsOpen(true);
   };
 
@@ -166,6 +202,7 @@ function App() {
     const state = useProjectStore.getState();
     const nextProject = state.projects.find((p) => p.id === state.activeId);
     if (nextProject) applyProjectProfile(nextProject);
+    clearProjectScopedGenerationState();
   };
 
   return (
@@ -188,14 +225,17 @@ function App() {
         </div>
 
         <nav className="flex gap-1 rounded-lg bg-slate-800/60 p-1 max-[1024px]:order-last max-[1024px]:basis-full max-[1024px]:flex-nowrap max-[1024px]:overflow-x-auto">
-          <button onClick={() => setTab("generate")} className={`shrink-0 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-medium transition ${tab === "generate" ? "bg-slate-700 text-white" : "text-slate-400 hover:text-white"}`}>
-            {mode === "video" ? "视频生成" : "图像生成"}
+          <button onClick={() => { setMode("image"); setTab("generate"); }} className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-medium transition ${tab === "generate" && mode === "image" ? "bg-indigo-500 text-white" : "text-slate-400 hover:text-white"}`}>
+            <ImageIcon size={13} /> 图像生成
+          </button>
+          <button onClick={() => { setMode("video"); setTab("generate"); }} className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-medium transition ${tab === "generate" && mode === "video" ? "bg-fuchsia-500 text-white" : "text-slate-400 hover:text-white"}`}>
+            <Clapperboard size={13} /> 视频生成
           </button>
           <button onClick={() => setTab("comic")} className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-medium transition ${tab === "comic" ? "bg-slate-700 text-white" : "text-slate-400 hover:text-white"}`}>
             <BookOpen size={13} /> 小说漫画
           </button>
           <button onClick={() => setTab("pipeline")} className={`shrink-0 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-medium transition ${tab === "pipeline" ? "bg-slate-700 text-white" : "text-slate-400 hover:text-white"}`}>
-            通用短剧流水线
+            短剧 Agent
           </button>
           <button onClick={() => setTab("assets")} className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-medium transition ${tab === "assets" ? "bg-slate-700 text-white" : "text-slate-400 hover:text-white"}`}>
             <Images size={13} /> 资产库{assetCount > 0 ? <span className="rounded bg-slate-900/40 px-1 text-[9px]">{assetCount}</span> : null}
@@ -213,15 +253,6 @@ function App() {
             <RefreshCw size={13} className={historyRefreshing ? "animate-spin" : ""} />
             {historyRefreshing ? "刷新中" : "刷新历史"}
           </button>
-          {/* Mode toggle (right) */}
-          <div className="flex shrink-0 gap-1 rounded-lg bg-slate-800/60 p-1">
-            <button onClick={() => setMode("image")} className={`flex items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-medium transition ${mode === "image" ? "bg-indigo-500 text-white" : "text-slate-400 hover:text-white"}`}>
-              <ImageIcon size={14} /> 图像
-            </button>
-            <button onClick={() => setMode("video")} className={`flex items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-medium transition ${mode === "video" ? "bg-fuchsia-500 text-white" : "text-slate-400 hover:text-white"}`}>
-              <Clapperboard size={14} /> 视频
-            </button>
-          </div>
           <button onClick={() => setSettingsOpen(true)} title="设置" className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-700 text-slate-300 transition hover:bg-slate-800 hover:text-white">
             <Settings size={15} />
           </button>
@@ -229,12 +260,12 @@ function App() {
       </header>
 
       <div className="flex min-h-0 flex-1 flex-col">
-        {tab === "pipeline" && <div className="border-b border-cyan-300/10 bg-slate-950/90 px-6 py-1.5 text-[10px] text-cyan-100/75">适用：通用短剧从剧本到逐镜出图；可串联或按需调用 Agent。</div>}
+        {tab === "pipeline" && <div className="border-b border-cyan-300/10 bg-slate-950/90 px-6 py-1.5 text-[10px] text-cyan-100/75">适用：从剧本、视觉锚点到 Markdown 视频分镜；确认后可逐镜发送到视频工作区。</div>}
         <div className="flex min-h-0 flex-1">
           <Suspense fallback={<div className="flex flex-1 items-center justify-center text-sm text-slate-500">正在加载模块…</div>}>
             {tab === "generate" && (mode === "video" ? <VideoPanel /> : <GeneratePanel llmModel={cfgStatus?.llmModel} />)}
             {tab === "comic" && <NovelComicPage />}
-            {tab === "pipeline" && <AgentPanel imageModel={cfgStatus?.imageModel} onEditPrompt={(id) => { setPromptAgent(id); setPromptMgrOpen(true); }} />}
+            {tab === "pipeline" && <VideoMarkdownWorkspace llmModel={cfgStatus?.llmModel} onEditPrompt={(id) => { setPromptAgent(id); setPromptMgrOpen(true); }} onSendToVideo={sendStoryboardToVideo} />}
             {tab === "assets" && <AssetsPage mode={mode} onUseReference={useReference} onOpenAsset={openAsset} />}
           </Suspense>
         </div>

@@ -12,6 +12,7 @@ export interface Project {
   imageModel: string;
   imageQuality: string;
   videoModel: string;
+  videoResolution: string;
 }
 
 export type ProjectPatch = Partial<Omit<Project, "id">>;
@@ -24,6 +25,7 @@ const PROJECT_DEFAULTS: Omit<Project, "id" | "name"> = {
   imageModel: "gpt-image-2",
   imageQuality: "high",
   videoModel: "grok-imagine-video",
+  videoResolution: "720p",
 };
 
 function makeProject(name: string): Project {

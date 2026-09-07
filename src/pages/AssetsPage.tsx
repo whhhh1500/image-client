@@ -46,8 +46,15 @@ export default function AssetsPage({
   const [retrying, setRetrying] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshMessage, setRefreshMessage] = useState<string | null>(null);
+  const allowedViews: AssetView[] = mode === "image" ? ["text", "image"] : ["text", "video"];
 
-  useEffect(() => setView(mode), [mode]);
+  useEffect(() => {
+    setView(mode);
+    // A modal or context menu from the previous workspace must not keep a
+    // cross-workspace asset reachable after the workspace changes.
+    setMenu(null);
+    setPreview(null);
+  }, [mode]);
 
   const defaultId = projects[0]?.id;
   const belongs = (projectId?: string) => projectId === activeId || (!projectId && activeId === defaultId);
@@ -85,6 +92,13 @@ export default function AssetsPage({
     void revealItemInDir(asset.asset.path).catch((error) => logEvent("warn", "asset.reveal_failed", { error: String(error) }));
   };
 
+  const openAssetInWorkspace = (asset: LibAsset) => {
+    if (asset.asset.kind !== mode) return;
+    onOpenAsset?.(asset);
+  };
+
+  const useImageReference = mode === "image" ? onUseReference : undefined;
+
   const refreshHistory = async () => {
     if (refreshing) return;
     setRefreshing(true);
@@ -102,10 +116,10 @@ export default function AssetsPage({
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <div className="flex flex-wrap items-center gap-2 border-b border-white/5 bg-slate-950/25 px-6 py-3">
-        {(["text", "image", "video"] as AssetView[]).map((kind) => (
+        {allowedViews.map((kind) => (
           <button key={kind} onClick={() => setView(kind)} className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs transition ${view === kind ? "border-cyan-300/25 bg-cyan-300/10 text-cyan-100" : "border-white/5 text-slate-500 hover:border-white/15 hover:text-slate-300"}`}>
             {kind === "text" ? <FileText size={13} /> : kind === "image" ? <ImageIcon size={13} /> : <Video size={13} />}
-            {kind === "text" ? "项目文档" : kind === "image" ? "图片" : "视频"}
+            {kind === "text" ? "项目文档" : kind === "image" ? "图像资产" : "视频资产"}
             <span className="text-[9px] opacity-60">{allAssets.filter((asset) => belongs(asset.projectId) && asset.asset.kind === kind).length}</span>
           </button>
         ))}
@@ -178,7 +192,7 @@ export default function AssetsPage({
           </section>
         ) : (
           <section>
-            <div className="mb-3 text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">{view === "image" ? "图片产物" : "视频产物"} · {assets.length}</div>
+            <div className="mb-3 text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">{view === "image" ? "图像资产" : "视频资产"} · {assets.length}</div>
             <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(170px,1fr))]">
               {assets.filter((asset) => view !== "image" || !isCompressedAsset(asset)).map((asset) => (
                 view === "image" ? (
@@ -209,7 +223,7 @@ export default function AssetsPage({
             ? imageHistoryMenu({
                 asset: menu.asset,
                 onPreview: setPreview,
-                onReference: onUseReference,
+                onReference: useImageReference,
               })
             : [
                 { label: "查看完整详情", icon: menuIcons.preview, onClick: () => setPreview(menu.asset) },
@@ -219,7 +233,7 @@ export default function AssetsPage({
         />
       )}
 
-      <AssetDetailModal asset={preview} onClose={() => setPreview(null)} onLoadAsset={onOpenAsset} onUseReference={onUseReference} />
+      <AssetDetailModal asset={preview} onClose={() => setPreview(null)} onLoadAsset={openAssetInWorkspace} onUseReference={useImageReference} />
     </div>
   );
 }

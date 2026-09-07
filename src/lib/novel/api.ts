@@ -1,4 +1,6 @@
-import { loggedInvoke } from "../logger";
+import { loggedInvoke, logEvent } from "../logger";
+import { saveDocumentVersion } from "../documents";
+import { useLibraryStore } from "../../store/useLibraryStore";
 
 /** Basic novel/source records used by the Markdown workspace. */
 export interface NovelWork {
@@ -50,7 +52,29 @@ export function novelWorkCreate(value: { projectId: string; title: string; descr
 }
 
 export function novelWorkGet(value: { projectId: string; novelWorkId: string }): Promise<NovelSnapshot> {
-  return input("novel_work_get", value);
+  return input<NovelSnapshot>("novel_work_get", value).then(async (snapshot) => {
+    const revisions = snapshot.revisions ?? [];
+    for (const chapter of snapshot.chapters) {
+      const revision = revisions.find((item) => item.id === chapter.latestRevisionId);
+      if (revision) await publishNovelChapter(value.projectId, snapshot.work.id, chapter.chapterNo, chapter.title ?? `第${chapter.chapterNo}章`, revision).catch((error) => logEvent("warn", "novel.shared_source_publish_failed", { revisionId: revision.id, error: String(error) }));
+    }
+    return snapshot;
+  });
+}
+
+async function publishNovelChapter(projectId: string, novelWorkId: string, chapterNo: number, title: string, revision: NovelChapterRevision) {
+  const exists = useLibraryStore.getState().assets.some((asset) => asset.params?.novelChapterRevisionId === revision.id);
+  if (exists) return;
+  await saveDocumentVersion({
+    title,
+    text: revision.content,
+    projectId,
+    documentType: "novel",
+    changeType: "generated",
+    agentId: "novel_source",
+    metadata: { sourceKind: "novel_chapter", novelWorkId, novelChapterId: revision.chapterId, novelChapterRevisionId: revision.id, chapterNo },
+    provenance: { originalInput: revision.content, generationInput: revision.content, sourceMaterials: [], parentAssetIds: [] },
+  });
 }
 
 export function novelChapterRevisionCreate(value: {
@@ -62,7 +86,10 @@ export function novelChapterRevisionCreate(value: {
   content: string;
   idempotencyKey: string;
 }): Promise<NovelChapterRevision> {
-  return input("novel_chapter_revision_create", value);
+  return input<NovelChapterRevision>("novel_chapter_revision_create", value).then(async (revision) => {
+    await publishNovelChapter(value.projectId, value.novelWorkId, value.chapterNo, value.title || `第${value.chapterNo}章`, revision);
+    return revision;
+  });
 }
 
 export function newNovelIdempotencyKey(prefix: string): string {

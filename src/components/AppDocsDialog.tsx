@@ -24,7 +24,9 @@ function GuideContent() {
         <h3 className={headingClass}>图像与视频</h3>
         <ul className={`${copyClass} list-disc space-y-1 pl-4`}>
           <li>图像生成：填写画面描述，按需选择尺寸、质量和参考图。</li>
-          <li>视频生成：填写动作与镜头要求，可使用已有图片作为首帧参考。</li>
+          <li>视频生成：每个分镜独立请求并保存为独立视频资源；不会自动拆镜或拼接。</li>
+          <li>短剧 Agent 的 AI 优化会从当前阶段开始，依次更新已有的剧本、锚点、分镜和 QC；全部审查通过后直接保存新版本。</li>
+          <li>AI 优化不会自动重新生成视频；确认新分镜后再进入视频工作区生成，拼接也必须主动点击。</li>
           <li>提交后请等待任务完成；切换页面不会删除已保存的历史结果。</li>
           <li>提示词应明确主体、环境、构图和风格，避免互相冲突的要求。</li>
         </ul>
@@ -33,11 +35,23 @@ function GuideContent() {
       <section className={sectionClass}>
         <h3 className={headingClass}>小说漫画</h3>
         <ol className={`${copyClass} list-decimal space-y-1 pl-4`}>
-          <li>导入或创建 Markdown 小说，先保存正文并完成作品分析。</li>
+          <li>创建小说和章节，在章节正文框中直接粘贴或编写内容并保存。</li>
           <li>依次检查作品设定、本章剧本、分镜和每页 Prompt。</li>
+          <li>产物底部的 AI 优化会读取本章全部已保存产物，并从当前产物开始直接更新已有下游文字版本。</li>
+          <li>优化页 Prompt 时默认更新当前页及后续页；勾选后可包含本章前面的有效页。</li>
           <li>确认内容后生成漫画；单页重画只影响当前页本次请求。</li>
-          <li>采用历史版本前先核对版本号，避免覆盖尚未保存的草稿。</li>
+          <li>AI 优化不会自动重画图片；联动范围存在未保存草稿时会先阻断，避免覆盖用户编辑。</li>
         </ol>
+      </section>
+
+      <section className={sectionClass}>
+        <h3 className={headingClass}>AI 优化与版本</h3>
+        <ul className={`${copyClass} list-disc space-y-1 pl-4`}>
+          <li>AI 生成通常先进入草稿；AI 优化会按生产依赖直接保存当前及已有下游文字产物的新版本。</li>
+          <li>优化会关联同一章节或视频工作区的全部已保存文字产物，以及已有图片/视频的关联元数据。</li>
+          <li>媒体文件不会被文本模型直接修改，也不会因一次文字优化自动产生图片或视频费用。</li>
+          <li>任一阶段结构不完整、质量审查未通过或出现版本冲突时，系统会停止后续保存并保留已有版本。</li>
+        </ul>
       </section>
 
       <section className={sectionClass}>
@@ -63,6 +77,32 @@ function GuideContent() {
 function ChangelogContent() {
   return (
     <div className="space-y-3">
+      <section className={sectionClass}>
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h3 className="text-sm font-semibold text-slate-100">v0.2.0</h3>
+          <time dateTime="2026-09-07" className="text-[11px] text-slate-500">2026-09-07</time>
+        </div>
+        <div className="space-y-3 pt-1">
+          <div>
+            <h4 className="text-[11px] font-medium text-cyan-100/80">视频工作区</h4>
+            <ul className={`${copyClass} mt-1 list-disc space-y-1 pl-4`}>
+              <li>新增小说/脑洞 → 规划 → 剧本 → 视频锚点 → 视频分镜 → QC → 逐镜视频资源的完整工作流。</li>
+              <li>每镜一次请求、一个独立资源；不自动拆镜或拼接，声音、口型与字幕暂不处理。</li>
+              <li>分辨率、画幅、时长和参考素材改为模型能力驱动，并与审查生产清单精确绑定。</li>
+              <li>对齐 ZZone 异步视频协议，保留 Provider task ID，并加强轮询、下载重试及公网素材校验。</li>
+            </ul>
+          </div>
+          <div>
+            <h4 className="text-[11px] font-medium text-cyan-100/80">AI 优化</h4>
+            <ul className={`${copyClass} mt-1 list-disc space-y-1 pl-4`}>
+              <li>小说漫画 AI 优化会按作品设定 → 剧本 → 分页分镜 → 页 Prompt 直接更新当前及已有下游文字版本。</li>
+              <li>短剧视频 AI 优化会按规划 → 剧本 → 锚点 → 分镜 → QC 联动，全部审查通过后再保存新版本。</li>
+              <li>联动优化读取整个工作区上下文，但不会自动重画漫画或重新生成视频。</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
       <section className={sectionClass}>
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <h3 className="text-sm font-semibold text-slate-100">v0.1.0</h3>

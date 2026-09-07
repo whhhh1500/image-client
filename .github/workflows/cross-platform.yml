@@ -11,18 +11,37 @@ on:
       - "package.json"
       - "pnpm-lock.yaml"
       - ".github/workflows/cross-platform.yml"
+      - ".github/workflows/release.yml"
   pull_request:
 
 permissions:
   contents: read
+
+env:
+  CARGO_INCREMENTAL: "0"
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
 
 jobs:
   verify:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-22.04]
-    runs-on: ${{ matrix.os }}
+        include:
+          - platform: windows-latest
+            cache_key: windows-x64
+          - platform: ubuntu-22.04
+            cache_key: linux-x64
+          - platform: macos-latest
+            cache_key: macos-arm64
+            target: aarch64-apple-darwin
+            build_args: --target aarch64-apple-darwin
+          - platform: macos-15-intel
+            cache_key: macos-x64
+            target: x86_64-apple-darwin
+            build_args: --target x86_64-apple-darwin
+    runs-on: ${{ matrix.platform }}
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v7
@@ -34,9 +53,15 @@ jobs:
           node-version: 24
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: mozilla-actions/sccache-action@v0.0.11
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          cache-targets: false
+          shared-key: release-dependencies-${{ matrix.cache_key }}
+          add-job-id-key: false
 
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
@@ -47,4 +72,4 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
-      - run: pnpm tauri build --no-bundle --ci
+      - run: pnpm tauri build --no-bundle --ci ${{ matrix.build_args }}

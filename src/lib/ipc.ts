@@ -72,6 +72,30 @@ export const listImageModels = (): Promise<string[]> =>
 export const listVideoModels = (): Promise<string[]> =>
   loggedInvoke<string[]>("list_video_models");
 
+export type VideoGenerationMode = "text" | "first_frame" | "reference";
+
+/** Model-specific constraints returned by the desktop video gateway. */
+export interface VideoModelCapability {
+  id: string;
+  label: string;
+  modes: VideoGenerationMode[];
+  minDurationS: number;
+  maxDurationS: number;
+  durationOptions: number[];
+  resolutions: string[];
+  aspectRatios: string[];
+  maxImages: number;
+  maxVideos: number;
+  maxAudios: number;
+  maxTotalReferences?: number | null;
+  referenceImageCount?: number | null;
+  maxReferenceDurationS?: number | null;
+  note: string;
+}
+
+export const listVideoModelCapabilities = (): Promise<VideoModelCapability[]> =>
+  loggedInvoke<VideoModelCapability[]>("list_video_model_capabilities");
+
 export const listProviders = (): Promise<ProviderInfo[]> =>
   loggedInvoke<ProviderInfo[]>("list_providers");
 
@@ -105,6 +129,26 @@ export const agentRun = (
 
 export const saveText = (label: string, text: string, model?: string): Promise<AssetRef> =>
   loggedInvoke<AssetRef>("save_text", { label, text, model });
+
+export interface DocumentVersionSaveRequest {
+  label: string;
+  text: string;
+  model?: string;
+  projectId?: string;
+  documentId: string;
+  params: Record<string, unknown>;
+  expectedHeadAssetId?: string;
+  allowBranch?: boolean;
+}
+
+export interface DocumentVersionSaveResult {
+  asset: AssetRef;
+  params: Record<string, unknown>;
+  version: number;
+}
+
+export const saveDocumentVersionAtomic = (request: DocumentVersionSaveRequest): Promise<DocumentVersionSaveResult> =>
+  loggedInvoke<DocumentVersionSaveResult>("save_document_version", { request });
 
 export const readTextAsset = (path: string): Promise<string> =>
   loggedInvoke<string>("read_text_asset", { path });

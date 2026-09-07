@@ -1,7 +1,7 @@
 import { confirmAction } from "../lib/confirm";
 import { useEffect, useMemo, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { Copy, FilePenLine, Image as ImageIcon, Loader2, Plus, Save, Sparkles, Trash2, Video, X } from "lucide-react";
+import { Copy, FilePenLine, Image as ImageIcon, Loader2, Save, Sparkles, Video, X } from "lucide-react";
 import { llmChat, readTextAsset } from "../lib/ipc";
 import { LLM_MODELS } from "../lib/models";
 import {
@@ -11,10 +11,11 @@ import {
   getDocumentMeta,
   getDocumentVersions,
   saveDocumentVersion,
-  serializeStoryboard,
   type DocumentChangeType,
 } from "../lib/documents";
-import { parseStoryboardShots, stripThinking, type StoryboardShot } from "../lib/aiOutput";
+import { stripThinking } from "../lib/aiOutput";
+import { parseStoryboardShots, serializeStoryboard, type StoryboardShot } from "../lib/video/storyboard";
+import VideoStoryboardEditor from "./video/VideoStoryboardEditor";
 import { useLibraryStore, type LibAsset } from "../store/useLibraryStore";
 import { useProjectStore } from "../store/useProjectStore";
 import { logEvent } from "../lib/logger";
@@ -29,16 +30,6 @@ import {
 
 const inputCls =
   "w-full rounded-lg border border-slate-600/80 bg-slate-950/65 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-cyan-300/70 focus:ring-1 focus:ring-cyan-300/20";
-
-const SHOT_FIELDS: Array<{ key: keyof StoryboardShot; label: string; multiline?: boolean }> = [
-  { key: "shotType", label: "景别" },
-  { key: "composition", label: "构图", multiline: true },
-  { key: "light", label: "光线", multiline: true },
-  { key: "camera", label: "运镜", multiline: true },
-  { key: "action", label: "动作", multiline: true },
-  { key: "emotion", label: "情绪", multiline: true },
-  { key: "prompt", label: "生成提示词", multiline: true },
-];
 
 function assetPrompt(asset: LibAsset): string {
   const params = asset.params ?? {};
@@ -116,105 +107,6 @@ function ProvenancePanel({ asset }: { asset: LibAsset }) {
         )}
       </div>
     </details>
-  );
-}
-
-export function StoryboardGrid({
-  shots,
-  editable,
-  onChange,
-  renderActions,
-}: {
-  shots: StoryboardShot[];
-  editable: boolean;
-  onChange: (shots: StoryboardShot[]) => void;
-  renderActions?: (shot: StoryboardShot, index: number) => React.ReactNode;
-}) {
-  const updateShot = (index: number, key: keyof StoryboardShot, value: string | number) => {
-    onChange(shots.map((shot, current) => current === index ? { ...shot, [key]: value } : shot));
-  };
-
-  return (
-    <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(280px,1fr))]">
-      {shots.map((shot, index) => (
-        <article key={`${shot.shotNo}-${index}`} className="rounded-xl border border-cyan-300/15 bg-slate-950/45 p-3 shadow-[0_14px_50px_rgba(3,12,32,0.32)]">
-          <div className="mb-3 flex items-center gap-2">
-            {editable ? (
-              <input
-                type="number"
-                min={1}
-                value={shot.shotNo}
-                onChange={(event) => updateShot(index, "shotNo", Number(event.target.value) || index + 1)}
-                className="w-16 rounded-md border border-slate-600 bg-slate-900 px-2 py-1 text-xs"
-              />
-            ) : (
-              <span className="rounded-full border border-cyan-300/20 bg-cyan-300/10 px-2 py-0.5 text-[10px] font-semibold text-cyan-200">镜头 {shot.shotNo}</span>
-            )}
-            <span className="min-w-0 flex-1 truncate text-xs font-medium text-slate-200">{shot.shotType || shot.action || "未命名镜头"}</span>
-            {editable && (
-              <div className="flex gap-1">
-                <button
-                  title="复制镜头"
-                  onClick={() => onChange([...shots.slice(0, index + 1), { ...shot, shotNo: Math.max(...shots.map((item) => item.shotNo), 0) + 1 }, ...shots.slice(index + 1)])}
-                  className="rounded p-1 text-slate-400 hover:bg-white/5 hover:text-cyan-200"
-                >
-                  <Copy size={12} />
-                </button>
-                <button
-                  title="删除镜头"
-                  onClick={() => onChange(shots.filter((_, current) => current !== index))}
-                  className="rounded p-1 text-slate-400 hover:bg-white/5 hover:text-rose-300"
-                >
-                  <Trash2 size={12} />
-                </button>
-              </div>
-            )}
-            {!editable && renderActions?.(shot, index)}
-          </div>
-
-          {editable ? (
-            <div className="space-y-2">
-              {SHOT_FIELDS.map((field) => (
-                <label key={field.key} className="block">
-                  <span className="mb-1 block text-[10px] font-medium text-slate-500">{field.label}</span>
-                  {field.multiline ? (
-                    <textarea
-                      value={String(shot[field.key] ?? "")}
-                      onChange={(event) => updateShot(index, field.key, event.target.value)}
-                      className={`${inputCls} min-h-16 resize-y text-xs`}
-                    />
-                  ) : (
-                    <input
-                      value={String(shot[field.key] ?? "")}
-                      onChange={(event) => updateShot(index, field.key, event.target.value)}
-                      className={`${inputCls} text-xs`}
-                    />
-                  )}
-                </label>
-              ))}
-            </div>
-          ) : (
-            <div className="grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(120px,1fr))]">
-              {SHOT_FIELDS.filter((field) => String(shot[field.key] ?? "").trim()).map((field) => (
-                <div key={field.key} className={`${field.key === "prompt" || field.key === "action" ? "col-span-full" : ""} rounded-lg border border-white/5 bg-white/[0.025] p-2`}>
-                  <div className="text-[9px] uppercase tracking-wider text-slate-600">{field.label}</div>
-                  <div className="mt-1 whitespace-pre-wrap text-[11px] leading-relaxed text-slate-300">{String(shot[field.key])}</div>
-                </div>
-              ))}
-            </div>
-          )}
-        </article>
-      ))}
-
-      {editable && (
-        <button
-          onClick={() => onChange([...shots, { shotNo: Math.max(...shots.map((shot) => shot.shotNo), 0) + 1, prompt: "" }])}
-          className="flex min-h-32 items-center justify-center gap-2 rounded-xl border border-dashed border-cyan-300/20 text-xs text-cyan-200/70 hover:border-cyan-300/50 hover:bg-cyan-300/5"
-        >
-          <Plus size={14} /> 新增镜头
-        </button>
-      )}
-    </div>
   );
 }
 
@@ -334,7 +226,6 @@ export default function AssetDetailModal({
         parent: selected,
         changeType,
         agentId: documentMeta.agentId,
-        shots: documentMeta.documentType === "storyboard" ? shots : undefined,
         revisionInstruction,
       });
       setSelected(saved);
@@ -356,7 +247,7 @@ export default function AssetDetailModal({
     setError(null);
     try {
       const storyboardRule = documentMeta.documentType === "storyboard"
-        ? "必须返回合法 JSON，格式为 {\"shots\":[...]}，不输出解释或代码围栏。"
+        ? "必须返回完整的视频分镜 Markdown，以 # 视频分镜 开头；每镜使用 ## 第N镜，并保留所有固定的 ### 字段标题、时长、锚点、起始状态、动作过程、结束状态、承接镜头和视频 Prompt。只返回 Markdown。"
         : "只返回优化后的完整正文，不输出分析过程。";
       const system = `你是专业的${documentTypeLabel(documentMeta.documentType)}编辑器。${storyboardRule}`;
       const result = stripThinking(await llmChat(system, `【优化要求】\n${instruction}\n\n【原内容】\n${draft}`, model));
@@ -496,7 +387,7 @@ export default function AssetDetailModal({
                 </div>
 
                 {documentMeta.documentType === "storyboard" && shots.length ? (
-                  <StoryboardGrid shots={shots} editable={editing} onChange={setStoryboardShots} />
+                  <VideoStoryboardEditor shots={shots} editable={editing} onChange={setStoryboardShots} />
                 ) : editing ? (
                   <textarea value={draft} onChange={(event) => { setDraft(event.target.value); setDraftChangeType("manual"); setRevisionInstruction(undefined); setDirty(true); }} className={`${inputCls} min-h-[48vh] resize-y font-mono text-xs leading-relaxed`} />
                 ) : (
@@ -547,7 +438,7 @@ export default function AssetDetailModal({
               {documentMeta ? (
                 <>
                   <button onClick={copy} className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-slate-300 hover:bg-white/5"><Copy size={12} className="mr-1 inline" />复制</button>
-                  {onUseText && <button onClick={async () => { if (dirty && !(await confirmAction("当前修改未保存，仍然用于下一步并关闭吗？"))) return; onUseText(draft, selected); onClose(); }} className="rounded-lg border border-cyan-300/15 px-3 py-1.5 text-xs text-cyan-200 hover:bg-cyan-300/5">用于下一步</button>}
+                  {onUseText && <button disabled={!draft.trim()} onClick={async () => { if (dirty && !(await confirmAction("当前修改未保存，仍然用于下一步并关闭吗？"))) return; onUseText(draft, selected); onClose(); }} className="rounded-lg border border-cyan-300/15 px-3 py-1.5 text-xs text-cyan-200 hover:bg-cyan-300/5 disabled:cursor-not-allowed disabled:opacity-40">用于下一步</button>}
                   <button onClick={() => { setEditing((value) => !value); setDraftChangeType("manual"); setRevisionInstruction(undefined); }} className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-slate-200 hover:bg-white/5"><FilePenLine size={12} className="mr-1 inline" />{editing ? "预览排版" : "手动修改"}</button>
                   <button onClick={() => void save("copy")} disabled={busy !== null} className="rounded-lg border border-violet-300/15 px-3 py-1.5 text-xs text-violet-200 hover:bg-violet-300/5 disabled:opacity-40">{busy === "copy" ? "保存中…" : "保存副本"}</button>
                   <button onClick={() => void save(draftChangeType)} disabled={busy !== null || !draft.trim() || !dirty} title={dirty ? "保存当前修改" : "内容尚未修改"} className="rounded-lg border border-cyan-300/20 bg-cyan-300/10 px-3 py-1.5 text-xs font-medium text-cyan-100 hover:bg-cyan-300/15 disabled:opacity-40"><Save size={12} className="mr-1 inline" />保存新版本</button>

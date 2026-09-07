@@ -1,8 +1,9 @@
 import { confirmAction } from "../lib/confirm";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { FolderCog, Save, X } from "lucide-react";
 import { ART_STYLES, ASPECT_RATIOS, STORY_STYLES, applyProjectProfile } from "../lib/projectProfile";
 import { IMAGE_MODELS, VIDEO_MODELS } from "../lib/models";
+import { listVideoModelCapabilities, listVideoModels, type VideoModelCapability } from "../lib/ipc";
 import { useProjectStore, type Project } from "../store/useProjectStore";
 
 const inputCls =
@@ -15,6 +16,10 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       {children}
     </label>
   );
+}
+
+function preferredResolution(values: string[]): string {
+  return values.includes("720p") ? "720p" : values[0] ?? "720p";
 }
 
 export default function ProjectSettingsPage({
@@ -30,12 +35,57 @@ export default function ProjectSettingsPage({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
+  const [videoModels, setVideoModels] = useState<string[]>(VIDEO_MODELS);
+  const [videoCapabilities, setVideoCapabilities] = useState<VideoModelCapability[]>([]);
+  const [videoCapabilityNotice, setVideoCapabilityNotice] = useState<string | null>(null);
+  const [videoCapabilityLoading, setVideoCapabilityLoading] = useState(false);
 
   useEffect(() => {
     setDraft(project);
     setError(null);
     setDirty(false);
+    setVideoCapabilityNotice(null);
   }, [project, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    let disposed = false;
+    setVideoCapabilityLoading(true);
+    void Promise.allSettled([listVideoModels(), listVideoModelCapabilities()])
+      .then(([modelsResult, capabilitiesResult]) => {
+        if (disposed) return;
+        if (modelsResult.status === "fulfilled") setVideoModels(modelsResult.value.length ? modelsResult.value : VIDEO_MODELS);
+        if (capabilitiesResult.status === "fulfilled") setVideoCapabilities(capabilitiesResult.value);
+        const failures = [
+          modelsResult.status === "rejected" ? `模型目录：${String(modelsResult.reason)}` : "",
+          capabilitiesResult.status === "rejected" ? `能力定义：${String(capabilitiesResult.reason)}` : "",
+        ].filter(Boolean);
+        if (failures.length) setVideoCapabilityNotice(`暂时无法完整读取视频模型信息：${failures.join("；")}。当前值会保留，生成前仍会再次校验。`);
+      })
+      .finally(() => {
+        if (!disposed) setVideoCapabilityLoading(false);
+      });
+    return () => { disposed = true; };
+  }, [open]);
+
+  const selectedVideoCapability = useMemo(
+    () => videoCapabilities.find((item) => item.id === draft?.videoModel),
+    [draft?.videoModel, videoCapabilities],
+  );
+  const resolutionOptions = selectedVideoCapability?.resolutions.length
+    ? selectedVideoCapability.resolutions
+    : draft?.videoResolution ? [draft.videoResolution] : ["720p"];
+  const videoModelOptions = [...new Set([draft?.videoModel, ...videoModels].filter((value): value is string => Boolean(value)))];
+
+  useEffect(() => {
+    if (!draft || !selectedVideoCapability?.resolutions.length || selectedVideoCapability.resolutions.includes(draft.videoResolution)) return;
+    const nextResolution = preferredResolution(selectedVideoCapability.resolutions);
+    const previousResolution = draft.videoResolution;
+    setDraft((current) => current ? { ...current, videoResolution: nextResolution } : current);
+    setDirty(true);
+    setVideoCapabilityNotice(`${selectedVideoCapability.label} 不支持 ${previousResolution}，已切换为 ${nextResolution}。保存后会用于质检和每个视频任务。`);
+  }, [draft, selectedVideoCapability]);
+
   if (!open || !draft) return null;
 
   const update = (patch: Partial<Project>) => {
@@ -60,6 +110,17 @@ export default function ProjectSettingsPage({
     } finally {
       setBusy(false);
     }
+  };
+  const selectVideoModel = (videoModel: string) => {
+    const capability = videoCapabilities.find((item) => item.id === videoModel);
+    const currentResolution = draft.videoResolution || "720p";
+    const nextResolution = capability?.resolutions.length && !capability.resolutions.includes(currentResolution)
+      ? preferredResolution(capability.resolutions)
+      : currentResolution;
+    update({ videoModel, videoResolution: nextResolution });
+    setVideoCapabilityNotice(nextResolution !== currentResolution
+      ? `${capability?.label ?? videoModel} 不支持 ${currentResolution}，已切换为 ${nextResolution}。`
+      : null);
   };
 
   return (
@@ -110,10 +171,28 @@ export default function ProjectSettingsPage({
           </Field>
           <div className="col-span-2">
             <Field label="默认视频模型">
-              <select className={inputCls} value={draft.videoModel} onChange={(e) => update({ videoModel: e.target.value })}>
-                {(draft.videoModel && !VIDEO_MODELS.includes(draft.videoModel) ? [draft.videoModel, ...VIDEO_MODELS] : VIDEO_MODELS).map((value) => <option key={value}>{value}</option>)}
+              <select className={inputCls} value={draft.videoModel} onChange={(e) => selectVideoModel(e.target.value)}>
+                {videoModelOptions.map((value) => <option key={value} value={value}>{videoCapabilities.find((item) => item.id === value)?.label ?? value}</option>)}
               </select>
             </Field>
+            <Field label="默认视频分辨率">
+              <select
+                className={inputCls}
+                value={draft.videoResolution || resolutionOptions[0]}
+                disabled={videoCapabilityLoading || !selectedVideoCapability}
+                onChange={(e) => { update({ videoResolution: e.target.value }); setVideoCapabilityNotice(null); }}
+              >
+                {resolutionOptions.map((value) => <option key={value}>{value}</option>)}
+              </select>
+            </Field>
+            <p className="mt-2 text-[10px] leading-relaxed text-slate-500">
+              {videoCapabilityLoading
+                ? "正在读取当前 API Key 可用模型及分辨率…"
+                : selectedVideoCapability
+                  ? `${selectedVideoCapability.label} 支持：${selectedVideoCapability.resolutions.join(" / ")}。分辨率会作为独立 API 参数提交，不依赖 Prompt。`
+                  : "尚未获得该模型的分辨率能力，暂不允许盲选其他值；视频生成前会由网关再次校验。"}
+            </p>
+            {videoCapabilityNotice && <p role="status" className="mt-2 rounded-lg border border-amber-300/15 bg-amber-300/5 px-3 py-2 text-xs text-amber-100">{videoCapabilityNotice}</p>}
           </div>
         </div>
 

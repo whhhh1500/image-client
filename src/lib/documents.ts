@@ -1,8 +1,7 @@
-import type { StoryboardShot } from "./aiOutput";
-import { parseStoryboardShots } from "./aiOutput";
+import type { StoryboardShot } from "./video/storyboard";
+import { parseStoryboardShots } from "./video/storyboard";
 import { createId } from "./id";
-import { saveText } from "./ipc";
-import { persistAssets } from "./dbWrite";
+import { saveDocumentVersionAtomic } from "./ipc";
 import { useLibraryStore, type LibAsset } from "../store/useLibraryStore";
 import {
   historyProvenanceFromParams,
@@ -19,7 +18,6 @@ export type DocumentType =
   | "anchor"
   | "orchestration"
   | "pipeline"
-  | "drama"
   | "novel"
   | "document";
 
@@ -47,7 +45,6 @@ const TYPE_LABELS: Record<DocumentType, string> = {
   anchor: "角色锚",
   orchestration: "Agent 编排",
   pipeline: "完整流水线",
-  drama: "五分钟剧本",
   novel: "小说章节",
   document: "文档",
 };
@@ -58,6 +55,10 @@ const CHANGE_LABELS: Record<DocumentChangeType, string> = {
   ai_optimized: "智能优化",
   copy: "保存副本",
 };
+
+const DOCUMENT_TYPES = new Set<DocumentType>([
+  "director", "script", "storyboard", "consistency", "qc", "anchor", "orchestration", "pipeline", "novel", "document",
+]);
 
 export function documentTypeLabel(type: DocumentType): string {
   return TYPE_LABELS[type];
@@ -78,37 +79,23 @@ export function inferDocumentType(source: string): DocumentType {
   if (source.includes("编排")) return "orchestration";
   if (source.includes("流水线")) return "pipeline";
   if (source.includes("小说") || source.includes("原著")) return "novel";
-  if (source.includes("锚定") || source.includes("卡点") || source.includes("审查") || source.includes("5分钟")) return "drama";
   return "document";
-}
-
-function legacyDocumentKey(asset: LibAsset, type: DocumentType): string {
-  const normalizedTitle = asset.source
-    .replace(/\s*[·\-]?\s*(副本|copy)(?:\s*\d+)?\s*$/i, "")
-    .replace(/\s*[·\-]?\s*v\d+\s*$/i, "")
-    .trim()
-    .toLowerCase() || type;
-  return `legacy:${asset.projectId ?? "global"}:${type}:${normalizedTitle}`;
 }
 
 export function getDocumentMeta(asset: LibAsset): DocumentMeta | null {
   if (asset.asset.kind !== "text") return null;
   const params = asset.params ?? {};
   const text = typeof params.text === "string" ? params.text : "";
-  const documentType = typeof params.documentType === "string"
+  const documentType = typeof params.documentType === "string" && DOCUMENT_TYPES.has(params.documentType as DocumentType)
     ? params.documentType as DocumentType
     : inferDocumentType(asset.source);
   const documentId = typeof params.documentId === "string" && params.documentId
     ? params.documentId
-    : legacyDocumentKey(asset, documentType);
+    : asset.asset.id;
   const version = typeof params.version === "number" && Number.isFinite(params.version)
     ? Math.max(1, Math.floor(params.version))
     : 1;
-  const shots = Array.isArray(params.shots)
-    ? params.shots as StoryboardShot[]
-    : documentType === "storyboard"
-      ? parseStoryboardShots(text)
-      : undefined;
+  const shots = documentType === "storyboard" ? parseStoryboardShots(text) : undefined;
   return {
     text,
     title: typeof params.title === "string" && params.title.trim() ? params.title.trim() : asset.source,
@@ -141,10 +128,6 @@ export function getDocumentDisplayVersion(asset: LibAsset, allAssets = useLibrar
   return index >= 0 ? index + 1 : 1;
 }
 
-export function serializeStoryboard(shots: StoryboardShot[]): string {
-  return JSON.stringify({ shots }, null, 2);
-}
-
 export async function saveDocumentVersion(input: {
   title: string;
   text: string;
@@ -154,23 +137,28 @@ export async function saveDocumentVersion(input: {
   parent?: LibAsset;
   changeType: DocumentChangeType;
   agentId?: string;
-  shots?: StoryboardShot[];
   provenance?: Partial<Omit<HistoryProvenance, "schemaVersion" | "recordedAt">>;
   revisionInstruction?: string;
+  metadata?: Record<string, unknown>;
+  expectedHeadAssetId?: string;
+  allowBranch?: boolean;
 }): Promise<LibAsset> {
   const parentMeta = input.parent ? getDocumentMeta(input.parent) : null;
   const documentId = parentMeta?.documentId ?? createId("document");
-  const existingDocuments = useLibraryStore
-    .getState()
-    .assets
-    .filter((asset) => getDocumentMeta(asset)?.documentId === documentId);
-  const existingVersions = existingDocuments.map((asset) => getDocumentMeta(asset)?.version ?? 0);
-  const version = Math.max(parentMeta?.version ?? 0, existingDocuments.length, ...existingVersions, 0) + 1;
+  const lockKey = parentMeta?.documentId ?? `${input.projectId ?? ""}:${input.agentId ?? input.documentType}:${String(input.metadata?.videoWorkflowId ?? "")}`;
+  if (documentSaveLocks.has(lockKey)) throw new Error("当前文档正在保存，请等待完成后再试");
+  documentSaveLocks.add(lockKey);
+  try {
+  const currentHead = useLibraryStore.getState().assets
+    .filter((asset) => asset.params?.videoBranch !== true && getDocumentMeta(asset)?.documentId === documentId)
+    .sort((left, right) => right.createdAt - left.createdAt)[0];
+  if (!input.allowBranch && input.expectedHeadAssetId && currentHead?.asset.id !== input.expectedHeadAssetId) {
+    throw new Error("版本冲突：当前生产版已变化。请创建历史分支，或迁移到最新版本后再保存");
+  }
   const title = input.title.trim() || documentTypeLabel(input.documentType);
   const text = input.text.trim();
   if (!text) throw new Error("文档内容不能为空");
 
-  const asset = await saveText(title, text, input.model);
   const provenance = inheritHistoryProvenance(parentMeta?.provenance ?? null, {
     ...input.provenance,
     revision: {
@@ -180,29 +168,44 @@ export async function saveDocumentVersion(input: {
     },
   });
   const params: Record<string, unknown> = {
+    ...(input.metadata ?? {}),
     text,
     title,
     documentType: input.documentType,
     documentId,
-    version,
     parentAssetId: input.parent?.asset.id,
     changeType: input.changeType,
     agentId: input.agentId,
-    shots: input.shots ?? (input.documentType === "storyboard" ? parseStoryboardShots(text) : undefined),
     provenance,
     updatedAt: Date.now(),
   };
+  const result = await saveDocumentVersionAtomic({
+    label: title,
+    text,
+    model: input.model,
+    projectId: input.projectId,
+    documentId,
+    params,
+    expectedHeadAssetId: input.allowBranch ? undefined : input.expectedHeadAssetId ?? input.parent?.asset.id,
+    allowBranch: input.allowBranch,
+  });
+  const asset = result.asset;
+  const savedParams = result.params;
   const source = title;
-  const meta = { model: input.model, projectId: input.projectId, params };
-  await persistAssets([asset], source, meta);
+  const meta = { model: input.model, projectId: input.projectId, params: savedParams };
   const saved: LibAsset = {
     asset,
     source,
     model: input.model,
     projectId: input.projectId,
-    params,
+    params: savedParams,
     createdAt: Date.now(),
   };
   useLibraryStore.getState().addAssets([asset], source, meta);
   return saved;
+  } finally {
+    documentSaveLocks.delete(lockKey);
+  }
 }
+
+const documentSaveLocks = new Set<string>();

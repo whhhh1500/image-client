@@ -454,6 +454,17 @@ pub fn with_connection<T>(
     f(&connection)
 }
 
+pub fn with_connection_mut<T>(
+    state: &DbState,
+    f: impl FnOnce(&mut Connection) -> Result<T, String>,
+) -> Result<T, String> {
+    let mut connection = state
+        .connection
+        .lock()
+        .map_err(|_| "SQLite 连接锁已损坏".to_string())?;
+    f(&mut connection)
+}
+
 #[tauri::command]
 pub fn db_execute(
     state: tauri::State<'_, DbState>,

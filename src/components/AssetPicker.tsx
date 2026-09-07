@@ -40,6 +40,7 @@ export default function AssetPicker({
   kinds,
   title = "从项目资源导入",
   strictProject = false,
+  filter,
 }: {
   open: boolean;
   onClose: () => void;
@@ -48,6 +49,8 @@ export default function AssetPicker({
   title?: string;
   /** When enabled, hide unscoped and foreign-project assets instead of the legacy fallback. */
   strictProject?: boolean;
+  /** Optional domain filter applied after project and asset-kind isolation. */
+  filter?: (asset: LibAsset) => boolean;
 }) {
   const allAssets = useLibraryStore((state) => state.assets);
   const projectId = useProjectStore((state) => state.activeId);
@@ -66,6 +69,7 @@ export default function AssetPicker({
     const term = query.trim().toLowerCase();
     return allAssets
       .filter((asset) => assetMatchesPickerProject(asset.projectId, projectId, strictProject) && asset.asset.kind === activeKind)
+      .filter((asset) => !filter || filter(asset))
       .filter((asset) => {
         if (!term) return true;
         const document = getDocumentMeta(asset);
@@ -75,7 +79,7 @@ export default function AssetPicker({
           .some((value) => String(value).toLowerCase().includes(term));
       })
       .sort((a, b) => b.createdAt - a.createdAt);
-  }, [activeKind, allAssets, projectId, query, strictProject]);
+  }, [activeKind, allAssets, filter, projectId, query, strictProject]);
 
   if (!open) return null;
 

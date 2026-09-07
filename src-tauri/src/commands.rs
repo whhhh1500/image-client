@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::config::{self, ConfigStatus};
@@ -175,6 +177,130 @@ pub(crate) fn save_text_with_config(
         serde_json::json!({ "status": "success", "assetId": asset.id, "path": asset.path, "bytes": text.len() }),
     );
     Ok(asset)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentVersionSaveRequest {
+    label: String,
+    text: String,
+    model: Option<String>,
+    project_id: Option<String>,
+    document_id: String,
+    params: Value,
+    expected_head_asset_id: Option<String>,
+    #[serde(default)]
+    allow_branch: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentVersionSaveResult {
+    asset: AssetRef,
+    params: Value,
+    version: i64,
+}
+
+#[tauri::command]
+pub fn save_document_version(
+    app_state: tauri::State<'_, AppState>,
+    database: tauri::State<'_, crate::db::DbState>,
+    request: DocumentVersionSaveRequest,
+) -> Result<DocumentVersionSaveResult, String> {
+    let cfg = app_state.cfg.read().unwrap().clone();
+    save_document_version_with_config(&cfg, &database, request)
+}
+
+fn save_document_version_with_config(
+    cfg: &crate::config::ConfigState,
+    database: &crate::db::DbState,
+    request: DocumentVersionSaveRequest,
+) -> Result<DocumentVersionSaveResult, String> {
+    let label = request.label.trim();
+    let text = request.text.trim();
+    if label.is_empty() || text.is_empty() || request.document_id.trim().is_empty() {
+        return Err("文档标题、内容和 documentId 不能为空".to_string());
+    }
+    let asset = save_text_with_config(cfg, label, text, request.model.as_deref())?;
+    let asset_path = asset.path.clone();
+    let result = crate::db::with_connection_mut(&database, |connection| {
+        connection
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(|error| format!("开始文档版本事务失败: {error}"))?;
+        let operation = (|| {
+            let current_head: Option<String> = connection
+                .query_row(
+                    "SELECT id FROM assets WHERE kind='text' AND json_extract(metadata,'$.params.documentId')=? AND COALESCE(json_extract(metadata,'$.params.videoBranch'),0) != 1 ORDER BY CAST(COALESCE(json_extract(metadata,'$.params.version'),0) AS INTEGER) DESC, created_at DESC, id DESC LIMIT 1",
+                    [&request.document_id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|error| format!("读取文档当前版本失败: {error}"))?;
+            if !request.allow_branch
+                && request.expected_head_asset_id.as_deref() != current_head.as_deref()
+            {
+                return Err(
+                    "版本冲突：当前生产版已变化。请创建历史分支，或迁移到最新版本后再保存"
+                        .to_string(),
+                );
+            }
+            let version: i64 = connection
+                .query_row(
+                    "SELECT COALESCE(MAX(CAST(COALESCE(json_extract(metadata,'$.params.version'),0) AS INTEGER)),0)+1 FROM assets WHERE kind='text' AND json_extract(metadata,'$.params.documentId')=?",
+                    [&request.document_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| format!("分配文档版本失败: {error}"))?;
+            let mut params = request.params.clone();
+            let object = params
+                .as_object_mut()
+                .ok_or_else(|| "文档 params 必须是对象".to_string())?;
+            object.insert("documentId".to_string(), json!(request.document_id));
+            object.insert("version".to_string(), json!(version));
+            object.insert("text".to_string(), json!(text));
+            object.insert("title".to_string(), json!(label));
+            // Branch identity is a backend invariant. Do not trust callers to
+            // keep allowBranch and params.videoBranch consistent.
+            object.insert("videoBranch".to_string(), json!(request.allow_branch));
+            let metadata = serde_json::to_string(&json!({
+                "source": label,
+                "model": request.model,
+                "projectId": request.project_id,
+                "params": params,
+            }))
+            .map_err(|error| format!("序列化文档历史失败: {error}"))?;
+            connection
+                .execute(
+                    "INSERT INTO assets (id,kind,path,width,height,duration_s,format,created_at,metadata) VALUES (?,?,?,?,?,?,?,?,?)",
+                    rusqlite::params![asset.id, asset.kind, asset.path, asset.width, asset.height, asset.duration_s, asset.format, chrono::Utc::now().timestamp_millis(), metadata],
+                )
+                .map_err(|error| format!("写入文档版本失败: {error}"))?;
+            Ok((params, version))
+        })();
+        match operation {
+            Ok(value) => {
+                connection
+                    .execute_batch("COMMIT")
+                    .map_err(|error| format!("提交文档版本失败: {error}"))?;
+                Ok(value)
+            }
+            Err(error) => {
+                let _ = connection.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    });
+    match result {
+        Ok((params, version)) => Ok(DocumentVersionSaveResult {
+            asset,
+            params,
+            version,
+        }),
+        Err(error) => {
+            let _ = std::fs::remove_file(&asset_path);
+            Err(error)
+        }
+    }
 }
 
 /// 保存前端 mediabunny 处理后的媒体（拼接/混音结果），返回资产引用。
@@ -852,8 +978,57 @@ pub(crate) async fn list_image_models_with_config(
 }
 
 #[tauri::command]
-pub fn list_video_models() -> Vec<String> {
-    config::known_video_models()
+pub async fn list_video_models(state: tauri::State<'_, AppState>) -> Result<Vec<String>, String> {
+    let cfg = state.cfg.read().unwrap().clone();
+    list_video_models_with_config(&cfg).await
+}
+
+pub(crate) async fn list_video_models_with_config(
+    cfg: &crate::config::ConfigState,
+) -> Result<Vec<String>, String> {
+    let Some(url) = config::models_endpoint(&cfg.video_api_url) else {
+        return Ok(config::known_video_models());
+    };
+    if cfg.video_api_key.trim().is_empty() {
+        return Ok(config::known_video_models());
+    }
+    let client = reqwest::Client::new();
+    let response = client
+        .get(&url)
+        .bearer_auth(&cfg.video_api_key)
+        .timeout(Duration::from_secs(20))
+        .send()
+        .await
+        .map_err(|error| format!("读取视频模型目录失败: {error}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!(
+            "视频模型目录返回 {status}，请检查视频 API Key、权限和 Base URL"
+        ));
+    }
+    let json = response
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|error| format!("解析视频模型目录失败: {error}"))?;
+    let models = json
+        .get("data")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item.get("id").and_then(serde_json::Value::as_str))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if models.is_empty() {
+        return Err(
+            "视频模型目录为空，请确认使用的是视频 API Key，并检查权限和 Base URL".to_string(),
+        );
+    }
+    Ok(models)
+}
+
+#[tauri::command]
+pub fn list_video_model_capabilities() -> Vec<crate::video::VideoModelCapability> {
+    crate::video::model_capabilities()
 }
 
 #[tauri::command]
@@ -873,7 +1048,10 @@ pub async fn run_video(
         duration_s: crate::util::get_u32(&req.config, "duration_s").unwrap_or(5),
         aspect_ratio: crate::util::get_str(&req.config, "aspect_ratio"),
         resolution: crate::util::get_str(&req.config, "resolution"),
-        reference: crate::util::get_str(&req.config, "referencePath"),
+        mode: crate::util::get_str(&req.config, "mode"),
+        images: string_array(&req.config, "images"),
+        videos: string_array(&req.config, "videos"),
+        audios: string_array(&req.config, "audios"),
     };
     if vr.prompt.trim().is_empty() {
         return Err("缺少提示词".into());
@@ -881,6 +1059,19 @@ pub async fn run_video(
 
     let assets = crate::video::generate_segments(&cfg, &vr, &dir).await?;
     Ok(RunResult { assets })
+}
+
+fn string_array(value: &serde_json::Value, key: &str) -> Vec<String> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 #[tauri::command]
@@ -1333,8 +1524,59 @@ fn run_tag(config: &serde_json::Value) -> String {
 mod tests {
     use super::{
         cleanup_video_segments_with_config, original_stem, promptlib_image_filename,
-        strip_thinking, validate_agent_request, validate_agent_tools, ToolDef,
+        save_document_version_with_config, strip_thinking, validate_agent_request,
+        validate_agent_tools, DocumentVersionSaveRequest, ToolDef,
     };
+    use serde_json::json;
+    use std::path::Path;
+    use std::sync::{Arc, Barrier};
+
+    fn test_config(root: &Path) -> crate::config::ConfigState {
+        crate::config::ConfigState {
+            image_api_url: String::new(),
+            image_api_key: String::new(),
+            image_model: "image".into(),
+            video_api_url: String::new(),
+            video_api_key: String::new(),
+            video_model: "video".into(),
+            llm_api_url: String::new(),
+            llm_api_key: String::new(),
+            llm_model: "llm".into(),
+            output_dir: root.join("output").display().to_string(),
+            source: "test".into(),
+        }
+    }
+
+    fn document_request(
+        document_id: &str,
+        text: &str,
+        expected_head_asset_id: Option<String>,
+        allow_branch: bool,
+    ) -> DocumentVersionSaveRequest {
+        DocumentVersionSaveRequest {
+            label: "视频剧本".into(),
+            text: text.into(),
+            model: Some("test-llm".into()),
+            project_id: Some("project-test".into()),
+            document_id: document_id.into(),
+            // Deliberately lie here for branch requests: the backend must
+            // derive branch identity from allow_branch instead of trusting it.
+            params: json!({ "documentType": "video_script", "videoBranch": false }),
+            expected_head_asset_id,
+            allow_branch,
+        }
+    }
+
+    fn count_files(root: &Path) -> usize {
+        if !root.exists() {
+            return 0;
+        }
+        std::fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .map(|path| if path.is_dir() { count_files(&path) } else { 1 })
+            .sum()
+    }
 
     fn tool(name: &str) -> ToolDef {
         ToolDef {
@@ -1458,6 +1700,120 @@ mod tests {
         assert!(!segment.exists());
         assert!(keep.exists());
         assert!(outside.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn document_version_cas_allows_exactly_one_concurrent_head_and_cleans_loser_file() {
+        let root = std::env::temp_dir().join(format!(
+            "image-client-document-cas-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let database = Arc::new(crate::db::DbState::open(root.join("history.db")).unwrap());
+        let config = Arc::new(test_config(&root));
+        let barrier = Arc::new(Barrier::new(2));
+        let mut workers = Vec::new();
+        for text in ["并发版本 A", "并发版本 B"] {
+            let database = Arc::clone(&database);
+            let config = Arc::clone(&config);
+            let barrier = Arc::clone(&barrier);
+            workers.push(std::thread::spawn(move || {
+                barrier.wait();
+                save_document_version_with_config(
+                    &config,
+                    &database,
+                    document_request("video:script:concurrent", text, None, false),
+                )
+            }));
+        }
+        let results = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        assert_eq!(results.iter().filter(|result| result.is_err()).count(), 1);
+        assert!(results
+            .iter()
+            .filter_map(|result| result.as_ref().err())
+            .any(|error| error.contains("版本冲突")));
+
+        crate::db::with_connection(&database, |connection| {
+            let (rows, version): (i64, i64) = connection
+                .query_row(
+                    "SELECT COUNT(*), MAX(CAST(json_extract(metadata,'$.params.version') AS INTEGER)) FROM assets WHERE json_extract(metadata,'$.params.documentId')=?",
+                    ["video:script:concurrent"],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(|error| error.to_string())?;
+            assert_eq!(rows, 1);
+            assert_eq!(version, 1);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(count_files(&root.join("output")), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn historical_branch_from_old_parent_does_not_replace_production_head() {
+        let root = std::env::temp_dir().join(format!(
+            "image-client-document-branch-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let database = crate::db::DbState::open(root.join("history.db")).unwrap();
+        let config = test_config(&root);
+        let first = save_document_version_with_config(
+            &config,
+            &database,
+            document_request("video:script:branch", "生产版一", None, false),
+        )
+        .unwrap();
+        let second = save_document_version_with_config(
+            &config,
+            &database,
+            document_request(
+                "video:script:branch",
+                "生产版二",
+                Some(first.asset.id.clone()),
+                false,
+            ),
+        )
+        .unwrap();
+        let branch = save_document_version_with_config(
+            &config,
+            &database,
+            document_request(
+                "video:script:branch",
+                "从旧父版本创建的历史分支",
+                Some(first.asset.id.clone()),
+                true,
+            ),
+        )
+        .unwrap();
+
+        assert_eq!((first.version, second.version, branch.version), (1, 2, 3));
+        crate::db::with_connection(&database, |connection| {
+            let production_head: String = connection
+                .query_row(
+                    "SELECT id FROM assets WHERE json_extract(metadata,'$.params.documentId')=? AND COALESCE(json_extract(metadata,'$.params.videoBranch'),0) != 1 ORDER BY CAST(json_extract(metadata,'$.params.version') AS INTEGER) DESC LIMIT 1",
+                    ["video:script:branch"],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            let branch_flag: i64 = connection
+                .query_row(
+                    "SELECT CAST(json_extract(metadata,'$.params.videoBranch') AS INTEGER) FROM assets WHERE id=?",
+                    [&branch.asset.id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            assert_eq!(production_head, second.asset.id);
+            assert_eq!(branch_flag, 1);
+            Ok(())
+        })
+        .unwrap();
         let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -6,11 +6,24 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: "0"
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
 
 jobs:
+  # Verification and native packaging intentionally start together. Bundles are
+  # kept as workflow artifacts until verification succeeds, so a failed test
+  # can never publish a partial GitHub Release.
   verify:
     runs-on: ubuntu-22.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v4
@@ -21,9 +34,13 @@ jobs:
           node-version: 24
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.11
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          cache-targets: false
+          shared-key: release-dependencies-linux-x64
+          add-job-id-key: false
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
@@ -33,24 +50,37 @@ jobs:
       - run: pnpm test
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
 
-  publish:
-    needs: verify
+  build:
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: windows-latest
+            artifact: windows-x64
             args: --bundles nsis
+            artifact_path: src-tauri/target/release/bundle/nsis/*.exe
+            cache_key: windows-x64
           - platform: ubuntu-22.04
+            artifact: linux-x64
             args: --bundles appimage,deb
+            artifact_path: |
+              src-tauri/target/release/bundle/appimage/*.AppImage
+              src-tauri/target/release/bundle/deb/*.deb
+            cache_key: linux-x64
           - platform: macos-latest
+            artifact: macos-arm64
             target: aarch64-apple-darwin
             args: --target aarch64-apple-darwin --bundles dmg
+            artifact_path: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+            cache_key: macos-arm64
           - platform: macos-15-intel
+            artifact: macos-x64
             target: x86_64-apple-darwin
             args: --target x86_64-apple-darwin --bundles dmg
+            artifact_path: src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
+            cache_key: macos-x64
     runs-on: ${{ matrix.platform }}
-
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v4
@@ -63,32 +93,57 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      - uses: mozilla-actions/sccache-action@v0.0.11
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-
+          cache-targets: false
+          shared-key: release-dependencies-${{ matrix.cache_key }}
+          add-job-id-key: false
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
-
       - run: pnpm install --frozen-lockfile
-
       - name: Configure unsigned macOS bundle
         if: runner.os == 'macOS'
         run: echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
-
-      - uses: tauri-apps/tauri-action@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build native bundle
+        run: pnpm tauri build --ci ${{ matrix.args }}
+      - name: Upload native bundle
+        uses: actions/upload-artifact@v7
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: Image-Client ${{ github.ref_name }}
-          releaseBody: |
-            跨平台安装包见下方附件。此版本未进行商业代码签名，系统首次打开时可能显示安全提示。
+          name: release-${{ matrix.artifact }}
+          path: ${{ matrix.artifact_path }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
 
-            完整变更请查看仓库中的 CHANGELOG.md。
-          releaseDraft: false
-          prerelease: false
-          args: ${{ matrix.args }}
+  release:
+    needs: [verify, build]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: release-artifacts
+      - name: Publish one complete GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          cat > release-notes.md <<'NOTES'
+          跨平台安装包见下方附件。此版本未进行商业代码签名，系统首次打开时可能显示安全提示。
+
+          完整变更请查看仓库中的 CHANGELOG.md。
+          NOTES
+          mapfile -d '' assets < <(find release-artifacts -type f -print0)
+          test "${#assets[@]}" -eq 5
+          gh release create "${GITHUB_REF_NAME}" "${assets[@]}" \
+            --title "Image-Client ${GITHUB_REF_NAME}" \
+            --notes-file release-notes.md \
+            --verify-tag

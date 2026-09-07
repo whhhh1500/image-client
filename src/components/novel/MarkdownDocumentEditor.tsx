@@ -3,9 +3,9 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { comicMdDocumentSave, comicMdDocumentHistory, comicMdExport, comicMdOptimize, mdLabels, mdTemplate, mdReady, type MdDocument, type MdHistory, type MdKind, type MdScope, type MdJob } from "../../lib/comic/markdownApi";
 import { button, primary, field, draftKey, hasMdDraftChanges, savedDraftChanged, useLocalValue, type MdDraft } from "./mdWorkspaceState";
 
-export default function MarkdownDocumentEditor({ scope, kind, pageNo, document, pageDocuments, missingPageNos, jobs, refresh, renderingDisabled, onRender, injection }: {
+export default function MarkdownDocumentEditor({ scope, kind, pageNo, document, pageDocuments, workspaceDocuments, missingPageNos, jobs, refresh, renderingDisabled, onRender, injection }: {
   scope: MdScope; kind: MdKind; pageNo?: number; document?: MdDocument; pageDocuments: MdDocument[];
-  missingPageNos: number[]; refresh: () => Promise<void>; renderingDisabled: boolean; onRender: (documents: MdDocument[]) => Promise<void>; injection: string; jobs: MdJob[];
+  workspaceDocuments: MdDocument[]; missingPageNos: number[]; refresh: () => Promise<void>; renderingDisabled: boolean; onRender: (documents: MdDocument[]) => Promise<void>; injection: string; jobs: MdJob[];
 }) {
   const [draft, update, storageError] = useLocalValue<MdDraft | null>(draftKey(scope, kind, pageNo), null);
   const [history, setHistory] = useState<MdHistory[]>([]);
@@ -89,13 +89,22 @@ export default function MarkdownDocumentEditor({ scope, kind, pageNo, document, 
   const save = () => perform(async () => { const saved = await persistVisible(canAcknowledge); setMessage(saved.stale ? "文字与优化要求已保存，仍有依赖需要更新，请查看更新原因。" : saved.issues.length ? "文字与优化要求已保存，请补齐必要内容后继续。" : "文字与优化要求已保存。"); });
   const obsoleteAll = optimizeAll && !!document?.outOfPlan;
   const missingAll = optimizeAll && kind === "page_prompt" ? [...missingPageNos].sort((a, b) => a - b) : [];
-  const otherDirty = optimizeAll && kind === "page_prompt" ? pageDocuments.find((doc) => !doc.outOfPlan && doc.id !== document?.id && savedDraftChanged(scope, doc)) : undefined;
+  const stageRank = (documentKind: MdKind) => documentKind === "settings" ? 0 : documentKind === "script" ? 1 : documentKind === "storyboard" ? 2 : 3;
+  const cascadeDocuments = optimizeAll && kind === "page_prompt"
+    ? pageDocuments.filter((doc) => !doc.outOfPlan)
+    : workspaceDocuments.filter((doc) => {
+        if (doc.outOfPlan) return false;
+        if (kind === "page_prompt") return doc.kind === "page_prompt" && (doc.pageNo ?? 0) >= (pageNo ?? 0);
+        return stageRank(doc.kind) >= stageRank(kind);
+      });
+  const otherDirty = cascadeDocuments.find((doc) => doc.id !== document?.id && savedDraftChanged(scope, doc));
+  const otherDirtyLabel = otherDirty?.kind === "page_prompt" ? `第${otherDirty.pageNo}页` : otherDirty ? mdLabels[otherDirty.kind] : "";
   const optimize = () => perform(async () => {
     const submittedEpoch = interactionEpoch.current;
     if (renderingDisabled || !instruction.trim()) return;
     if (obsoleteAll) throw new Error("本页不在当前分镜中，请回到有效页后再优化全部页。");
     if (missingAll.length) throw new Error(`分镜仍缺少第${missingAll.join("、")}页 Prompt，请先补齐后再优化全部页。`);
-    if (otherDirty) throw new Error(`第${otherDirty.pageNo}页有未保存修改或版本冲突，请先保存该页再优化全部页。`);
+    if (otherDirty) throw new Error(`${otherDirtyLabel}有未保存修改或版本冲突，请先处理后再联动优化。`);
     const submittedInstruction = instruction;
     // Freeze all other heads before saving this editor; the saved revision replaces only this target.
     const others = optimizeAll && kind === "page_prompt" ? pageDocuments.filter((doc) => !doc.outOfPlan && doc.id !== document?.id).map((doc) => ({ documentId: doc.id, revision: doc.revision, pageNo: doc.pageNo ?? 0 })) : [];
@@ -133,12 +142,12 @@ export default function MarkdownDocumentEditor({ scope, kind, pageNo, document, 
     </div>
     <div className="flex flex-wrap items-end gap-2">
       <label className="min-w-52 flex-1 text-sm text-slate-300">AI 优化要求<textarea aria-label="AI 优化要求" className={`${field} mt-1 min-h-20 w-full`} value={instruction} onChange={(event) => edit({ optimizationInstruction: event.target.value })} placeholder="例如：加强人物动作和冲突，保持人物外貌与剧情一致" /></label>
-      {kind === "page_prompt" && <label className="flex items-center gap-2 py-2 text-sm text-slate-300"><input type="checkbox" disabled={!!document?.outOfPlan} checked={optimizeAll} onChange={(event) => setOptimizeAll(event.target.checked)} />优化全部页</label>}
+      {kind === "page_prompt" && <label className="flex items-center gap-2 py-2 text-sm text-slate-300"><input aria-label="优化全部页" type="checkbox" disabled={!!document?.outOfPlan} checked={optimizeAll} onChange={(event) => setOptimizeAll(event.target.checked)} />包括本章前面的页</label>}
       <button className={primary} disabled={busy || renderingDisabled || !instruction.trim() || !!otherDirty || obsoleteAll || !!missingAll.length} onClick={() => void optimize()}>AI 优化</button>
     </div>
-    <p className="text-sm text-slate-500">优化要求随文字版本保存。AI 优化会先保存当前编辑，再调用文本模型；可能计费，不会自动画图。{optimizeAll && kind === "page_prompt" && " 同一要求将逐页优化本章当前分镜中所有已保存页。"}</p>
+    <p className="text-sm text-slate-500">优化要求随文字版本保存。AI 会先保存当前编辑，再按依赖顺序直接更新当前产物及已有下游文字产物；每份产物保存为新版本，不停在“需更新”标记。可能多次调用文本模型并计费，不会自动重画图片。{kind === "page_prompt" ? optimizeAll ? " 当前选择会优化本章全部有效页。" : " 默认从当前页向后联动，勾选后也包含前面的页。" : ""}</p>
     {document?.outOfPlan && kind === "page_prompt" && <p className="text-sm text-amber-200">本页不在当前分镜中，如需优化全部页，请回到当前分镜中的有效页。</p>}
-    {otherDirty && <p role="alert" className="text-sm text-amber-200">第{otherDirty.pageNo}页有未保存修改或版本冲突，请先保存该页再优化全部页。</p>}
+    {otherDirty && <p role="alert" className="text-sm text-amber-200">{otherDirtyLabel}有未保存修改或版本冲突，请先处理，避免联动优化覆盖其保存基线。</p>}
     {!!missingAll.length && <p role="alert" className="text-sm text-amber-200">分镜仍缺少第{missingAll.join("、")}页 Prompt，请先补齐后再优化全部页。</p>}
     {kind === "page_prompt" && <p className="text-sm text-slate-400">本章生图注入优先于页 Prompt 中相冲突的要求：{injection || "未设置"}。可在“漫画”中修改，所有生图入口统一应用。</p>}
     {kind === "page_prompt" && (renderingDisabled || dirty || !mdReady(document)) && <p className="text-sm text-amber-200">{document?.outOfPlan ? "本页不在当前分镜中，不能生成漫画。" : renderingDisabled ? "当前已有任务进行中，请完成后再出图。" : liveDirty && selectedVersion !== null ? "当前草稿有未保存修改，请返回当前草稿先处理。" : historicalDirty ? "请先采用此版本并保存，再生成漫画。" : dirty || !document ? "请先保存这页 Prompt 和优化要求，再生成漫画。" : document.stale ? "请先更新这页 Prompt，再生成漫画。" : "请补齐上方列出的必要内容，再生成漫画。"}</p>}

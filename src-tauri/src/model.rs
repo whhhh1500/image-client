@@ -60,19 +60,26 @@ pub const IMAGE_MODELS: &[&str] = &[
     "grok-imagine-image",
 ];
 
-/// Video model catalogue (the gateway `/v1/models` returns empty for the video
-/// key, so these come from the provider's advertised list).
+/// Offline video model catalogue used only before a video API is configured.
+/// Once configured, `/v1/models` is authoritative and failures are surfaced.
 pub const VIDEO_MODELS: &[&str] = &[
+    "video-ds-2.5",
+    "video-ds-2.5-480",
+    "minimax-h3",
+    "minimax-h3-2k",
+    "minimax-h3-4k",
     "grok-imagine-video",
     "grok-imagine-video-1.5-preview",
     "kling-video-v3",
     "kling-video-v3-omni",
     "kling-video-v3-turbo",
+    "drama-video-v2",
+    "drama-video-v2-fast",
     "seedance2.5",
-    "minimax-h3",
     "as-sd2.0-fast",
     "video-ds-2.0",
     "video-ds-2.0-fast",
+    "wan3-720p",
 ];
 
 pub const LLM_MODELS: &[&str] = &[

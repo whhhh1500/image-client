@@ -11,6 +11,8 @@ export const IMAGE_MODELS = [
 ];
 
 export const VIDEO_MODELS = [
+  "video-ds-2.5",
+  "video-ds-2.5-480",
   "grok-imagine-video",
   "grok-imagine-video-1.5-preview",
   "kling-video-v3",
@@ -18,9 +20,14 @@ export const VIDEO_MODELS = [
   "kling-video-v3-turbo",
   "seedance2.5",
   "minimax-h3",
+  "minimax-h3-2k",
+  "minimax-h3-4k",
+  "drama-video-v2",
+  "drama-video-v2-fast",
   "as-sd2.0-fast",
   "video-ds-2.0",
   "video-ds-2.0-fast",
+  "wan3-720p",
 ];
 
 // 文本大模型（生产 Agent 用），默认 gemini-3.7-flash。
