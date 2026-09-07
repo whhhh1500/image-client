@@ -38,7 +38,9 @@ const MIGRATION_V23: &str = include_str!("../migrations/0023_comic_markdown.sql"
 const MIGRATION_V24: &str = include_str!("../migrations/0024_comic_markdown_optimization.sql");
 const MIGRATION_V25: &str =
     include_str!("../migrations/0025_comic_markdown_rerun_prompt_injection.sql");
-const SCHEMA_VERSION: i64 = 25;
+const MIGRATION_V26: &str =
+    include_str!("../migrations/0026_comic_markdown_work_visual_profile.sql");
+const SCHEMA_VERSION: i64 = 26;
 const ALLOWED_TABLES: &[&str] = &["assets", "tasks", "settings", "workflows"];
 const MAX_QUERY_CHARS: usize = 8_192;
 const MAX_BIND_VALUES: usize = 128;
@@ -185,6 +187,9 @@ fn migrate(connection: &Connection) -> Result<(), String> {
     }
     if current < 25 {
         run_migration(connection, MIGRATION_V25, 25, "v25")?;
+    }
+    if current < 26 {
+        run_migration(connection, MIGRATION_V26, 26, "v26")?;
     }
     Ok(())
 }
@@ -1644,7 +1649,7 @@ mod tests {
         drop(connection);
         let db=DbState::open(path.clone()).unwrap();
         with_connection(&db,|c| {
-            assert_eq!(schema_version(c).unwrap(),25);
+            assert_eq!(schema_version(c).unwrap(),26);
             let metadata:(String,String,String,String,String)=c.query_row("SELECT d.markdown,d.optimization_instruction,r.optimization_instruction,i.prompt_injection,i.rerun_prompt_injection FROM comic_md_documents d JOIN comic_md_revisions r ON r.document_id=d.id JOIN comic_md_images i ON i.document_id=d.id WHERE d.id='old-md'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).unwrap();
             assert_eq!(metadata,("旧版 Markdown 原文".into(),String::new(),String::new(),String::new(),String::new()));
             let options:i64=c.query_row("SELECT count(*) FROM comic_md_render_options",[],|r|r.get(0)).unwrap();assert_eq!(options,0);
@@ -1681,7 +1686,7 @@ mod tests {
 
         let db = DbState::open(path.clone()).unwrap();
         with_connection(&db, |connection| {
-            assert_eq!(schema_version(connection).unwrap(), 25);
+            assert_eq!(schema_version(connection).unwrap(), 26);
             let image: (String, String, String) = connection
                 .query_row(
                     "SELECT path,prompt_injection,rerun_prompt_injection FROM comic_md_images WHERE id='old-image'",
@@ -1690,6 +1695,10 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(image, ("old.png".into(), "本章旧注入".into(), String::new()));
+            let profile_tables: i64 = connection
+                .query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('comic_md_work_visual_profiles','comic_md_work_visual_references')", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(profile_tables, 2);
             Ok(())
         })
         .unwrap();

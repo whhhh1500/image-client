@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock("../logger", () => ({ loggedInvoke: invoke }));
-import { comicMdDocumentSave, comicMdGenerate, comicMdRender, comicMdOptimize, comicMdSync, comicMdRenderOptionsSave, comicMdDocumentHistory, comicMdExport, comicMdWorkspaceGet, mdStageBlock, type MdWorkspace } from "./markdownApi";
+import { comicMdDocumentSave, comicMdGenerate, comicMdRender, comicMdOptimize, comicMdSync, comicMdRenderOptionsSave, comicMdDocumentHistory, comicMdExport, comicMdWorkspaceGet, comicMdWorkVisualExtract, comicMdWorkVisualImport, comicMdWorkVisualSave, mdStageBlock, type MdWorkspace } from "./markdownApi";
 const scope = { projectId: "p", novelWorkId: "w", chapterId: "c" };
 describe("Markdown IPC", () => {
   beforeEach(() => invoke.mockReset());
@@ -24,6 +24,17 @@ describe("Markdown IPC", () => {
     await comicMdWorkspaceGet(scope); await comicMdDocumentHistory({ ...scope, documentId: "d" }); await comicMdExport({ ...scope, documentIds: ["d"] });
     expect(invoke.mock.calls.map((call) => call[0])).toEqual(["comic_md_workspace_get", "comic_md_document_history", "comic_md_export"]);
     expect(invoke.mock.calls.every((call) => call[1].input.chapterId === "c")).toBe(true);
+  });
+  it("keeps work visual import, save and multimodal extraction at project plus novel-work scope", async () => {
+    const work = { projectId: "p", novelWorkId: "w" };
+    await comicMdWorkVisualImport({ ...work, paths: ["D:/reference.png"] });
+    await comicMdWorkVisualSave({ ...work, constitutionMarkdown: "## 画风\n水墨", references: [{ assetId: "a", role: "style", weight: 0.7, sortOrder: 0 }], expectedRevision: 2 });
+    await comicMdWorkVisualExtract({ ...work, expectedRevision: 3, instruction: "只参考线条" });
+    expect(invoke.mock.calls).toEqual([
+      ["comic_md_work_visual_import", { input: { ...work, paths: ["D:/reference.png"] } }],
+      ["comic_md_work_visual_save", { input: { ...work, constitutionMarkdown: "## 画风\n水墨", references: [{ assetId: "a", role: "style", weight: 0.7, sortOrder: 0 }], expectedRevision: 2 } }],
+      ["comic_md_work_visual_extract", { input: { ...work, expectedRevision: 3, instruction: "只参考线条" } }],
+    ]);
   });
   it("preserves optimization instruction and revision-bound target envelopes", async () => {
     await comicMdDocumentSave({ ...scope, kind: "script", markdown: "剧本", optimizationInstruction: "要求\n原样", expectedRevision: 4 });

@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import StatusBar from "./StatusBar";
+import StatusBar, { ZZONE_INVITE_URL } from "./StatusBar";
 
-vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: vi.fn() }));
+const opener = vi.hoisted(() => ({ openPath: vi.fn(), openUrl: vi.fn() }));
+vi.mock("@tauri-apps/plugin-opener", () => opener);
 vi.mock("../lib/ipc", async (importOriginal) => {
   const original = await importOriginal<typeof import("../lib/ipc")>();
   return { ...original, logsDir: vi.fn() };
@@ -31,4 +32,22 @@ it("opens the guide and changelog from the right side of the status bar", () => 
 
   expect(onOpenGuide).toHaveBeenCalledOnce();
   expect(onOpenChangelog).toHaveBeenCalledOnce();
+});
+
+it("opens the active ZZone gateway invitation in the system browser", () => {
+  opener.openUrl.mockResolvedValue(undefined);
+  render(
+    <StatusBar
+      appInfo={null}
+      dbReady
+      configStatus={null}
+      providers={[{ id: "zzone", name: "ZZone 网关", active: true, capabilities: ["image"] }]}
+      onOpenSettings={vi.fn()}
+      onOpenGuide={vi.fn()}
+      onOpenChangelog={vi.fn()}
+    />,
+  );
+
+  fireEvent.click(screen.getByRole("button", { name: "ZZone 网关" }));
+  expect(opener.openUrl).toHaveBeenCalledWith(ZZONE_INVITE_URL);
 });

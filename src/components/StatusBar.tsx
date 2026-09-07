@@ -1,8 +1,10 @@
 import { BookOpenText, History } from "lucide-react";
 import type { AppInfo, ConfigStatus, ProviderInfo } from "../lib/ipc";
 import { logsDir } from "../lib/ipc";
-import { openPath } from "@tauri-apps/plugin-opener";
+import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import { logEvent } from "../lib/logger";
+
+export const ZZONE_INVITE_URL = "https://oenai.cc.cd/j/i1.cmVzZWxsZXIAZmQxeVp2TEY1V3hJb0JWeDltNDYwYlpS.cn5C6uhqhbNTFeR46uZf1TPAP-3Uf7-zsIcsDZovdK8";
 
 function item(ok: boolean, label: string, extra?: string) {
   return (
@@ -33,7 +35,8 @@ export default function StatusBar({
   onOpenGuide: () => void;
   onOpenChangelog: () => void;
 }) {
-  const activeName = providers?.find((p) => p.active)?.name ?? "";
+  const activeProvider = providers?.find((p) => p.active);
+  const activeName = activeProvider?.name ?? "";
   return (
     <footer className="flex items-center gap-5 overflow-x-auto border-t border-slate-800 bg-slate-900/70 px-4 py-1.5 text-[11px] text-slate-400">
       {item(!!appInfo, "后端", appInfo ? `v${appInfo.version}` : "连接中…")}
@@ -57,7 +60,7 @@ export default function StatusBar({
         日志
       </button>
       <div className="ml-auto flex shrink-0 items-center gap-3">
-        {activeName && <span className="max-w-40 truncate text-slate-500">{activeName}</span>}
+        {activeProvider?.id === "zzone" ? <button type="button" onClick={() => void openUrl(ZZONE_INVITE_URL).catch((error) => logEvent("error", "provider.invite_open_failed", { providerId: "zzone", error: String(error) }))} className="max-w-40 truncate text-slate-500 transition hover:text-cyan-200" title="用默认浏览器打开 ZZone 网关邀请页面">{activeName}</button> : activeName ? <span className="max-w-40 truncate text-slate-500">{activeName}</span> : null}
         {activeName && <span className="h-3 w-px bg-slate-700/70" aria-hidden="true" />}
         <button type="button" onClick={onOpenGuide} className="flex items-center gap-1 text-slate-500 hover:text-slate-200">
           <BookOpenText size={12} /> 使用文档

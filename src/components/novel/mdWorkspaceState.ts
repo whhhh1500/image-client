@@ -77,7 +77,8 @@ export function selectRenderPages(scope: MdScope, workspace: MdWorkspace, select
     const doc = matches[0];
     const blocked = pageBlock(scope, [doc]);
     if (blocked) return { documents: [], reason: blocked };
-    const currentImage = !doc.stale && workspace.images.some((image) => image.fileAvailable !== false && imageMatchesDocument(image, doc) && (image.promptInjection ?? "") === injection);
+    const visualRevision = workspace.workVisualProfile?.revision ?? 0;
+    const currentImage = !doc.stale && workspace.images.some((image) => image.fileAvailable !== false && imageMatchesDocument(image, doc) && (image.promptInjection ?? "") === injection && (image.visualProfileRevision ?? 0) === visualRevision);
     if (selection !== "remaining" || !currentImage) documents.push(doc);
   }
   return { documents, reason: documents.length ? pageBlock(scope, documents) : "所有页面均已有当前版本与当前注入对应的漫画。" };

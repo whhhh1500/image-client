@@ -2,11 +2,14 @@ import { useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useProjectStore } from "../../store/useProjectStore";
+import { useLibraryStore } from "../../store/useLibraryStore";
 import { useComicMdWorkspace } from "../../store/useComicMdWorkspace";
 import { novelWorkList, novelWorkCreate, novelWorkGet, novelChapterRevisionCreate, newNovelIdempotencyKey, type NovelWork, type NovelChapter } from "../../lib/novel/api";
-import { comicMdExport, comicMdGenerate, comicMdRender, comicMdRenderOptionsSave, comicMdSync, mdLabels, mdStageBlock, type MdDocument, type MdScope, type MdStage, type MdWorkspace } from "../../lib/comic/markdownApi";
+import { comicMdExport, comicMdGenerate, comicMdRender, comicMdRenderOptionsSave, comicMdSync, comicMdWorkVisualExtract, comicMdWorkVisualSave, mdLabels, mdStageBlock, type MdDocument, type MdScope, type MdStage, type MdStyleReference, type MdWorkspace } from "../../lib/comic/markdownApi";
+import { comicStyleReferenceKey, isComicStyleReferenceCandidate, normalizeComicStyleReferences } from "../../lib/comic/styleReferences";
 import MarkdownDocumentEditor from "./MarkdownDocumentEditor";
 import MarkdownSyncNotice from "./MarkdownSyncNotice";
+import ComicStyleReferencePanel from "./ComicStyleReferencePanel";
 import { button, primary, field, scopeKey, useLocalValue, selectRenderPages, pageBlock, syncDraftBlock, type RenderSelection } from "./mdWorkspaceState";
 
 export default function MarkdownComicWorkspace() {
@@ -114,12 +117,17 @@ type View = "source" | "settings" | "script" | "storyboard" | "page_prompt" | "i
 const views: { id: View; label: string }[] = [{ id: "source", label: "正文" }, { id: "settings", label: "作品设定" }, { id: "script", label: "本章剧本" }, { id: "storyboard", label: "分页分镜" }, { id: "page_prompt", label: "每页 Prompt" }, { id: "images", label: "漫画" }];
 function ChapterWorkspace({ scope, chapter, refreshChapters, onChooseChapter }: { scope: MdScope; chapter: NovelChapter; refreshChapters: () => Promise<void>; onChooseChapter: (chapterId: string) => void }) {
   const { workspace, error, refresh } = useComicMdWorkspace(scope);
+  const libraryAssets = useLibraryStore((state) => state.assets);
   const [view, setView] = useState<View>("source");
   const [pageNo, setPageNo] = useState(1);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [exportPath, setExportPath] = useState("");
   const [injectionDraft, setInjectionDraft, injectionStorageError] = useLocalValue<{ promptInjection: string; expectedRevision: number } | null>(`comic-md:injection:${scopeKey(scope)}`, null);
+  const styleReferenceStorageKey = comicStyleReferenceKey(scope);
+  const [styleReferenceDraft, setStyleReferenceDraft, styleReferenceStorageError] = useLocalValue<MdStyleReference[] | null>(styleReferenceStorageKey, null);
+  const [constitutionDraft, setConstitutionDraft, constitutionStorageError] = useLocalValue<string | null>(`comic-md:visual-constitution:${scope.projectId}:${scope.novelWorkId}`, null);
+  const [visualConflict, setVisualConflict] = useState(false);
   const injectionRef = useRef(injectionDraft); injectionRef.current = injectionDraft;
   const actionBusy = useRef(false);
   const active = useRef(true);
@@ -128,7 +136,13 @@ function ChapterWorkspace({ scope, chapter, refreshChapters, onChooseChapter }: 
     if (actionBusy.current) return;
     actionBusy.current = true;
     setBusy(true); setMessage("");
-    try { await action(); await refresh(); } catch (cause) { if (active.current) setMessage(String(cause)); } finally { actionBusy.current = false; if (active.current) setBusy(false); }
+    let actionError = "";
+    try { await action(); } catch (cause) { actionError = String(cause); if (active.current) setMessage(actionError); }
+    finally {
+      try { await refresh(); } catch (cause) { if (active.current && !actionError) setMessage(String(cause)); }
+      actionBusy.current = false;
+      if (active.current) setBusy(false);
+    }
   };
   if (!workspace) return <div className="p-6 text-sm text-slate-400">{error || "正在读取文字与漫画…"}{error && <button className={button} onClick={() => void refresh()}>重新读取</button>}</div>;
   const running = workspace.jobs.some((job) => job.status === "running");
@@ -147,6 +161,66 @@ function ChapterWorkspace({ scope, chapter, refreshChapters, onChooseChapter }: 
   const renderOptions = workspace.renderOptions ?? { promptInjection: "", revision: 0 };
   const injection = injectionDraft?.promptInjection ?? renderOptions.promptInjection;
   const injectionDirty = !!injectionDraft && (injection !== renderOptions.promptInjection || injectionDraft.expectedRevision !== renderOptions.revision);
+  const visualProfile = workspace.workVisualProfile ?? { constitutionMarkdown: "", revision: 0, references: [] };
+  const constitution = constitutionDraft ?? visualProfile.constitutionMarkdown;
+  const savedStyleReferences = visualProfile.references.map((reference, index) => {
+    const path = reference.path || libraryAssets.find((asset) => asset.asset.id === reference.assetId)?.asset.path || "";
+    return { assetId: reference.assetId, path, label: path.split(/[\\/]/).pop() || `画风参考 ${index + 1}`, description: reference.note || undefined };
+  });
+  const styleReferences = normalizeComicStyleReferences(styleReferenceDraft ?? savedStyleReferences);
+  const referencesChanged = styleReferenceDraft !== null && (
+    styleReferences.length !== visualProfile.references.length
+    || styleReferences.some((reference, index) => reference.assetId !== visualProfile.references[index]?.assetId || (reference.description ?? "") !== (visualProfile.references[index]?.note ?? ""))
+  );
+  const invalidDraftReferences = referencesChanged ? styleReferences.filter((reference) => {
+    const asset = libraryAssets.find((item) => item.asset.id === reference.assetId);
+    return !asset || asset.asset.path !== reference.path || !isComicStyleReferenceCandidate(asset, scope);
+  }) : [];
+  const unavailableSavedReferences = referencesChanged ? [] : visualProfile.references.filter((reference) => !reference.fileAvailable);
+  const visualReferencesForSave = referencesChanged
+    ? styleReferences.map((reference, index) => ({ assetId: reference.assetId, role: "style", weight: 0.7, sortOrder: index, note: reference.description }))
+    : visualProfile.references.map((reference) => ({ assetId: reference.assetId, role: reference.role, weight: reference.weight, sortOrder: reference.sortOrder, note: reference.note }));
+  const visualDirty = constitution !== visualProfile.constitutionMarkdown || referencesChanged;
+  const saveWorkVisual = async () => {
+    if (!visualDirty) return visualProfile;
+    if (visualConflict) throw new Error("作品视觉设定存在版本冲突，请先选择保留当前草稿或加载服务器版本");
+    if (invalidDraftReferences.length) throw new Error(`有 ${invalidDraftReferences.length} 张画风参考尚未加载、已失效或不属于当前作品；请等待资源加载或主动移除后再保存`);
+    try {
+      const saved = await comicMdWorkVisualSave({
+        projectId: scope.projectId,
+        novelWorkId: scope.novelWorkId,
+        constitutionMarkdown: constitution,
+        references: visualReferencesForSave,
+        expectedRevision: visualProfile.revision,
+      });
+      if (active.current) {
+        setConstitutionDraft(null);
+        setStyleReferenceDraft(null);
+        setVisualConflict(false);
+      }
+      return saved;
+    } catch (cause) {
+      if (String(cause).includes("已有新版本")) {
+        if (active.current) setVisualConflict(true);
+        await refresh();
+      }
+      throw cause;
+    }
+  };
+  const ensureVisualReady = (profile = visualProfile) => {
+    const unavailable = profile.references.filter((reference) => !reference.fileAvailable);
+    if (unavailable.length) throw new Error(`有 ${unavailable.length} 张已保存的画风参考文件不可用，请移除或重新上传后再生成`);
+  };
+  const extractWorkVisual = () => run(async () => {
+    const saved = await saveWorkVisual();
+    ensureVisualReady(saved);
+    const instruction = styleReferences.flatMap((reference) => reference.description ? [`${reference.label}：${reference.description}`] : []).join("\n");
+    const result = await comicMdWorkVisualExtract({ projectId: scope.projectId, novelWorkId: scope.novelWorkId, expectedRevision: saved.revision, ...(instruction ? { instruction } : {}) });
+    if (active.current) {
+      setConstitutionDraft(result.constitutionMarkdown);
+      setMessage("已根据作品参考图生成可编辑的视觉宪法草稿；请检查后保存。");
+    }
+  });
   const saveInjection = async () => {
     if (!injectionDirty) return renderOptions;
     const submitted = injectionRef.current!;
@@ -160,11 +234,17 @@ function ChapterWorkspace({ scope, chapter, refreshChapters, onChooseChapter }: 
   const currentDoc = workspace.documents.find((doc) => doc.kind === view && (view !== "page_prompt" || doc.pageNo === pageNo));
   const stage = view === "page_prompt" ? "page_prompts" : view as MdStage;
   const blocked = view !== "source" && view !== "images" ? mdStageBlock(stage, workspace) : null;
-  const generate = () => run(() => comicMdGenerate({ ...scope, stage, expectedSourceRevisionId: workspace.sourceRevisionId! }));
+  const generate = () => run(async () => {
+    const saved = await saveWorkVisual();
+    ensureVisualReady(saved);
+    return comicMdGenerate({ ...scope, stage, expectedSourceRevisionId: workspace.sourceRevisionId! });
+  });
   const renderPages = (documents: MdDocument[], rerunPromptInjection = "") => run(async () => {
     const reason = pageBlock(scope, documents);
     if (reason) throw new Error(reason);
     const options = await saveInjection();
+    const saved = await saveWorkVisual();
+    ensureVisualReady(saved);
     if (!active.current) return;
     return comicMdRender({
       ...scope,
@@ -173,13 +253,26 @@ function ChapterWorkspace({ scope, chapter, refreshChapters, onChooseChapter }: 
       ...(rerunPromptInjection.trim() ? { rerunPromptInjection } : {}),
     });
   });
-  const renderChoices: { selection: RenderSelection; label: string }[] = [{ selection: "first", label: "生成第一页" }, { selection: "first_three", label: "生成前三页" }, { selection: "remaining", label: "生成剩余页" }];
+  const renderChoices: { selection: RenderSelection; label: string }[] = [{ selection: "first", label: "生成第一页" }, { selection: "first_three", label: "生成前三页" }, { selection: "remaining", label: "生成剩余页" }, ...((styleReferences.length || constitution.trim()) ? [{ selection: "all" as const, label: "按当前画风重画全部" }] : [])];
   return <div className="flex min-h-0 flex-1 flex-col">
     <nav aria-label="制作步骤" className="flex shrink-0 flex-wrap gap-1 border-b border-slate-800 px-4 py-1">{views.map((item, index) => <button key={item.id} aria-current={view === item.id ? "step" : undefined} className={`${button} !py-1 ${view === item.id ? "border-indigo-400 bg-indigo-500/20 text-white" : "border-transparent"}`} onClick={() => setView(item.id)}>{index + 1}. {item.label}</button>)}</nav>
     <main className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
       {(error || message) && <p role="alert" className="rounded-lg bg-amber-500/10 p-3 text-sm text-amber-100">{error || message}</p>}
       {currentJob && <p aria-label="当前生成状态" className="border-l-2 border-slate-600 pl-3 text-sm text-slate-300">{mdLabels[currentJob.kind]} · {currentJob.status === "running" ? `正在${currentJob.kind === "sync" ? "更新" : currentJob.kind === "optimize" ? "优化" : "生成"}${["images", "optimize", "sync"].includes(currentJob.kind) ? ` · ${currentJob.completedPages}/${currentJob.totalPages} ${currentJob.kind === "images" ? "页" : "份"}` : "，可以继续编辑文字"}` : "本次未完成，已有成果保留；请查看下方生成记录，修正后重新生成。"}</p>}
       <MarkdownSyncNotice scope={scope} workspace={workspace} disabled={disabled} onSync={sync} onChooseChapter={onChooseChapter} />
+      <ComicStyleReferencePanel scope={scope} references={styleReferences} onChange={setStyleReferenceDraft} disabled={disabled} />
+      <section className="rounded-xl border border-indigo-300/15 bg-indigo-300/[0.035] p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div><h3 className="text-sm font-semibold text-indigo-100">统一视觉宪法</h3><p className="mt-1 max-w-3xl text-xs leading-5 text-slate-400">作品级画风会影响作品设定、剧本、分镜、每页 Prompt 和实际生图，只控制视觉语言，不改变小说剧情。</p></div>
+          <div className="flex flex-wrap gap-2"><button className={button} disabled={disabled || !styleReferences.length || !!invalidDraftReferences.length || visualConflict} onClick={() => void extractWorkVisual()}>根据参考图提取</button><button className={primary} disabled={disabled || !visualDirty || !!invalidDraftReferences.length || visualConflict} onClick={() => void run(async () => { await saveWorkVisual(); setMessage("作品级画风参考和视觉宪法已保存。"); })}>保存作品视觉设定</button></div>
+        </div>
+        <textarea aria-label="作品级视觉宪法" className={`${field} mt-3 min-h-40 w-full`} value={constitution} onChange={(event) => setConstitutionDraft(event.target.value)} placeholder="先上传图片作品，再点击“根据参考图提取”；也可以直接编辑 Markdown。" />
+        <p className="mt-2 text-xs text-slate-500">当前第 {visualProfile.revision} 版{visualDirty ? " · 有未保存修改" : " · 已保存"}。生成文字或图片前会先保存；修改后不会自动重画已有图片。</p>
+        {!!invalidDraftReferences.length && <p role="alert" className="mt-2 text-xs text-amber-200">有 {invalidDraftReferences.length} 张本地草稿参考图尚未加载、已经失效或不属于当前作品。系统不会静默删除服务器中的参考图；请等待资源加载或主动移除。</p>}
+        {!!unavailableSavedReferences.length && <p role="alert" className="mt-2 text-xs text-amber-200">有 {unavailableSavedReferences.length} 张已保存参考图的文件内容丢失或发生变化。生成已阻断，请移除并重新上传。</p>}
+        {visualConflict && <div role="alert" className="mt-2 rounded-lg border border-amber-300/20 bg-amber-300/5 p-3 text-xs text-amber-100"><p>服务器中的作品视觉设定已有新版本，当前草稿未覆盖它。</p><div className="mt-2 flex flex-wrap gap-2"><button className={button} onClick={() => { setStyleReferenceDraft(null); setConstitutionDraft(null); setVisualConflict(false); setMessage("已加载服务器中的最新作品视觉设定。"); }}>加载服务器版本</button><button className={button} onClick={() => { setVisualConflict(false); setMessage("已保留当前草稿；再次保存时会以最新服务器版本为基准，请先核对内容。"); }}>保留当前草稿</button></div></div>}
+        {(styleReferenceStorageError || constitutionStorageError) && <p role="alert" className="mt-2 text-xs text-amber-200">作品视觉草稿无法写入本地，请先复制内容。</p>}
+      </section>
       {view === "source" ? <SourceEditor projectId={scope.projectId} workId={scope.novelWorkId} chapter={chapter} sourceContent={workspace.sourceContent} onSaved={async () => { await Promise.all([refresh(), refreshChapters()]); }} /> : view === "images" ? <>
         <div><h2 className="text-lg font-semibold text-slate-100">漫画结果</h2><p className="mt-1 text-sm leading-6 text-slate-400">一份页 Prompt 对应一张漫画页。按页码顺序生成；缺页、未保存或需更新时会明确提示。</p></div>
         <label className="block text-sm text-slate-300">本章 Prompt 注入<textarea aria-label="本章 Prompt 注入" className={`${field} mt-1 min-h-24 w-full`} value={injection} onChange={(event) => setInjectionDraft(event.target.value === renderOptions.promptInjection && (!injectionDraft || injectionDraft.expectedRevision === renderOptions.revision) ? null : { promptInjection: event.target.value, expectedRevision: injectionDraft?.expectedRevision ?? renderOptions.revision })} placeholder="例如：使用黑白水墨画风，所有对白用简体中文" /></label>
@@ -188,13 +281,13 @@ function ChapterWorkspace({ scope, chapter, refreshChapters, onChooseChapter }: 
         {injectionDraft && injectionDraft.expectedRevision !== renderOptions.revision && <p role="alert" className="text-sm text-amber-200">注入规则已有较新版本，你的修改保留。<button className={`${button} ml-2`} onClick={() => setInjectionDraft(injection === renderOptions.promptInjection ? null : { promptInjection: injection, expectedRevision: renderOptions.revision })}>以当前注入版本为基准</button></p>}
         {injectionStorageError && <p role="alert" className="text-sm text-amber-200">注入草稿无法写入本地，请先复制内容。</p>}
         <div className="flex flex-wrap gap-3">{renderChoices.map(({ selection, label }) => { const choice = selectRenderPages(scope, workspace, selection, injection); return <div key={selection} className="max-w-72 space-y-1"><button className={primary} disabled={disabled || !!choice.reason} onClick={() => void renderPages(choice.documents)}>{label}{choice.documents.length ? `（${choice.documents.length} 页）` : ""}</button>{choice.reason && <p className="text-xs leading-5 text-amber-200">{choice.reason}</p>}</div>; })}</div>
-        <p className="text-sm text-slate-400">点击生成会调用已配置的图片服务，可能计费。生成文字不会自动画图。</p>
+        <p className="text-sm text-slate-400">点击生成会调用已配置的图片服务，可能计费。画风参考的变更只应用于新生成或主动重画的页面；旧图片会保留并标记需要更新。</p>
         <ImageGallery key={scopeKey(scope)} scope={scope} workspace={workspace} onRender={renderPages} disabled={disabled} />
       </> : <>
         <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold text-slate-100">{mdLabels[view]}</h2><p className="mt-1 max-w-3xl text-sm leading-6 text-slate-400">{view === "settings" ? "整本小说共享的世界观、画风与人物基础特征。可以自己填写，也可以从本章正文生成。" : view === "script" ? "把故事写成可独立使用的剧本，补充本章带来的人物变化。" : view === "storyboard" ? "统一安排本章每页的剧情、每格画面和对白。用“# 第1页”等标题区分页。" : "每页一份完整提示词，包含本页需要的设定和人物信息。可以直接粘贴自己写好的 Prompt，保存检查后单独出图。"}</p></div><button className={primary} disabled={disabled || !!blocked} onClick={() => void generate()}>{running ? "任务进行中…" : `生成${mdLabels[stage]}（仅文字）`}</button></div>
         <p className="text-sm text-slate-400">{blocked || "生成文字会调用已配置的文本模型，可能计费。手工填写、保存和复制均不调用模型。"}</p>
         {view === "page_prompt" && <div className="flex flex-wrap items-center gap-2">{prompts.map((doc) => <button key={doc.id} className={`${button} ${pageNo === doc.pageNo ? "border-indigo-400" : ""}`} onClick={() => setPageNo(doc.pageNo!)}>第{doc.pageNo}页{doc.outOfPlan ? " · 不在当前分镜" : doc.stale ? " · 需更新" : doc.issues.length ? " · 待补齐" : ""}</button>)}<label className="text-sm text-slate-300">编辑第 <input aria-label="Prompt 页码" type="number" min={1} className={`${field} w-20`} value={pageNo} onChange={(event) => setPageNo(Math.max(1, Number(event.target.value) || 1))} /> 页</label><button className={button} onClick={() => setPageNo(Math.max(pageNo, ...prompts.map((doc) => doc.pageNo ?? 0)) + 1)}>添加下一页 Prompt</button></div>}
-        <MarkdownDocumentEditor key={`${scopeKey(scope)}:${view}:${view === "page_prompt" ? pageNo : ""}`} scope={scope} kind={view} pageNo={view === "page_prompt" ? pageNo : undefined} document={currentDoc} pageDocuments={prompts} workspaceDocuments={workspace.documents} missingPageNos={workspace.syncPlan?.missingPageNos ?? []} jobs={jobs} refresh={refresh} renderingDisabled={disabled} onRender={renderPages} injection={injection} />
+        <MarkdownDocumentEditor key={`${scopeKey(scope)}:${view}:${view === "page_prompt" ? pageNo : ""}`} scope={scope} kind={view} pageNo={view === "page_prompt" ? pageNo : undefined} document={currentDoc} pageDocuments={prompts} workspaceDocuments={workspace.documents} missingPageNos={workspace.syncPlan?.missingPageNos ?? []} jobs={jobs} refresh={refresh} renderingDisabled={disabled} onRender={renderPages} beforeOptimize={async () => { const saved = await saveWorkVisual(); ensureVisualReady(saved); }} injection={injection} />
       </>}
       {!!exportDocuments.length && <div className="border-t border-slate-800 pt-4"><button className={button} disabled={busy} onClick={() => void run(async () => { const result = await comicMdExport({ ...scope, documentIds: exportDocuments.map((doc) => doc.id) }); setExportPath(result.files[0] ?? ""); setMessage(`已导出 ${result.files.length} 份 Markdown：${result.path}`); })}>导出本章全部已保存 MD</button><span className="ml-3 text-sm text-slate-500">包含作品设定，排除不在当前分镜的旧页；未保存草稿请先保存或复制。</span>{exportPath && <button className={`${button} ml-2`} onClick={() => void revealItemInDir(exportPath).catch((cause) => setMessage(String(cause)))}>打开导出文件位置</button>}</div>}
       {!!jobs.length && <details aria-label="生成记录" className="border-t border-slate-800 pt-3 text-sm text-slate-400"><summary className="cursor-pointer">生成记录（{jobs.length} 次）</summary>{jobs.map((job) => <div key={job.id} className="mt-3 border-l border-slate-700 pl-3"><p>{mdLabels[job.kind]} · {job.status === "running" ? "正在生成" : job.status === "succeeded" ? "已完成" : job.status === "interrupted" ? "已中断" : "未完成"}{job.kind === "images" && ` · ${job.completedPages}/${job.totalPages} 页`}</p>{job.message && <p className="mt-1">{job.message}</p>}{(job.status === "failed" || job.status === "interrupted") && <p className="mt-1">已有成果仍保留。修正后可点击对应步骤的生成按钮重新请求，可能计费。</p>}{job.outputMarkdown && <RawOutput markdown={job.outputMarkdown} />}</div>)}</details>}
@@ -205,6 +298,15 @@ function ChapterWorkspace({ scope, chapter, refreshChapters, onChooseChapter }: 
 function RawOutput({ markdown }: { markdown: string }) {
   const [message, setMessage] = useState("");
   return <details className="mt-2"><summary className="cursor-pointer text-slate-400">查看本次生成的原始文字（可复制修正）</summary><textarea aria-label="生成原始 Markdown" readOnly value={markdown} className={`${field} mt-2 min-h-40 w-full`} /><button className={`${button} mt-2`} onClick={() => void navigator.clipboard.writeText(markdown).then(() => setMessage("已复制原始文字，可粘贴到下方编辑器修正。"), () => setMessage("复制失败，请在文字框中全选复制。"))}>复制原始文字</button><span role="status" className="ml-2">{message}</span></details>;
+}
+
+function visualReferenceCount(snapshot?: string): string {
+  try {
+    const parsed = JSON.parse(snapshot || "[]");
+    return Array.isArray(parsed) ? `${parsed.length} 张` : "快照不可读";
+  } catch {
+    return "快照不可读";
+  }
 }
 
 function ImageGallery({ scope, workspace, onRender, disabled }: { scope: MdScope; workspace: MdWorkspace; onRender: (documents: MdDocument[], rerunPromptInjection?: string) => Promise<void>; disabled: boolean }) {
@@ -230,7 +332,7 @@ function ImageGallery({ scope, workspace, onRender, disabled }: { scope: MdScope
     const blocked = prompt ? pageBlock(scope, [prompt]) : "本页 Prompt 不存在，请先恢复或保存。";
     const rerunInjection = rerunInjections[pageNo] ?? "";
     return <figure key={pageNo} className="overflow-hidden rounded-xl border border-slate-800">
-      <figcaption className="flex flex-wrap items-center justify-between gap-2 p-3 text-sm text-slate-200"><span>第 {pageNo} 页{chosen.stale ? " · 提示词或注入规则已更新" : ""}</span><select aria-label={`第${pageNo}页图片版本`} className={field} value={chosen.id} onChange={(event) => select({ ...selections, [pageNo]: event.target.value })}>{versions.map((image, index) => <option key={image.id} value={image.id}>{index === 0 ? "最新结果" : `历史结果 ${versions.length - index}`} · Prompt 第 {image.documentRevision} 版</option>)}</select></figcaption>
+      <figcaption className="flex flex-wrap items-center justify-between gap-2 p-3 text-sm text-slate-200"><span>第 {pageNo} 页{chosen.stale ? " · Prompt、注入或作品画风已更新" : ""}</span><select aria-label={`第${pageNo}页图片版本`} className={field} value={chosen.id} onChange={(event) => select({ ...selections, [pageNo]: event.target.value })}>{versions.map((image, index) => <option key={image.id} value={image.id}>{index === 0 ? "最新结果" : `历史结果 ${versions.length - index}`} · Prompt 第 {image.documentRevision} 版</option>)}</select></figcaption>
       <img src={convertFileSrc(chosen.path)} alt={`第${pageNo}页漫画`} className="mx-auto max-h-[70vh] max-w-full object-contain" onError={() => setError(`第 ${pageNo} 页图片无法显示，可打开文件位置检查。`)} />
       <div className="space-y-2 p-3">
         <label className="block text-sm text-slate-300">本次重画 Prompt 注入（可选）<textarea aria-label={`第${pageNo}页本次重画 Prompt 注入`} className={`${field} mt-1 min-h-20 w-full`} value={rerunInjection} onChange={(event) => updateRerunInjection(pageNo, event.target.value)} placeholder="例如：只把外套改为红色，其余画面保持不变" /></label>
@@ -238,7 +340,7 @@ function ImageGallery({ scope, workspace, onRender, disabled }: { scope: MdScope
         <div className="flex flex-wrap gap-2"><button className={button} onClick={() => setLargeImage({ path: chosen.path, pageNo })}>查看原图</button><button className={button} onClick={() => void revealItemInDir(chosen.path).catch((cause) => setError(String(cause)))}>打开文件位置</button><button className={primary} disabled={disabled || !!blocked} onClick={() => void onRender([prompt!], rerunInjection)}>重画第{pageNo}页</button></div>
       </div>
       {blocked && <p className="px-3 pb-2 text-xs text-amber-200">{blocked}</p>}
-      <details className="px-3 pb-3 text-sm text-slate-400"><summary className="cursor-pointer">此图实际使用的注入规则</summary><div className="mt-2 space-y-2"><p className="whitespace-pre-wrap break-words"><strong className="text-slate-300">本章注入：</strong>{chosen.promptInjection || "未设置"}</p><p className="whitespace-pre-wrap break-words"><strong className="text-slate-300">本次重画注入：</strong>{chosen.rerunPromptInjection || "未设置"}</p></div></details>
+      <details className="px-3 pb-3 text-sm text-slate-400"><summary className="cursor-pointer">此图实际使用的视觉规则</summary><div className="mt-2 space-y-2"><p className="whitespace-pre-wrap break-words"><strong className="text-slate-300">作品视觉宪法：</strong>第 {chosen.visualProfileRevision ?? 0} 版</p><p className="whitespace-pre-wrap break-words"><strong className="text-slate-300">作品参考图：</strong>{visualReferenceCount(chosen.visualReferenceSnapshot)}</p><p className="whitespace-pre-wrap break-words"><strong className="text-slate-300">本章注入：</strong>{chosen.promptInjection || "未设置"}</p><p className="whitespace-pre-wrap break-words"><strong className="text-slate-300">本次重画注入：</strong>{chosen.rerunPromptInjection || "未设置"}</p></div></details>
     </figure>;
   })}</div>
   </>;

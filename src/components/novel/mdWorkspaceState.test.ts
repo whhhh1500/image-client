@@ -57,6 +57,9 @@ describe("explicit page ranges", () => {
     data.images = [{ id: "i1", documentId: "d1", documentRevision: 2, pageNo: 1, path: "/i1", promptInjection: "A", stale: true, createdAt: 1 }, { id: "i2", documentId: "d2", documentRevision: 1, pageNo: 2, path: "/i2", promptInjection: "A", stale: true, createdAt: 1 }];
     expect(selectRenderPages(scope, data, "remaining", "A").documents.map((doc) => doc.pageNo)).toEqual([2, 3]);
     expect(selectRenderPages(scope, data, "remaining", "B").documents.map((doc) => doc.pageNo)).toEqual([1, 2, 3]);
+    data.workVisualProfile = { constitutionMarkdown: "新画风", revision: 2, references: [] };
+    data.images[0].visualProfileRevision = 1;
+    expect(selectRenderPages(scope, data, "remaining", "A").documents.map((doc) => doc.pageNo)).toEqual([1, 2, 3]);
     data.documents[0].stale = true;
     expect(selectRenderPages(scope, data, "remaining", "A").reason).toContain("第1页需要更新");
   });

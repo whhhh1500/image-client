@@ -5,15 +5,23 @@ export type MdKind = "settings" | "script" | "storyboard" | "page_prompt";
 export type MdStage = "settings" | "script" | "storyboard" | "page_prompts";
 export interface MdDocument { id: string; kind: MdKind; pageNo: number | null; markdown: string; optimizationInstruction?: string; revision: number; contentHash?: string; stale: boolean; staleReasons?: string[]; outOfPlan?: boolean; issues: string[]; updatedAt: number }
 export interface MdJob { id: string; kind: MdStage | "images" | "optimize" | "sync"; status: "running" | "succeeded" | "failed" | "interrupted"; message: string | null; outputMarkdown: string | null; completedPages: number; totalPages: number; createdAt: number }
-export interface MdImage { id: string; documentId: string; documentRevision: number; contentHash?: string; pageNo: number; path: string; promptInjection?: string; rerunPromptInjection?: string; stale: boolean; fileAvailable?: boolean; createdAt: number }
+export interface MdImage { id: string; documentId: string; documentRevision: number; contentHash?: string; pageNo: number; path: string; promptInjection?: string; rerunPromptInjection?: string; visualProfileRevision?: number; visualReferenceSnapshot?: string; stale: boolean; fileAvailable?: boolean; createdAt: number }
 export interface MdRenderOptions { promptInjection: string; revision: number }
+export interface MdWorkVisualReference { assetId: string; path?: string; role: string; weight: number; sortOrder: number; note?: string; sha256?: string; fileAvailable: boolean }
+export interface MdWorkVisualProfile { constitutionMarkdown: string; revision: number; references: MdWorkVisualReference[] }
+/** A work-level style reference selected in the front end. */
+export interface MdStyleReference { assetId: string; path: string; label: string; description?: string }
 export interface MdSyncTarget { documentId: string; revision: number; kind: MdKind; pageNo: number | null; reasons: string[] }
 export interface MdSyncPlan { fingerprint: string; targets: MdSyncTarget[]; missingPageNos: number[]; obsoletePageNos: number[]; blockedReason: string | null }
 export interface MdAffectedChapter { chapterId: string; chapterNo: number; title: string | null; documentCount: number; reason: string }
-export interface MdWorkspace { sourceRevisionId: string | null; sourceContent: string; documents: MdDocument[]; jobs: MdJob[]; images: MdImage[]; textReady: boolean; imageReady: boolean; renderOptions?: MdRenderOptions; syncPlan?: MdSyncPlan; affectedChapters?: MdAffectedChapter[] }
+export interface MdWorkspace { sourceRevisionId: string | null; sourceContent: string; documents: MdDocument[]; jobs: MdJob[]; images: MdImage[]; textReady: boolean; imageReady: boolean; renderOptions?: MdRenderOptions; workVisualProfile?: MdWorkVisualProfile; syncPlan?: MdSyncPlan; affectedChapters?: MdAffectedChapter[] }
 export interface MdHistory { revision: number; markdown: string; optimizationInstruction?: string; createdAt: number }
 const call = <T>(command: string, input: unknown) => loggedInvoke<T>(command, { input });
 export const comicMdWorkspaceGet = (input: MdScope) => call<MdWorkspace>("comic_md_workspace_get", input);
+export const comicMdWorkVisualGet = (input: Pick<MdScope, "projectId" | "novelWorkId">) => call<MdWorkVisualProfile>("comic_md_work_visual_get", input);
+export const comicMdWorkVisualSave = (input: Pick<MdScope, "projectId" | "novelWorkId"> & { constitutionMarkdown: string; references: { assetId: string; role: string; weight: number; sortOrder: number; note?: string }[]; expectedRevision: number }) => call<MdWorkVisualProfile>("comic_md_work_visual_save", input);
+export const comicMdWorkVisualExtract = (input: Pick<MdScope, "projectId" | "novelWorkId"> & { expectedRevision: number; instruction?: string }) => call<{ constitutionMarkdown: string; profileRevision: number; referenceAssetIds: string[] }>("comic_md_work_visual_extract", input);
+export const comicMdWorkVisualImport = (input: Pick<MdScope, "projectId" | "novelWorkId"> & { paths: string[] }) => call<{ id: string; kind: "image"; path: string; format?: string }[]>("comic_md_work_visual_import", input);
 export const comicMdDocumentSave = (input: MdScope & { kind: MdKind; pageNo?: number; markdown: string; optimizationInstruction?: string; expectedRevision: number | null; acknowledgeUpdates?: boolean }) => call<MdDocument>("comic_md_document_save", input);
 export const comicMdDocumentHistory = (input: MdScope & { documentId: string }) => call<MdHistory[]>("comic_md_document_history", input);
 export const comicMdGenerate = (input: MdScope & { stage: MdStage; expectedSourceRevisionId: string }) => call<MdJob>("comic_md_generate", input);

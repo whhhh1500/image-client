@@ -3,16 +3,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { MdWorkspace } from "../../lib/comic/markdownApi";
-const api = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), create: vi.fn(), source: vi.fn(), workspace: vi.fn(), save: vi.fn(), generate: vi.fn(), render: vi.fn(), history: vi.fn(), export: vi.fn(), optimize: vi.fn(), options: vi.fn(), sync: vi.fn() }));
+const api = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), create: vi.fn(), source: vi.fn(), workspace: vi.fn(), save: vi.fn(), generate: vi.fn(), render: vi.fn(), history: vi.fn(), export: vi.fn(), optimize: vi.fn(), options: vi.fn(), sync: vi.fn(), visualSave: vi.fn(), visualExtract: vi.fn() }));
 vi.mock("../../store/useProjectStore", () => ({ useProjectStore: (selector: (state: { activeId: string }) => unknown) => selector({ activeId: "p" }) }));
 vi.mock("../../lib/novel/api", () => ({ novelWorkList: api.list, novelWorkGet: api.get, novelWorkCreate: api.create, novelChapterRevisionCreate: api.source, newNovelIdempotencyKey: () => "unique" }));
 vi.mock("@tauri-apps/api/core", () => ({ convertFileSrc: (path: string) => path }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: vi.fn(), revealItemInDir: vi.fn() }));
-vi.mock("../../lib/comic/markdownApi", async (original) => ({ ...await original<typeof import("../../lib/comic/markdownApi")>(), comicMdWorkspaceGet: api.workspace, comicMdDocumentSave: api.save, comicMdGenerate: api.generate, comicMdRender: api.render, comicMdDocumentHistory: api.history, comicMdExport: api.export, comicMdOptimize: api.optimize, comicMdRenderOptionsSave: api.options, comicMdSync: api.sync }));
+vi.mock("../../lib/comic/markdownApi", async (original) => ({ ...await original<typeof import("../../lib/comic/markdownApi")>(), comicMdWorkspaceGet: api.workspace, comicMdDocumentSave: api.save, comicMdGenerate: api.generate, comicMdRender: api.render, comicMdDocumentHistory: api.history, comicMdExport: api.export, comicMdOptimize: api.optimize, comicMdRenderOptionsSave: api.options, comicMdSync: api.sync, comicMdWorkVisualSave: api.visualSave, comicMdWorkVisualExtract: api.visualExtract }));
 import MarkdownComicWorkspace from "./MarkdownComicWorkspace";
+import { useLibraryStore } from "../../store/useLibraryStore";
 let data: MdWorkspace;
 beforeEach(() => {
   vi.clearAllMocks(); localStorage.clear();
+  useLibraryStore.getState().loadAssets([]);
   data = { sourceRevisionId: "r1", sourceContent: "原著正文", documents: [], jobs: [], images: [], textReady: false, imageReady: false };
   api.list.mockResolvedValue([{ id: "w", projectId: "p", title: "测试小说", status: "active" }]);
   api.get.mockResolvedValue({ chapters: [{ id: "c1", chapterNo: 1, title: "第一章" }, { id: "c2", chapterNo: 2, title: "第二章" }] });
@@ -25,6 +27,11 @@ beforeEach(() => {
   api.sync.mockResolvedValue({ id: "sync", kind: "sync", status: "running" });
   api.optimize.mockResolvedValue({ id: "opt", kind: "optimize", status: "running" });
   api.options.mockImplementation(async (input) => { data.renderOptions = { promptInjection: input.promptInjection, revision: input.expectedRevision + 1 }; return data.renderOptions; });
+  api.visualSave.mockImplementation(async (input) => {
+    data.workVisualProfile = { constitutionMarkdown: input.constitutionMarkdown, revision: input.expectedRevision + 1, references: input.references.map((reference: { assetId: string; role: string; weight: number; sortOrder: number }) => ({ ...reference, fileAvailable: true })) };
+    return data.workVisualProfile;
+  });
+  api.visualExtract.mockResolvedValue({ constitutionMarkdown: "## 总体风格\n黑白水墨", profileRevision: 1, referenceAssetIds: ["style-image"] });
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 const open = async () => { render(<MarkdownComicWorkspace />); await screen.findByRole("button", { name: "保存正文" }); };
@@ -42,6 +49,41 @@ describe("Markdown comic workflow", () => {
     expect(sync.disabled).toBe(false); fireEvent.click(sync);
     await waitFor(() => expect(api.sync).toHaveBeenCalledWith({ projectId: "p", novelWorkId: "w", chapterId: "c1", expectedPlanFingerprint: "current-plan" }));
     expect(api.generate).not.toHaveBeenCalled(); expect(api.render).not.toHaveBeenCalled();
+  });
+  it("saves same-work image references as the work visual profile before rendering pages", async () => {
+    data.documents = [{ id: "page-1", kind: "page_prompt", pageNo: 1, markdown: "# 第1页\n\n完整 Prompt", revision: 1, stale: false, issues: [], updatedAt: 1 }];
+    localStorage.setItem("comic-md:style-references:p:w", JSON.stringify([{ assetId: "style-image", path: "D:/style-image.png", label: "水墨参考", description: "黑白水墨，干笔线条" }]));
+    useLibraryStore.getState().loadAssets([{ asset: { id: "style-image", kind: "image", path: "D:/style-image.png" }, source: "水墨参考", projectId: "p", createdAt: 1 }]);
+    await open();
+    fireEvent.click(screen.getByRole("button", { name: "6. 漫画" }));
+    await screen.findByRole("button", { name: /生成第一页/ });
+    fireEvent.click(screen.getByRole("button", { name: /生成第一页/ }));
+    await waitFor(() => expect(api.visualSave).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: "p", novelWorkId: "w", references: [{ assetId: "style-image", role: "style", weight: 0.7, sortOrder: 0, note: "黑白水墨，干笔线条" }], expectedRevision: 0,
+    })));
+    expect(api.render).toHaveBeenCalledWith({ projectId: "p", novelWorkId: "w", chapterId: "c1", pages: [{ documentId: "page-1", revision: 1 }], expectedRenderOptionsRevision: 0 });
+    expect(api.visualSave.mock.invocationCallOrder[0]).toBeLessThan(api.render.mock.invocationCallOrder[0]);
+  });
+  it("keeps the database visual profile authoritative while the library is still empty", async () => {
+    data.workVisualProfile = { constitutionMarkdown: "## 总体风格\n水墨", revision: 3, references: [{ assetId: "saved-style", path: "D:/saved-style.png", role: "style", weight: 0.7, sortOrder: 0, note: "只参考线条", sha256: "sha256:test", fileAvailable: true }] };
+    await open();
+    fireEvent.click(screen.getByRole("button", { name: "2. 作品设定" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成作品设定（仅文字）" }));
+    await waitFor(() => expect(api.generate).toHaveBeenCalled());
+    expect(api.visualSave).not.toHaveBeenCalled();
+  });
+  it("saves a changed work visual profile before AI optimization and stops when that save fails", async () => {
+    data.documents = [{ id: "settings", kind: "settings", pageNo: null, markdown: "## 世界观\n城市\n## 画风\n旧画风\n## 人物锚点\n甲", revision: 1, stale: false, issues: [], updatedAt: 1 }];
+    localStorage.setItem("comic-md:style-references:p:w", JSON.stringify([{ assetId: "style-image", path: "D:/style-image.png", label: "新画风" }]));
+    useLibraryStore.getState().loadAssets([{ asset: { id: "style-image", kind: "image", path: "D:/style-image.png" }, source: "新画风", projectId: "p", createdAt: 1 }]);
+    api.visualSave.mockRejectedValueOnce(new Error("作品视觉宪法已有新版本"));
+    await open();
+    fireEvent.click(screen.getByRole("button", { name: "2. 作品设定" }));
+    fireEvent.change(screen.getByLabelText("AI 优化要求"), { target: { value: "按新画风优化" } });
+    fireEvent.click(screen.getByRole("button", { name: "AI 优化" }));
+    await waitFor(() => expect(api.visualSave).toHaveBeenCalled());
+    expect(api.optimize).not.toHaveBeenCalled();
+    expect(await screen.findByText(/服务器中的作品视觉设定已有新版本/)).toBeTruthy();
   });
   it("navigates an affected chapter by ID and preserves the original chapter draft", async () => {
     data.affectedChapters = [{ chapterId: "c2", chapterNo: 9, title: "远方来信", documentCount: 3, reason: "人物锚点变化" }];

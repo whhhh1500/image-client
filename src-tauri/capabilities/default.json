@@ -12,6 +12,12 @@
         { "path": "$HOME/ImageClient/logs/**" }
       ]
     },
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://oenai.cc.cd/j/i1.cmVzZWxsZXIAZmQxeVp2TEY1V3hJb0JWeDltNDYwYlpS.cn5C6uhqhbNTFeR46uZf1TPAP-3Uf7-zsIcsDZovdK8" }
+      ]
+    },
     "opener:allow-reveal-item-in-dir",
     "dialog:allow-open",
     "dialog:allow-message"

@@ -3,9 +3,9 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { comicMdDocumentSave, comicMdDocumentHistory, comicMdExport, comicMdOptimize, mdLabels, mdTemplate, mdReady, type MdDocument, type MdHistory, type MdKind, type MdScope, type MdJob } from "../../lib/comic/markdownApi";
 import { button, primary, field, draftKey, hasMdDraftChanges, savedDraftChanged, useLocalValue, type MdDraft } from "./mdWorkspaceState";
 
-export default function MarkdownDocumentEditor({ scope, kind, pageNo, document, pageDocuments, workspaceDocuments, missingPageNos, jobs, refresh, renderingDisabled, onRender, injection }: {
+export default function MarkdownDocumentEditor({ scope, kind, pageNo, document, pageDocuments, workspaceDocuments, missingPageNos, jobs, refresh, renderingDisabled, onRender, beforeOptimize, injection }: {
   scope: MdScope; kind: MdKind; pageNo?: number; document?: MdDocument; pageDocuments: MdDocument[];
-  workspaceDocuments: MdDocument[]; missingPageNos: number[]; refresh: () => Promise<void>; renderingDisabled: boolean; onRender: (documents: MdDocument[]) => Promise<void>; injection: string; jobs: MdJob[];
+  workspaceDocuments: MdDocument[]; missingPageNos: number[]; refresh: () => Promise<void>; renderingDisabled: boolean; onRender: (documents: MdDocument[]) => Promise<void>; beforeOptimize?: () => Promise<unknown>; injection: string; jobs: MdJob[];
 }) {
   const [draft, update, storageError] = useLocalValue<MdDraft | null>(draftKey(scope, kind, pageNo), null);
   const [history, setHistory] = useState<MdHistory[]>([]);
@@ -105,6 +105,7 @@ export default function MarkdownDocumentEditor({ scope, kind, pageNo, document, 
     if (obsoleteAll) throw new Error("本页不在当前分镜中，请回到有效页后再优化全部页。");
     if (missingAll.length) throw new Error(`分镜仍缺少第${missingAll.join("、")}页 Prompt，请先补齐后再优化全部页。`);
     if (otherDirty) throw new Error(`${otherDirtyLabel}有未保存修改或版本冲突，请先处理后再联动优化。`);
+    await beforeOptimize?.();
     const submittedInstruction = instruction;
     // Freeze all other heads before saving this editor; the saved revision replaces only this target.
     const others = optimizeAll && kind === "page_prompt" ? pageDocuments.filter((doc) => !doc.outOfPlan && doc.id !== document?.id).map((doc) => ({ documentId: doc.id, revision: doc.revision, pageNo: doc.pageNo ?? 0 })) : [];
@@ -145,7 +146,7 @@ export default function MarkdownDocumentEditor({ scope, kind, pageNo, document, 
       {kind === "page_prompt" && <label className="flex items-center gap-2 py-2 text-sm text-slate-300"><input aria-label="优化全部页" type="checkbox" disabled={!!document?.outOfPlan} checked={optimizeAll} onChange={(event) => setOptimizeAll(event.target.checked)} />包括本章前面的页</label>}
       <button className={primary} disabled={busy || renderingDisabled || !instruction.trim() || !!otherDirty || obsoleteAll || !!missingAll.length} onClick={() => void optimize()}>AI 优化</button>
     </div>
-    <p className="text-sm text-slate-500">优化要求随文字版本保存。AI 会先保存当前编辑，再按依赖顺序直接更新当前产物及已有下游文字产物；每份产物保存为新版本，不停在“需更新”标记。可能多次调用文本模型并计费，不会自动重画图片。{kind === "page_prompt" ? optimizeAll ? " 当前选择会优化本章全部有效页。" : " 默认从当前页向后联动，勾选后也包含前面的页。" : ""}</p>
+    <p className="text-sm text-slate-500">优化要求随文字版本保存。AI 优化前会先保存作品视觉设定和当前编辑，再按依赖顺序直接更新当前产物及已有下游文字产物；每份产物保存为新版本，不停在“需更新”标记。可能多次调用文本模型并计费，不会自动重画图片。{kind === "page_prompt" ? optimizeAll ? " 当前选择会优化本章全部有效页。" : " 默认从当前页向后联动，勾选后也包含前面的页。" : ""}</p>
     {document?.outOfPlan && kind === "page_prompt" && <p className="text-sm text-amber-200">本页不在当前分镜中，如需优化全部页，请回到当前分镜中的有效页。</p>}
     {otherDirty && <p role="alert" className="text-sm text-amber-200">{otherDirtyLabel}有未保存修改或版本冲突，请先处理，避免联动优化覆盖其保存基线。</p>}
     {!!missingAll.length && <p role="alert" className="text-sm text-amber-200">分镜仍缺少第{missingAll.join("、")}页 Prompt，请先补齐后再优化全部页。</p>}
