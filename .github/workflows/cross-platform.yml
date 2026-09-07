@@ -21,7 +21,37 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
+  # Functional tests do not need to compile the same debug graph four times.
   verify:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          shared-key: verify-target-linux-x64
+          add-job-id-key: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+  # Native jobs only prove and prewarm the release build for each target. The
+  # tag workflow reuses these exact caches and performs the final bundling.
+  warm-native:
     strategy:
       fail-fast: false
       matrix:
@@ -39,8 +69,7 @@ jobs:
             target: x86_64-apple-darwin
             build_args: --target x86_64-apple-darwin
     runs-on: ${{ matrix.platform }}
-    timeout-minutes: 30
-
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v4
@@ -59,14 +88,10 @@ jobs:
           shared-key: release-target-${{ matrix.cache_key }}
           add-job-id-key: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
-
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
-
       - run: pnpm install --frozen-lockfile
-      - run: pnpm test
-      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
       - run: pnpm tauri build --no-bundle --ci ${{ matrix.build_args }}

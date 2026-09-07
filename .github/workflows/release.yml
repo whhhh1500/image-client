@@ -35,7 +35,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-          shared-key: release-target-linux-x64
+          shared-key: verify-target-linux-x64
           add-job-id-key: false
           save-if: false
       - name: Install Linux dependencies

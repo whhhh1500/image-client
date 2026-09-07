@@ -47,6 +47,6 @@ pnpm release:icon
 3. 创建并推送与版本一致的标签，例如 `v0.1.0`。
 4. `Publish release` 工作流会构建 Windows NSIS、macOS DMG（Apple Silicon/Intel）、Linux AppImage/DEB，并上传到同一个 GitHub Release。
 
-发布流水线会让测试与四个平台的打包并行执行，所有任务成功后再一次性创建 Release。主分支跨平台验证为 Windows、Linux、Apple Silicon 和 Intel Mac 分别保存一份稳定的 Rust target 缓存；标签构建使用相同 key 只读复用，不再因 job 名不同而完全失配，也不会像细粒度编译缓存那样产生上千个小缓存并触发 GitHub 上传限流。
+发布流水线会让 Linux 全量测试与四个平台的打包并行执行，所有任务成功后再一次性创建 Release。主分支只在 Linux 跑一遍前端/Rust 全量测试；另有四个原生任务只编译 release profile，为 Windows、Linux、Apple Silicon 和 Intel Mac 分别保存一份稳定 target 缓存。标签构建使用相同 key 只读复用，不再让每个平台重复编译 debug 测试图，也不会产生上千个小缓存并触发 GitHub 上传限流。
 
 发布包当前没有商业代码签名或公证。正式分发前可在仓库 Secrets 中接入各平台签名凭据；不要将证书或密钥写进源码。
