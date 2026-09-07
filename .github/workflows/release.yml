@@ -130,6 +130,7 @@ jobs:
       - name: Publish one complete GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
           cat > release-notes.md <<'NOTES'
