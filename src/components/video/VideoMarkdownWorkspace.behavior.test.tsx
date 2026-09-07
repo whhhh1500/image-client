@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 
 const state = vi.hoisted(() => ({ assets: [] as Array<Record<string, unknown>> }));
 const api = vi.hoisted(() => ({ llmChat: vi.fn(), saveDocumentVersion: vi.fn() }));
+const pickers = vi.hoisted(() => ({ byTitle: {} as Record<string, (asset: Record<string, unknown>) => void> }));
 
 vi.mock("../../store/useProjectStore", () => ({
   useProjectStore: (selector: (value: Record<string, unknown>) => unknown) => selector({
@@ -21,7 +22,7 @@ vi.mock("../../lib/documents", async (original) => ({
   ...await original<typeof import("../../lib/documents")>(),
   saveDocumentVersion: api.saveDocumentVersion,
 }));
-vi.mock("../AssetPicker", () => ({ default: () => null }));
+vi.mock("../AssetPicker", () => ({ default: ({ title, open, onPick }: { title: string; open: boolean; onPick: (asset: Record<string, unknown>) => void }) => { if (open) pickers.byTitle[title] = onPick; return null; } }));
 vi.mock("./VideoStoryboardEditor", () => ({ default: () => null }));
 
 import VideoMarkdownWorkspace from "./VideoMarkdownWorkspace";
@@ -41,6 +42,7 @@ const provenance = (parentAssetIds: string[], type = "manual") => ({
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
+  pickers.byTitle = {};
   state.assets = [
     textAsset("director-v1", "导演规划 · 第1章", {
       text: "# 改编规划\n\n旧规划",
@@ -89,6 +91,19 @@ beforeEach(() => {
     chapterNo: 1,
     provenance: provenance(["source-v1"], "ai_optimized"),
   }, 3));
+});
+
+it("imports a current-project video work as a workflow-level Agent reference", async () => {
+  state.assets.push({ asset: { id: "video-work", kind: "video", path: "D:/video-work.mp4", durationS: 8 }, source: "参考短片", projectId: "p", model: "video-model", params: {}, createdAt: 3 });
+  render(<VideoMarkdownWorkspace onEditPrompt={vi.fn()} onSendToVideo={vi.fn()} />);
+
+  fireEvent.click(screen.getByRole("button", { name: "导入视频作品" }));
+  const onPick = pickers.byTitle["导入当前项目的视频作品参考"];
+  expect(onPick).toBeTypeOf("function");
+  onPick(state.assets.find((asset) => (asset.asset as { id: string }).id === "video-work")!);
+
+  expect((await screen.findByLabelText("短剧视频作品参考")).textContent).toContain("参考短片 · 8秒");
+  expect(localStorage.getItem("video-md:work-video-references:p")).toContain("video-work");
 });
 
 afterEach(cleanup);

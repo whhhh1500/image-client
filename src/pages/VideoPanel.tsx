@@ -184,6 +184,7 @@ export default function VideoPanel() {
   const [menu, setMenu] = useState<{ x: number; y: number; asset: LibAsset } | null>(null);
   const [playing, setPlaying] = useState<LibAsset | null>(null);
   const [guideAsset, setGuideAsset] = useState<LibAsset | null>(null);
+  const [videoGuideAsset, setVideoGuideAsset] = useState<LibAsset | null>(null);
   const [textSource, setTextSource] = useState<LibAsset | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const processingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -328,13 +329,14 @@ export default function VideoPanel() {
       const sourceMaterials = [
         ...(textSource ? [snapshotAsset(textSource, getDocumentMeta(textSource)?.text, "剧本/分镜原始资料")] : []),
         ...(guideAsset ? [snapshotAsset(guideAsset, undefined, "本地图片创作参考（不上传）")] : []),
+        ...(videoGuideAsset ? [snapshotAsset(videoGuideAsset, undefined, "本地视频作品参考（不上传）")] : []),
       ];
       const combinedPrompt = shots.map((shot) => shot.prompt).join("\n\n---\n\n");
       const generatedAssets = await generateVideo(vid, {
         originalInput: combinedPrompt,
         generationInput: combinedPrompt,
         sourceMaterials,
-        parentAssetIds: [textSource?.asset.id, guideAsset?.asset.id].filter((id): id is string => Boolean(id)),
+        parentAssetIds: [textSource?.asset.id, guideAsset?.asset.id, videoGuideAsset?.asset.id].filter((id): id is string => Boolean(id)),
       });
       setSelectedVideoIds(generatedAssets.map((asset) => asset.id));
       setPhase("completed");
@@ -377,6 +379,7 @@ export default function VideoPanel() {
     vid.load(params as Partial<VideoParams>);
     setTextSource(null);
     setGuideAsset(null);
+    setVideoGuideAsset(null);
     setError(null);
     setPhase("idle");
   };
@@ -451,6 +454,13 @@ export default function VideoPanel() {
                 <button type="button" onClick={() => setPlaying(guideAsset)} title="查看本地创作参考" className="shrink-0"><img src={convertFileSrc(guideAsset.asset.path)} alt={guideAsset.source} className="h-12 w-12 rounded-lg object-cover" /></button>
                 <div className="min-w-0 flex-1"><div className="truncate text-[10px] text-cyan-100">本地创作参考：{guideAsset.source}</div><div className="mt-0.5 text-[9px] leading-snug text-slate-500">已提取画面描述帮助撰写提示词；本地图片不会上传，也不会伪装成 URL。</div></div>
                 <button type="button" onClick={() => setGuideAsset(null)} className="rounded p-1 text-slate-500 hover:text-rose-300"><X size={12} /></button>
+              </div>
+            )}
+            {videoGuideAsset && (
+              <div className="mt-2 flex items-center gap-2 rounded-xl border border-fuchsia-300/10 bg-fuchsia-300/[0.035] p-2">
+                <button type="button" onClick={() => setPlaying(videoGuideAsset)} title="查看本地视频作品参考" className="shrink-0"><video src={convertFileSrc(videoGuideAsset.asset.path)} muted className="h-12 w-20 rounded-lg object-cover" /></button>
+                <div className="min-w-0 flex-1"><div className="truncate text-[10px] text-fuchsia-100">本地视频作品参考：{videoGuideAsset.source}</div><div className="mt-0.5 text-[9px] leading-snug text-slate-500">已导入创作链和溯源；zzone 只接受公网 HTTPS 视频 URL，因此本地文件不会伪装成 Provider 素材。</div></div>
+                <button type="button" onClick={() => setVideoGuideAsset(null)} className="rounded p-1 text-slate-500 hover:text-rose-300"><X size={12} /></button>
               </div>
             )}
           </Field>
@@ -539,7 +549,7 @@ export default function VideoPanel() {
       ]} />}
 
       <AssetDetailModal asset={playing} onClose={() => setPlaying(null)} onLoadAsset={playing?.asset.kind === "video" ? reuseHistory : undefined} />
-      <AssetPicker open={pickerOpen} onClose={() => setPickerOpen(false)} kinds={["text", "image"]} strictProject title="导入当前项目的剧本、分镜或图片资源" onPick={(asset) => {
+      <AssetPicker open={pickerOpen} onClose={() => setPickerOpen(false)} kinds={["text", "image", "video"]} strictProject title="导入当前项目的剧本、分镜、图片或视频资源" onPick={(asset) => {
         if (asset.asset.kind === "text") {
           const text = getDocumentMeta(asset)?.text || String(asset.params?.text ?? asset.source);
           const storyboard = parseStoryboardShots(text);
@@ -559,6 +569,21 @@ export default function VideoPanel() {
           next[0] = { ...next[0], prompt: [next[0]?.prompt.trim(), `本地图片创作参考：${sourcePrompt}`].filter(Boolean).join("\n\n") };
           updateShots(next);
           setGuideAsset(asset);
+        } else if (asset.asset.kind === "video") {
+          const first = shots[0];
+          if (isPublicHttpsUrl(asset.asset.path) && capability.modes.includes("reference") && capability.maxVideos > 0) {
+            const referenceVideos = [...new Set([...(first.referenceVideos ?? []), asset.asset.path])].slice(0, capability.maxVideos);
+            const referenceAssetIds = [...new Set([...(first.referenceAssetIds ?? []), asset.asset.id])];
+            updateShots([{ ...first, referenceStrategy: "reference", referenceVideos, referenceAssetIds }, ...shots.slice(1)]);
+            vid.set({ mode: "reference" });
+            setError(null);
+          } else {
+            const next = [...shots];
+            next[0] = { ...next[0], prompt: [next[0]?.prompt.trim(), `本地视频作品创作参考：${asset.source}。只参考其已知资源信息，不声称文本模型看过视频画面。`].filter(Boolean).join("\n\n") };
+            updateShots(next);
+            setVideoGuideAsset(asset);
+            setError(capability.maxVideos > 0 ? "本地视频已作为创作参考导入；zzone 的参考视频参数只接受公网 HTTPS URL。" : `${capability.label} 不支持参考视频；已仅作为创作参考导入。`);
+          }
         }
       }} />
     </div>

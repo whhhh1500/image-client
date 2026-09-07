@@ -12,10 +12,11 @@ import { isPublicHttpsUrl } from "../lib/video/referenceUrl";
 vi.mock("@tauri-apps/api/core", () => ({ convertFileSrc: (path: string) => path }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ revealItemInDir: vi.fn() }));
 vi.mock("../lib/generateVideo", () => ({ concatVideoAssets: vi.fn(), generateVideo: vi.fn() }));
-const picker = vi.hoisted(() => ({ onPick: null as ((asset: unknown) => void) | null }));
+const picker = vi.hoisted(() => ({ onPick: null as ((asset: unknown) => void) | null, kinds: [] as string[] }));
 vi.mock("../components/AssetPicker", () => ({
-  default: ({ onPick }: { onPick: (asset: unknown) => void }) => {
+  default: ({ onPick, kinds }: { onPick: (asset: unknown) => void; kinds: string[] }) => {
     picker.onPick = onPick;
+    picker.kinds = kinds;
     return null;
   },
 }));
@@ -55,6 +56,36 @@ function asset(id: string, kind: "image" | "video" | "text", projectId: string, 
 }
 
 describe("VideoPanel storyboard import", () => {
+  it("offers video assets and imports a public HTTPS video into the first shot provider references", async () => {
+    useProjectStore.setState({ activeId: "project-a", projects: [{ id: "project-a", name: "测试项目", description: "", storyStyle: "", artStyle: "", aspectRatio: "16:9", imageModel: "image-model", imageQuality: "high", videoModel: "model", videoResolution: "720p" }] });
+    useVideoStore.getState().load({ model: "model", mode: "text", aspectRatio: "16:9", resolution: "720p", images: [], videos: [], audios: [], shots: [{ id: "shot-1", shotNo: 1, prompt: "镜头", durationS: 3 }] });
+    const video = asset("video-ref", "video", "project-a", "https://cdn.example/reference.mp4");
+    useLibraryStore.setState({ assets: [video], tasks: [] });
+
+    render(<VideoPanel />);
+    await waitFor(() => expect(picker.kinds).toContain("video"));
+    act(() => picker.onPick?.(video));
+
+    expect(useVideoStore.getState()).toMatchObject({
+      mode: "reference",
+      shots: [{ referenceStrategy: "reference", referenceAssetIds: ["video-ref"], referenceVideos: ["https://cdn.example/reference.mp4"] }],
+    });
+  });
+
+  it("imports a local video as creative-reference provenance instead of pretending it is a provider URL", async () => {
+    useProjectStore.setState({ activeId: "project-a", projects: [{ id: "project-a", name: "测试项目", description: "", storyStyle: "", artStyle: "", aspectRatio: "16:9", imageModel: "image-model", imageQuality: "high", videoModel: "model", videoResolution: "720p" }] });
+    useVideoStore.getState().load({ model: "model", mode: "text", aspectRatio: "16:9", resolution: "720p", images: [], videos: [], audios: [], shots: [{ id: "shot-1", shotNo: 1, prompt: "镜头", durationS: 3 }] });
+    const video = asset("local-video", "video", "project-a", "D:/local-video.mp4");
+    useLibraryStore.setState({ assets: [video], tasks: [] });
+
+    render(<VideoPanel />);
+    await waitFor(() => expect(picker.onPick).not.toBeNull());
+    act(() => picker.onPick?.(video));
+
+    expect(useVideoStore.getState().shots[0].prompt).toContain("本地视频作品创作参考");
+    expect(useVideoStore.getState().shots[0].referenceVideos).toBeUndefined();
+    expect(await screen.findByText(/zzone 的参考视频参数只接受公网 HTTPS URL/)).toBeTruthy();
+  });
   it("accepts only public credential-free HTTPS reference URLs", () => {
     expect(isPublicHttpsUrl("https://cdn.example.com/reference.png")).toBe(true);
     expect(isPublicHttpsUrl("http://cdn.example.com/reference.png")).toBe(false);

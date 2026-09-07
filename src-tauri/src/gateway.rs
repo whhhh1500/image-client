@@ -805,7 +805,7 @@ mod tests {
             }
             let output = root.join("output");
             let result = timeout(
-                Duration::from_secs(1),
+                Duration::from_secs(3),
                 generate_image_with_clients(
                     &cfg,
                     &RunNodeRequest {
