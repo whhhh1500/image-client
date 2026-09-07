@@ -14,8 +14,6 @@ concurrency:
 
 env:
   CARGO_INCREMENTAL: "0"
-  RUSTC_WRAPPER: sccache
-  SCCACHE_GHA_ENABLED: "true"
 
 jobs:
   # Verification and native packaging intentionally start together. Bundles are
@@ -34,13 +32,12 @@ jobs:
           node-version: 24
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
-      - uses: mozilla-actions/sccache-action@v0.0.11
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-          cache-targets: false
-          shared-key: release-dependencies-linux-x64
+          shared-key: release-target-linux-x64
           add-job-id-key: false
+          save-if: false
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
@@ -93,13 +90,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - uses: mozilla-actions/sccache-action@v0.0.11
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-          cache-targets: false
-          shared-key: release-dependencies-${{ matrix.cache_key }}
+          shared-key: release-target-${{ matrix.cache_key }}
           add-job-id-key: false
+          save-if: false
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
