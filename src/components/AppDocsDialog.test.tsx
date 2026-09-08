@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import AppDocsDialog from "./AppDocsDialog";
 
 afterEach(cleanup);
@@ -26,12 +26,29 @@ it("shows the changelog and closes with Escape", () => {
   render(<AppDocsDialog view="changelog" onClose={onClose} />);
 
   expect(screen.getByRole("dialog", { name: "更新日志" })).toBeTruthy();
-  expect(screen.getByText("v0.2.0")).toBeTruthy();
-  expect(screen.getByText("2026-09-07")).toBeTruthy();
-  expect(screen.getByText(/小说漫画 AI 优化会按作品设定/)).toBeTruthy();
-  expect(screen.getByText(/短剧视频 AI 优化会按规划/)).toBeTruthy();
-  expect(screen.getByText("v0.1.0")).toBeTruthy();
-  expect(screen.getByText("2026-09-06")).toBeTruthy();
+  const versionSection = (version: string) => {
+    const section = screen.getByText(version).closest("section");
+    expect(section, `${version} section`).toBeTruthy();
+    return within(section!);
+  };
+  const v023 = versionSection("v0.2.3");
+  expect(v023.getByText("2026-09-08")).toBeTruthy();
+  expect(v023.getByText(/短剧采用带修订号的章节快照/)).toBeTruthy();
+  expect(v023.getByText(/实际提交的完整 Prompt 快照/)).toBeTruthy();
+  expect(v023.getByText(/Windows x64 portable\.exe、macOS arm64 app\.tar\.gz 和 Linux x64 AppImage/)).toBeTruthy();
+
+  const v022 = versionSection("v0.2.2");
+  expect(v022.getByText("2026-09-07")).toBeTruthy();
+  expect(v022.getByText(/本地视频保留创作参考与来源信息/)).toBeTruthy();
+  const v021 = versionSection("v0.2.1");
+  expect(v021.getByText("2026-09-07")).toBeTruthy();
+  expect(v021.getByText(/作品级多图画风参考/)).toBeTruthy();
+  const v020 = versionSection("v0.2.0");
+  expect(v020.getByText("2026-09-07")).toBeTruthy();
+  expect(v020.getByText(/小说漫画 AI 优化会按作品设定/)).toBeTruthy();
+  expect(v020.getByText(/短剧视频 AI 优化会按规划/)).toBeTruthy();
+  const v010 = versionSection("v0.1.0");
+  expect(v010.getByText("2026-09-06")).toBeTruthy();
 
   fireEvent.keyDown(window, { key: "Escape" });
   expect(onClose).toHaveBeenCalledOnce();
