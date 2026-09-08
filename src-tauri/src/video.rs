@@ -518,7 +518,7 @@ pub async fn generate_segments(
             "promptStats": crate::logging::text_stats(&req.prompt),
         }),
     );
-    let client = reqwest::Client::new();
+    let client = crate::http::client_for_url(&cfg.video_api_url)?;
     let (provider_task_id, bytes) = match generate_segment(
         &client,
         cfg,
@@ -685,7 +685,7 @@ async fn wait_task(
                 let delay = transient_poll_backoff_seconds(transient_failures);
                 crate::logging::warn(
                     "video.task.poll_retry",
-                    json!({ "requestId": request_id, "segmentIndex": segment_index, "taskId": task_id, "pollCount": poll_count, "reason": "network", "retryInS": delay, "error": error.to_string() }),
+                    json!({ "requestId": request_id, "segmentIndex": segment_index, "taskId": task_id, "pollCount": poll_count, "reason": "network", "retryInS": delay, "error": crate::logging::error_text(&error) }),
                 );
                 tokio::time::sleep(Duration::from_secs(delay)).await;
                 continue;
@@ -814,7 +814,7 @@ async fn download_content(
                 let delay = transient_poll_backoff_seconds(attempt);
                 crate::logging::warn(
                     "video.download.retry",
-                    json!({ "requestId": request_id, "segmentIndex": segment_index, "taskId": task_id, "attempt": attempt, "reason": "network", "retryInS": delay, "error": error.to_string() }),
+                    json!({ "requestId": request_id, "segmentIndex": segment_index, "taskId": task_id, "attempt": attempt, "reason": "network", "retryInS": delay, "error": crate::logging::error_text(&error) }),
                 );
                 tokio::time::sleep(Duration::from_secs(delay)).await;
                 continue;
@@ -837,19 +837,7 @@ async fn download_content(
             }
             return Err(format!("下载视频返回 {status}"));
         }
-        if resp
-            .content_length()
-            .is_some_and(|length| length > MAX_VIDEO_BYTES as u64)
-        {
-            return Err("视频内容超过 512 MiB 大小限制".into());
-        }
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| format!("读取视频内容失败: {e}"))?;
-        if bytes.len() > MAX_VIDEO_BYTES {
-            return Err("视频内容超过 512 MiB 大小限制".into());
-        }
+        let bytes = crate::http::read_limited_bytes(resp, MAX_VIDEO_BYTES, "视频内容").await?;
         if !crate::assets::is_valid_mp4_bytes(&bytes) {
             return Err("视频接口返回的内容不是有效 MP4".into());
         }
@@ -857,7 +845,7 @@ async fn download_content(
             "video.download",
             json!({ "requestId": request_id, "segmentIndex": segment_index, "taskId": task_id, "attempt": attempt, "durationMs": started.elapsed().as_millis(), "bytes": bytes.len() }),
         );
-        return Ok(bytes.to_vec());
+        return Ok(bytes);
     }
     Err("下载视频失败：重试次数耗尽".into())
 }
@@ -867,19 +855,7 @@ async fn read_limited_text(
     limit: usize,
     label: &str,
 ) -> Result<String, String> {
-    if response
-        .content_length()
-        .is_some_and(|length| length > limit as u64)
-    {
-        return Err(format!("{label}超过 1 MiB 大小限制"));
-    }
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|error| format!("读取{label}失败: {error}"))?;
-    if bytes.len() > limit {
-        return Err(format!("{label}超过 1 MiB 大小限制"));
-    }
+    let bytes = crate::http::read_limited_bytes(response, limit, label).await?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 

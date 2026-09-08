@@ -37,13 +37,21 @@ export function redactSensitiveText(value: string): string {
 
 export function summarizeForLog(value: unknown, key = "", depth = 0): unknown {
   if (depth > 4) return "<max-depth>";
+  // Binary payloads must be measured, never enumerated: `Object.keys`/`Array.from`
+  // on a large TypedArray allocates one string per byte and freezes the renderer
+  // long before the value ever reaches IPC. This check must stay ahead of the
+  // `privateKey` branch because keys like `data`/`bindValues` are redacted there.
+  if (ArrayBuffer.isView(value)) {
+    const name = (value as { constructor?: { name?: string } }).constructor?.name;
+    return { type: name || "TypedArray", bytes: value.byteLength };
+  }
+  if (value instanceof ArrayBuffer) return { type: "ArrayBuffer", bytes: value.byteLength };
   if (privateKey(key)) {
     if (typeof value === "string") return { redacted: true, chars: value.length };
     if (Array.isArray(value)) return { redacted: true, items: value.length };
     if (value && typeof value === "object") return { redacted: true, keys: Object.keys(value).length };
     return "<redacted>";
   }
-  if (value instanceof Uint8Array) return { type: "Uint8Array", bytes: value.byteLength };
   if (typeof value === "string") {
     const safe = redactSensitiveText(value);
     return safe.length > 256 ? `${safe.slice(0, 256)}…` : safe;

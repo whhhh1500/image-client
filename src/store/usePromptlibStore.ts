@@ -20,8 +20,17 @@ async function persist(overrides: Record<string, PromptlibOverride>) {
   );
 }
 
-function parseOverrides(raw: string): Record<string, PromptlibOverride> {
-  try {
+// Writes are serialized and always persist the state that is current at write
+// time, so a slow write for one id cannot resurrect a map that still contains a
+// rolled-back value for another id.
+let writeChain: Promise<unknown> = Promise.resolve();
+const serialize = <T,>(task: () => Promise<T>): Promise<T> => {
+  const run = writeChain.then(task, task);
+  writeChain = run.then(() => undefined, () => undefined);
+  return run;
+};
+
+function parseOverrides(raw: string): Record<string, PromptlibOverride> {  try {
     const value = JSON.parse(raw) as Record<string, unknown>;
     const out: Record<string, PromptlibOverride> = {};
     for (const [id, item] of Object.entries(value ?? {})) {
@@ -53,31 +62,39 @@ export const usePromptlibStore = create<PromptlibState>((set, get) => ({
     }
   },
   saveOverride: async (id, prompt, jsonPrompt) => {
-    const previous = get().overrides;
-    const next = {
-      ...previous,
-      [id]: { prompt, jsonPrompt, updatedAt: Date.now() },
-    };
-    set({ overrides: next });
+    const previous = get().overrides[id];
+    const next: PromptlibOverride = { prompt, jsonPrompt, updatedAt: Date.now() };
+    set((state) => ({ overrides: { ...state.overrides, [id]: next } }));
     try {
-      await persist(next);
+      await serialize(() => persist(get().overrides));
       logEvent("info", "promptlib.override_saved", { id });
     } catch (error) {
-      set({ overrides: previous });
+      // Roll back only this id, and only while our optimistic value is current:
+      // a concurrent successful save for the same id must win.
+      set((state) => {
+        if (state.overrides[id]?.updatedAt !== next.updatedAt) return state;
+        const reverted = { ...state.overrides };
+        if (previous) reverted[id] = previous;
+        else delete reverted[id];
+        return { overrides: reverted };
+      });
       logEvent("error", "promptlib.override_save_failed", { id, error: String(error) });
       throw error;
     }
   },
   restore: async (id) => {
-    const previous = get().overrides;
-    const next = { ...previous };
-    delete next[id];
-    set({ overrides: next });
+    const previous = get().overrides[id];
+    if (!previous) return;
+    set((state) => {
+      const next = { ...state.overrides };
+      delete next[id];
+      return { overrides: next };
+    });
     try {
-      await persist(next);
+      await serialize(() => persist(get().overrides));
       logEvent("info", "promptlib.override_restored", { id });
     } catch (error) {
-      set({ overrides: previous });
+      set((state) => (state.overrides[id] ? state : { overrides: { ...state.overrides, [id]: previous } }));
       logEvent("error", "promptlib.override_restore_failed", { id, error: String(error) });
       throw error;
     }

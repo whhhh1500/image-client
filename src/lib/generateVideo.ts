@@ -113,6 +113,7 @@ function orderedForConcat(assets: LibAsset[]): LibAsset[] {
 export async function generateVideo(
   params: VideoParams,
   provenanceInput: Partial<Omit<HistoryProvenance, "schemaVersion" | "recordedAt">> = {},
+  options: { resumeShotGroupId?: string } = {},
 ): Promise<AssetRef[]> {
   const manifestIssue = productionManifestMismatch(params);
   if (manifestIssue) throw new Error(`已审查生产条件失效：${manifestIssue}`);
@@ -120,11 +121,19 @@ export async function generateVideo(
   const projectId = useProjectStore.getState().activeId ?? undefined;
   if (!projectId) throw new Error("请先选择当前项目，再生成视频");
   const taskId = createId("task");
-  const shotGroupId = createId("video_shots");
+  const shotGroupId = options.resumeShotGroupId ?? createId("video_shots");
   const nodeId = "gen_video_shots";
   const createdAt = Date.now();
   const shots = params.shots.map((shot, index) => ({ ...shot, shotNo: index + 1, prompt: shot.prompt.trim() })).filter((shot) => shot.prompt);
   if (!shots.length) throw new Error("至少需要一个视频镜头 Prompt");
+  // A retry resumes the original shot group: shots already persisted must not be
+  // paid for and produced twice, and must not land in a second duplicate group.
+  const resumedShotNos = options.resumeShotGroupId
+    ? new Set(store.assets
+      .filter((item) => item.projectId === projectId && item.params?.shotGroupId === options.resumeShotGroupId)
+      .map((item) => Number(item.params?.shotNo))
+      .filter((shotNo) => Number.isSafeInteger(shotNo) && shotNo > 0))
+    : new Set<number>();
 
   const images = [...new Set(params.images.map((url) => url.trim()).filter(Boolean))];
   const videos = [...new Set((params.videos ?? []).map((url) => url.trim()).filter(Boolean))];
@@ -181,12 +190,16 @@ export async function generateVideo(
   const started = performance.now();
   const generated: AssetRef[] = [];
 
-  store.addTask({ id: taskId, nodeId, label, model: params.model, projectId, kind: "video", status: "running", createdAt, params: taskParams });
-  await persistTask({ id: taskId, nodeId, providerId: "zzone", status: "running", label, model: params.model, projectId, kind: "video", createdAt, params: taskParams });
-
   try {
+    // Both the in-memory task and its DB row must be created inside the guarded
+    // block: a failing persistTask would otherwise leave a task that stays
+    // "running" in the UI with no row to ever update it.
+    store.addTask({ id: taskId, nodeId, label, model: params.model, projectId, kind: "video", status: "running", createdAt, params: taskParams });
+    await persistTask({ id: taskId, nodeId, providerId: "zzone", status: "running", label, model: params.model, projectId, kind: "video", createdAt, params: taskParams });
+
     for (let index = 0; index < shots.length; index += 1) {
       const shot = shots[index];
+      if (resumedShotNos.has(shot.shotNo)) continue;
       const shotLocalImages = shot.referenceLocalImages ?? [];
       const shotImages = shot.referenceImages?.length || shotLocalImages.length ? [...new Set(shot.referenceImages ?? [])] : images;
       const shotVideos = shot.referenceVideos?.length ? [...new Set(shot.referenceVideos)] : videos;

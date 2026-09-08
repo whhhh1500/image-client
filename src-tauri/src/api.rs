@@ -297,6 +297,11 @@ fn emit_history_changed(state: &ApiState, operation: &str, asset_ids: &[String])
     state.history_sync.publish(operation, asset_ids);
 }
 
+/// Base64 of the 512 MiB media limit plus the JSON envelope. The global body
+/// limit stays small for JSON routes; only the media route accepts this much.
+const MAX_MEDIA_BODY_BYTES: usize =
+    (crate::commands::MAX_MEDIA_ASSET_BYTES / 3 + 1) * 4 + 64 * 1024;
+
 fn build_router(state: ApiState) -> Router {
     let versioned = Router::new()
         .route("/health", get(health))
@@ -322,7 +327,10 @@ fn build_router(state: ApiState) -> Router {
         .route("/media/images/generations", post(image))
         .route("/media/videos/generations", post(video))
         .route("/assets/text", post(save_text_asset))
-        .route("/assets/media", post(save_media_asset));
+        .route(
+            "/assets/media",
+            post(save_media_asset).layer(DefaultBodyLimit::max(MAX_MEDIA_BODY_BYTES)),
+        );
 
     // Legacy aliases remain for existing automation. New integrations should use /api/v1.
     let legacy = Router::new()
@@ -545,7 +553,7 @@ async fn save_config_api(
 ) -> Result<Json<Value>, ApiError> {
     commands::validate_save_config(&config).map_err(err)?;
     let mut new = state.cfg.read().unwrap().clone();
-    commands::merge_config(&mut new, &config);
+    commands::merge_config(&mut new, &config).map_err(err)?;
     new.source = "api".into();
     new.persist_backend().map_err(err)?;
     *state.cfg.write().unwrap() = new.clone();
@@ -757,7 +765,7 @@ async fn run_step(
     let url = format!("{}/chat/completions", cfg.llm_api_url.trim_end_matches('/'));
     let model = body.model.unwrap_or(cfg.llm_model.clone());
     let system = body.system.unwrap_or_else(|| default_system.to_string());
-    let raw_result = crate::llm::complete_text(
+    let completion = crate::llm::complete_text_result(
         &url,
         &cfg.llm_api_key,
         &model,
@@ -767,6 +775,13 @@ async fn run_step(
     )
     .await
     .map_err(err)?;
+    // Document-producing calls must not persist a truncated answer.
+    if !completion.completed {
+        return Err(err(
+            "文本服务返回不完整结果（可能被截断），未保存文档；请重试或缩短输入".into(),
+        ));
+    }
+    let raw_result = completion.content;
     let (result, normalized_reference_shots) = if agent_id == "storyboard" {
         agent_prompts::normalize_storyboard_reference_assets(&raw_result)
     } else {
@@ -1248,8 +1263,8 @@ async fn save_media_asset(
     if !["image", "video"].contains(&body.kind.as_str()) {
         return Err(err("kind 必须是 image 或 video".into()));
     }
-    if body.data_base64.is_empty() || body.data_base64.len() > 700 * 1024 * 1024 {
-        return Err(err("dataBase64 不能为空且长度过大".into()));
+    if body.data_base64.is_empty() || body.data_base64.len() > MAX_MEDIA_BODY_BYTES {
+        return Err(err("dataBase64 不能为空且解码后不得超过 512 MiB".into()));
     }
     optional_text(body.label.as_deref(), "label", 100)?;
     optional_text(body.prompt.as_deref(), "prompt", MAX_PROMPT_CHARS)?;

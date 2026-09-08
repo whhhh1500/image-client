@@ -269,6 +269,7 @@ function draftDiffersFromSaved(draft: StageDraft, asset: LibAsset | undefined, v
   const saved = savedReview(asset);
   const savedSourceKind: SourceKind = asset?.params?.sourceKind === "idea" ? "idea" : novelSourceReferenceFromAsset(asset) ? "novel" : "manual";
   return draft.text !== (meta?.text ?? "")
+    || (draft.optimizationInstruction ?? "") !== (meta?.provenance?.revision?.instruction ?? "")
     || (view === "source" && (draft.sourceKind ?? "manual") !== savedSourceKind)
     || draft.dependencyMode === "preserve_history"
     || draft.dependencyMode === "migrate_latest"
@@ -347,6 +348,9 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
     } catch {
       setActiveWorkflowId(undefined);
     }
+    // Re-read the per-project video reference map: it is keyed by workflow id and
+    // used to merge writes into `video-md:work-video-references:<project>`.
+    setVideoReferencesByWorkflow(readVideoWorkReferences(projectId));
     setSelectedByStage({});
     setMessage("");
     setError("");
@@ -481,6 +485,9 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
   const novelSourceAdjusted = Boolean(activeNovelSource && sourcePlainText(activeDraft.text, isVideoSourceDocument(selectedAsset)) !== activeNovelSource.content.trim());
   const savedSourceKind: SourceKind = selectedAsset?.params?.sourceKind === "idea" ? "idea" : novelSourceReferenceFromAsset(selectedAsset) ? "novel" : "manual";
   const contentDirty = activeDraft.text !== (selectedMeta?.text ?? "")
+    // The optimization instruction is persisted as revision.instruction, so an
+    // edit to it alone must enable the save button.
+    || (activeDraft.optimizationInstruction ?? "") !== (selectedMeta?.provenance?.revision?.instruction ?? "")
     || (view === "source" && (activeDraft.sourceKind ?? "manual") !== savedSourceKind)
     || activeDraft.dependencyMode === "preserve_history"
     || activeDraft.dependencyMode === "migrate_latest";
@@ -840,7 +847,14 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
         ...savedReview(saved),
       };
       setSelectedByStage((state) => ({ ...state, [nextStageKey]: saved.asset.id }));
-      setDrafts((state) => ({ ...state, [nextEditorKey]: clean }));
+      setDrafts((state) => {
+        const next = { ...state, [nextEditorKey]: clean };
+        // The saved asset supersedes the pre-save editor key. Leaving it behind
+        // makes stageDraftEntries report a phantom unsaved draft forever, which
+        // blocks downstream AI optimization with no way to discard it.
+        delete next[editorKey];
+        return next;
+      });
       setMessage(preservingBranch
         ? `历史分支已保存为 v${getDocumentMeta(saved)?.version ?? 1}，旧依赖保持不变，未替代当前生产版本。`
         : `已保存为 v${getDocumentMeta(saved)?.version ?? 1}。${reviewValid ? "质量审查随版本保存。" : "该版本仍待质量审查，下游不会放行。"}`);
@@ -985,8 +999,6 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
       }
 
       const savedByStage: Partial<Record<View, LibAsset>> = {};
-      const draftUpdates: Record<string, StageDraft> = {};
-      const selectionUpdates: Record<string, string> = {};
       setMessage(`全部联动草稿已通过审查，正在按依赖顺序保存 ${prepared.length} 个新版本…`);
       for (const item of prepared) {
         const stageSpecValue = stageSpec(item.stage)!;
@@ -1038,17 +1050,23 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
         writeDraft(oldEditorKey, undefined);
         const savedStageKey = `${projectId}:${workflowId}:${item.stage}`;
         const savedEditorKey = `${savedStageKey}:${saved.asset.id}`;
-        selectionUpdates[savedStageKey] = saved.asset.id;
-        draftUpdates[savedEditorKey] = {
+        const savedDraft: StageDraft = {
           text: item.text,
           optimizationInstruction: instruction,
           changeType: "manual",
           dependencyMode: "current",
           ...savedReview(saved),
         };
+        // Apply each stage as soon as it is persisted: if a later stage fails,
+        // the user must see which versions already exist instead of retrying
+        // the whole chain (which would re-run the LLM and duplicate versions).
+        setSelectedByStage((state) => ({ ...state, [savedStageKey]: saved.asset.id }));
+        setDrafts((state) => {
+          const next = { ...state, [savedEditorKey]: savedDraft };
+          delete next[oldEditorKey];
+          return next;
+        });
       }
-      setSelectedByStage((state) => ({ ...state, ...selectionUpdates }));
-      setDrafts((state) => ({ ...state, ...draftUpdates }));
       setDocumentView("compare");
       setMessage(`AI 联动优化完成：${prepared.map((item) => stageSpec(item.stage)?.label).join(" → ")} 已直接保存为新版本并通过独立审查。已有视频资源未自动重生成。`);
     } catch (cause) {

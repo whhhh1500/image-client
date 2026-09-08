@@ -1,12 +1,22 @@
 mod agent_prompts;
 mod api;
 mod assets;
+// Retired novel/comic executors. Their IPC commands are intentionally
+// unregistered (see scripts/comic-md-retired-commands.json and
+// scripts/comic-md-acceptance.mjs), so every item here is dead by design; the
+// attribute keeps `cargo clippy` focused on live code.
+#[allow(dead_code)]
 mod comic;
 mod comic_markdown;
+#[allow(dead_code)]
 mod comic_visual;
+#[allow(dead_code)]
 mod comic_visual_asset;
+#[allow(dead_code)]
 mod comic_visual_batch;
+#[allow(dead_code)]
 mod comic_visual_export;
+#[allow(dead_code)]
 mod comic_visual_render;
 mod commands;
 mod config;
@@ -16,6 +26,7 @@ mod gateway;
 #[cfg(feature = "real-e2e-harness")]
 mod harness_transport;
 mod history;
+mod http;
 mod legacy_comic_retirement;
 mod llm;
 mod local_video_images;
@@ -23,6 +34,7 @@ mod logging;
 mod media_hosting;
 mod model;
 mod novel;
+#[allow(dead_code)]
 mod novel_adaptation;
 mod paths;
 mod providers;
@@ -239,6 +251,7 @@ pub fn run() {
             commands::llm_chat,
             commands::agent_run,
             commands::save_text,
+            commands::persist_assets_batch,
             commands::save_document_version,
             commands::read_text_asset,
             commands::save_media_asset,

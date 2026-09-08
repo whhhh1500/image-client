@@ -1,31 +1,17 @@
 import { dbExecute, dbSelect } from "./db";
 import { logEvent } from "./logger";
-import type { AssetRef } from "./ipc";
+import { persistAssetsBatch, type AssetRef } from "./ipc";
 import type { AssetKind } from "../types";
 import { useLibraryStore, type LibAsset, type TaskRecord, type AssetMeta } from "../store/useLibraryStore";
 
 let historyRefreshPromise: Promise<{ assets: LibAsset[]; tasks: TaskRecord[] }> | null = null;
 let historyRefreshQueued = false;
 
-/** Best-effort: insert produced assets into the `assets` table. */
+/** Best-effort: insert produced assets into the `assets` table in one transaction. */
 export async function persistAssets(assets: AssetRef[], source: string, meta?: AssetMeta) {
+  if (!assets.length) return;
   try {
-    for (const a of assets) {
-      await dbExecute(
-        "INSERT OR REPLACE INTO assets (id, kind, path, width, height, duration_s, format, created_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        [
-          a.id,
-          a.kind,
-          a.path,
-          a.width ?? null,
-          a.height ?? null,
-          a.durationS ?? null,
-          a.format ?? null,
-          Date.now(),
-          JSON.stringify({ source, ...meta }),
-        ],
-      );
-    }
+    await persistAssetsBatch(assets, source, meta?.model, meta?.projectId, meta?.params ?? {});
   } catch (e) {
     logEvent("error", "database.persist_assets.failed", { source, assetCount: assets.length, error: String(e) });
     throw e;
@@ -76,7 +62,24 @@ export async function persistTask(t: {
 }
 
 export async function updateAssetMetadata(asset: LibAsset, source: string, params: Record<string, unknown>) {
+  const rows = await dbSelect<{ metadata: string | null }[]>(
+    "SELECT metadata FROM assets WHERE id = ?",
+    [asset.asset.id],
+  );
+  if (!rows.length) throw new Error("资源不存在，无法保存修改");
+  let existing: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(rows[0].metadata ?? "{}");
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      existing = parsed as Record<string, unknown>;
+    }
+  } catch {
+    logEvent("warn", "database.asset_metadata_parse_failed", { assetId: asset.asset.id });
+  }
+  // Other producers (e.g. comic visual runs) own lineage keys at the metadata
+  // root. This form only owns these four keys, so merge instead of replacing.
   const metadata = JSON.stringify({
+    ...existing,
     source,
     model: asset.model,
     projectId: asset.projectId,

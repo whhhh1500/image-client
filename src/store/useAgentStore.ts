@@ -249,6 +249,15 @@ async function persist(versions: Record<string, AgentVersion[]>) {
   );
 }
 
+// Serialize settings writes and persist the state that is current at write time,
+// so a slow write cannot resurrect a map that still contains a rolled-back value.
+let writeChain: Promise<unknown> = Promise.resolve();
+const serialize = <T,>(task: () => Promise<T>): Promise<T> => {
+  const run = writeChain.then(task, task);
+  writeChain = run.then(() => undefined, () => undefined);
+  return run;
+};
+
 interface AgentStore {
   versions: Record<string, AgentVersion[]>;
   load: () => Promise<void>;
@@ -256,7 +265,7 @@ interface AgentStore {
   setEnabled: (id: string, v: number, enabled: boolean) => Promise<void>;
 }
 
-export const useAgentStore = create<AgentStore>((set) => ({
+export const useAgentStore = create<AgentStore>((set, get) => ({
   versions: {},
   load: async () => {
     try {
@@ -270,28 +279,34 @@ export const useAgentStore = create<AgentStore>((set) => ({
     }
   },
   addVersion: async (id, system) => {
-    const previous = useAgentStore.getState().versions;
-    const list = previous[id] ?? [];
+    const list = get().versions[id] ?? [];
     const maxV = list.reduce((m, x) => Math.max(m, x.v), 0);
     const next: AgentVersion = { v: maxV + 1, system, enabled: true, updatedAt: Date.now() };
-    const versions = { ...previous, [id]: [...list, next] };
-    set({ versions });
+    set((state) => ({ versions: { ...state.versions, [id]: [...(state.versions[id] ?? []), next] } }));
     try {
-      await persist(versions);
+      await serialize(() => persist(get().versions));
     } catch (error) {
-      set({ versions: previous });
+      // Only remove our own optimistic entry; a concurrent add for another id
+      // (or the same id) must not be discarded.
+      set((state) => {
+        const current = state.versions[id] ?? [];
+        if (!current.some((x) => x.v === next.v && x.updatedAt === next.updatedAt)) return state;
+        return { versions: { ...state.versions, [id]: current.filter((x) => !(x.v === next.v && x.updatedAt === next.updatedAt)) } };
+      });
       throw error;
     }
   },
   setEnabled: async (id, v, enabled) => {
-    const previous = useAgentStore.getState().versions;
-    const list = (previous[id] ?? []).map((x) => (x.v === v ? { ...x, enabled } : x));
-    const versions = { ...previous, [id]: list };
-    set({ versions });
+    set((state) => ({ versions: { ...state.versions, [id]: (state.versions[id] ?? []).map((x) => (x.v === v ? { ...x, enabled } : x)) } }));
     try {
-      await persist(versions);
+      await serialize(() => persist(get().versions));
     } catch (error) {
-      set({ versions: previous });
+      set((state) => ({
+        versions: {
+          ...state.versions,
+          [id]: (state.versions[id] ?? []).map((x) => (x.v === v && x.enabled === enabled ? { ...x, enabled: !enabled } : x)),
+        },
+      }));
       throw error;
     }
   },

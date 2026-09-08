@@ -350,24 +350,7 @@ pub async fn request(
 
 #[cfg(not(feature = "real-e2e-harness"))]
 fn client_for_endpoint(url: &str) -> Result<reqwest::Client, String> {
-    let is_loopback = reqwest::Url::parse(url)
-        .ok()
-        .and_then(|parsed| parsed.host_str().map(str::to_owned))
-        .is_some_and(|host| {
-            host.eq_ignore_ascii_case("localhost")
-                || host
-                    .parse::<std::net::IpAddr>()
-                    .is_ok_and(|address| address.is_loopback())
-        });
-    let builder = reqwest::Client::builder();
-    let builder = if is_loopback {
-        builder.no_proxy()
-    } else {
-        builder
-    };
-    builder
-        .build()
-        .map_err(|error| format!("初始化文本接口客户端失败: {error}"))
+    crate::http::client_for_url(url)
 }
 
 async fn request_with_client(
@@ -735,26 +718,7 @@ async fn read_limited_bytes(
     limit: usize,
     label: &str,
 ) -> Result<Vec<u8>, String> {
-    if response
-        .content_length()
-        .is_some_and(|length| length > limit as u64)
-    {
-        return Err(format!(
-            "{label}超过大小限制（{} MiB）",
-            limit / 1024 / 1024
-        ));
-    }
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|error| format!("读取{label}失败: {error}"))?;
-    if bytes.len() > limit {
-        return Err(format!(
-            "{label}超过大小限制（{} MiB）",
-            limit / 1024 / 1024
-        ));
-    }
-    Ok(bytes.to_vec())
+    crate::http::read_limited_bytes(response, limit, label).await
 }
 
 async fn read_limited_text(

@@ -115,10 +115,10 @@ pub async fn generate_image(
     #[cfg(feature = "real-e2e-harness")]
     let generation_client = crate::harness_transport::generation_client()?;
     #[cfg(not(feature = "real-e2e-harness"))]
-    let generation_client = reqwest::Client::new();
+    let generation_client = crate::http::client_for_url(&cfg.image_api_url)?;
     // Asset URLs are fetched with a separate client.  Bearer authentication is
     // attached to generation POSTs below, never to these GET requests.
-    let asset_download_client = reqwest::Client::new();
+    let asset_download_client = crate::http::shared_client()?;
     generate_image_with_clients(
         cfg,
         req,
@@ -209,7 +209,7 @@ async fn generate_image_with_clients(
             .send()
             .await
             .map_err(|e| {
-                crate::logging::error("image.request.end", serde_json::json!({ "requestId": request_id, "status": "error", "durationMs": started.elapsed().as_millis(), "error": e.to_string() }));
+                crate::logging::error("image.request.end", serde_json::json!({ "requestId": request_id, "status": "error", "durationMs": started.elapsed().as_millis(), "error": crate::logging::error_text(&e) }));
                 format!("请求图像编辑接口失败: {e}")
             })?;
         #[cfg(feature = "real-e2e-harness")]
@@ -246,7 +246,7 @@ async fn generate_image_with_clients(
             .send()
             .await
             .map_err(|e| {
-                crate::logging::error("image.request.end", serde_json::json!({ "requestId": request_id, "status": "error", "durationMs": started.elapsed().as_millis(), "error": e.to_string() }));
+                crate::logging::error("image.request.end", serde_json::json!({ "requestId": request_id, "status": "error", "durationMs": started.elapsed().as_millis(), "error": crate::logging::error_text(&e) }));
                 format!("请求图像接口失败: {e}")
             })?;
         #[cfg(feature = "real-e2e-harness")]
@@ -427,7 +427,7 @@ fn prepare_reference_upload(
     let mut board = RgbaImage::from_pixel(board_width, board_height, Rgba([242, 242, 242, 255]));
 
     for (index, reference) in references.iter().enumerate() {
-        let source = image::load_from_memory(&reference.bytes)
+        let source = crate::assets::decode_image_checked(&reference.bytes)
             .map_err(|_| "参考图格式不受支持或文件已损坏")?;
         place_reference_tile(&mut board, source, index as u32, columns);
     }

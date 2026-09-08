@@ -86,6 +86,30 @@ function ChangelogContent() {
     <div className="space-y-3">
       <section className={sectionClass}>
         <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h3 className="text-sm font-semibold text-slate-100">v0.2.4</h3>
+          <time dateTime="2026-09-09" className="text-[11px] text-slate-500">2026-09-09</time>
+        </div>
+        <div className="space-y-3 pt-1">
+          <div>
+            <h4 className="text-[11px] font-medium text-cyan-100/80">稳定性与数据安全</h4>
+            <ul className={`${copyClass} mt-1 list-disc space-y-1 pl-4`}>
+              <li>修复保存或拼接大视频时界面卡死、内存暴涨；大文件不再逐字节编码，数据库初始化失败后可以重试。</li>
+              <li>修复资产库保存资源信息会覆盖漫画页面血缘信息、视频工作区保存后仍显示「草稿未保存」、快速切换项目串用上一个项目参数等问题。</li>
+              <li>压缩、格式转换、外部文件导入和媒体保存改到后台线程；导入大文件时不再卡住整个应用，图片解码也增加了像素与内存上限。</li>
+            </ul>
+          </div>
+          <div>
+            <h4 className="text-[11px] font-medium text-cyan-100/80">重试与性能</h4>
+            <ul className={`${copyClass} mt-1 list-disc space-y-1 pl-4`}>
+              <li>视频任务重试按原镜头组续跑，不再重复生成并计费已成功的镜头，失败原因直接显示。</li>
+              <li>历史库新增索引、漫画目录按作品一次性加载、参考图与导出校验结果缓存、HTTP 连接复用；release 包体积进一步缩小。</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section className={sectionClass}>
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
           <h3 className="text-sm font-semibold text-slate-100">v0.2.3</h3>
           <time dateTime="2026-09-08" className="text-[11px] text-slate-500">2026-09-08</time>
         </div>

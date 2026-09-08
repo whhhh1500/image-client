@@ -300,6 +300,10 @@ export default function AssetDetailModal({
       provenance: inheritHistoryProvenance(
         historyProvenanceFromParams(selected.params) ?? legacyProvenanceFromAsset(selected),
         {
+        // Keep the recorded generation prompt in sync with the edited prompt:
+        // import/merge read provenance.generationInput first, so an edit that
+        // only touched params.prompt would otherwise be silently ignored.
+        generationInput: mediaPrompt,
         revision: {
           type: mediaChangeType,
           instruction: mediaChangeType === "ai_optimized" ? mediaInstruction : undefined,

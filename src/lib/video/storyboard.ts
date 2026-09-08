@@ -57,30 +57,37 @@ function list(value: string): string[] {
 }
 
 function parseFields(block: string): Map<string, string> | null {
-  const matches = [...block.matchAll(/^###\s+([^\n]+)\s*$/gm)];
+  const knownLabels = new Set<string>(Object.values(FIELD_LABELS));
+  const headings = [...block.matchAll(/^###\s+([^\n]+)\s*$/gm)];
+  // Only known field labels delimit fields. Unknown `###` headings (for example
+  // a structured sub-heading inside the free-form video Prompt) stay part of the
+  // preceding field's text instead of invalidating the whole document.
+  const boundaries = headings.filter((match) => knownLabels.has(match[1].trim()));
   const values = new Map<string, string>();
-  matches.forEach((match, index) => {
+  for (let index = 0; index < boundaries.length; index += 1) {
+    const match = boundaries[index];
     const label = match[1].trim();
-    if (!Object.values(FIELD_LABELS).includes(label as typeof FIELD_LABELS[FieldKey]) || values.has(label)) return;
+    if (values.has(label)) return null;
     const start = (match.index ?? 0) + match[0].length;
-    const end = matches[index + 1]?.index ?? block.length;
+    const end = boundaries[index + 1]?.index ?? block.length;
     values.set(label, block.slice(start, end).trim().replace(/\n---\s*$/u, "").trim());
-  });
-  if (values.size !== matches.length || matches.length !== REQUIRED_FIELDS.length) return null;
+  }
+  if (values.size !== REQUIRED_FIELDS.length) return null;
   return values;
 }
 
 export function isStoryboardRoundTripSafe(markdown: string): boolean {
   const shots = parseStoryboardShots(markdown);
   if (!shots.length) return false;
-  const knownFields = new Set(Object.values(FIELD_LABELS));
   const headings = [...markdown.matchAll(/^(#{1,3})\s+(.+)$/gm)];
   if (headings.some((match) => {
     const level = match[1].length;
     const label = match[2].trim();
     if (level === 1) return label !== "视频分镜";
     if (level === 2) return !/^第\s*\d+\s*镜$/u.test(label);
-    return !knownFields.has(label as typeof FIELD_LABELS[FieldKey]);
+    // Level-3 headings are either known fields (validated by the parser) or
+    // free-form content inside the preceding field, which serialization keeps.
+    return false;
   })) return false;
   const firstShot = markdown.search(/^##\s+第\s*\d+\s*镜\s*$/m);
   const titleEnd = markdown.search(/\n/);

@@ -1,4 +1,5 @@
 import { useLibraryStore, type LibAsset } from "../store/useLibraryStore";
+import { encodeBase64 } from "./base64";
 import { assetImportFiles, type AssetImportFileInput, type ExternalAssetImportEntry } from "./ipc";
 
 export type ExternalImportSource = { path: string } | { file: File };
@@ -25,7 +26,9 @@ async function sourceToInput(source: ExternalImportSource): Promise<AssetImportF
   return {
     source: "bytes",
     fileName: source.file.name,
-    data: new Uint8Array(await source.file.arrayBuffer()),
+    // Base64 rather than a nested Uint8Array: Tauri would otherwise expand the
+    // buffer into a JSON number array (one string per byte).
+    dataBase64: encodeBase64(new Uint8Array(await source.file.arrayBuffer())),
   };
 }
 

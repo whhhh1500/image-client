@@ -204,4 +204,31 @@ describe("generateVideo independent shots", () => {
     expect(runVideo).not.toHaveBeenCalled();
     expect(persistTask).not.toHaveBeenCalled();
   });
+
+  it("marks the task failed when the initial running row cannot be persisted", async () => {
+    vi.mocked(persistTask).mockRejectedValueOnce(new Error("SQLITE_BUSY"));
+    await expect(generateVideo({ ...params, shots: [params.shots[0]] })).rejects.toThrow("SQLITE_BUSY");
+    expect(runVideo).not.toHaveBeenCalled();
+    const tasks = useLibraryStore.getState().tasks;
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0].status).toBe("error");
+    expect(tasks[0].error).toContain("SQLITE_BUSY");
+  });
+
+  it("resumes a retried shot group without regenerating persisted shots", async () => {
+    useLibraryStore.setState({
+      assets: [{
+        asset: { id: "segment_1", kind: "video", path: "C:/1.mp4" },
+        source: "视频镜头 1/2",
+        projectId: "project_video",
+        params: { shotGroupId: "group-1", shotNo: 1 },
+        createdAt: 1,
+      }],
+      tasks: [],
+    });
+    await generateVideo(params, {}, { resumeShotGroupId: "group-1" });
+    expect(runVideo).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(runVideo).mock.calls[0][0].config).toMatchObject({ prompt: "镜头二" });
+    expect(persistAssets).toHaveBeenCalledTimes(1);
+  });
 });

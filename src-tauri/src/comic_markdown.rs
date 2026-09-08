@@ -435,6 +435,14 @@ fn validated_work_visual_asset(
     if declared_work.is_some_and(|work| work != novel_work_id) {
         return Err("作品视觉参考已明确属于另一部小说".into());
     }
+    // Pre-check the declared size: reading a multi-GB file only to reject it
+    // afterwards is an avoidable OOM/DoS path.
+    let declared_len = std::fs::metadata(&path)
+        .map_err(|_| "作品视觉参考图片不存在或不可访问")?
+        .len();
+    if declared_len > MAX_WORK_VISUAL_REFERENCE_BYTES as u64 {
+        return Err("单张作品视觉参考图不能超过 20 MiB".into());
+    }
     let bytes = std::fs::read(&path).map_err(|_| "作品视觉参考图片不存在或不可访问")?;
     if bytes.len() > MAX_WORK_VISUAL_REFERENCE_BYTES {
         return Err("单张作品视觉参考图不能超过 20 MiB".into());
@@ -444,13 +452,47 @@ fn validated_work_visual_asset(
 }
 
 fn work_visual_file_available(path: &str, expected_sha256: &str) -> bool {
-    std::fs::read(path)
+    cached_file_sha256(path).is_some_and(|digest| digest == expected_sha256)
+}
+
+/// Digest a reference image, reusing the last result while (path, mtime, len)
+/// is unchanged. Reading and hashing up to 8 x 20 MiB on every workspace read
+/// was the single largest cost of opening a comic chapter.
+fn cached_file_sha256(path: &str) -> Option<String> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::UNIX_EPOCH;
+
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > MAX_WORK_VISUAL_REFERENCE_BYTES as u64 {
+        return None;
+    }
+    let modified = meta
+        .modified()
         .ok()
-        .filter(|bytes| bytes.len() <= MAX_WORK_VISUAL_REFERENCE_BYTES)
-        .is_some_and(|bytes| {
-            crate::assets::detect_format_checked(&bytes).is_some()
-                && work_visual_sha256(&bytes) == expected_sha256
-        })
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    static CACHE: OnceLock<Mutex<HashMap<String, (u128, u64, String)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(guard) = cache.lock() {
+        if let Some((cached_modified, cached_len, digest)) = guard.get(path) {
+            if *cached_modified == modified && *cached_len == meta.len() {
+                return Some(digest.clone());
+            }
+        }
+    }
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.len() > MAX_WORK_VISUAL_REFERENCE_BYTES
+        || crate::assets::detect_format_checked(&bytes).is_none()
+    {
+        return None;
+    }
+    let digest = work_visual_sha256(&bytes);
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(path.to_string(), (modified, meta.len(), digest.clone()));
+    }
+    Some(digest)
 }
 
 fn work_visual_profile(
@@ -762,7 +804,7 @@ fn save_work_visual_profile(
     work_visual_profile(c, &input.project_id, &input.novel_work_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn comic_md_work_visual_import(
     db: tauri::State<'_, DbState>,
     input: WorkVisualImportInput,
@@ -782,11 +824,18 @@ pub fn comic_md_work_visual_import(
             if !seen.insert(canonical.clone()) {
                 return None;
             }
+            let declared_len = match std::fs::metadata(&canonical) {
+                Ok(metadata) => metadata.len(),
+                Err(error) => return Some(Err(format!("读取画风参考图失败：{error}"))),
+            };
+            if declared_len > MAX_WORK_VISUAL_REFERENCE_BYTES as u64 {
+                return Some(Err("单张画风参考图不能超过 20 MiB".into()));
+            }
             let bytes = match std::fs::read(&canonical) {
                 Ok(bytes) => bytes,
                 Err(error) => return Some(Err(format!("读取画风参考图失败：{error}"))),
             };
-            if bytes.len() > 20 * 1024 * 1024 {
+            if bytes.len() > MAX_WORK_VISUAL_REFERENCE_BYTES {
                 return Some(Err("单张画风参考图不能超过 20 MiB".into()));
             }
             let Some(format) = crate::assets::detect_format_checked(&bytes) else {
@@ -2353,6 +2402,40 @@ fn workspace(c: &Connection, s: &Scope) -> Result<Workspace, String> {
     let work_visual_profile = work_visual_profile(c, &s.project_id, &s.novel_work_id)?;
     let work_visual_snapshot = serde_json::to_string(&work_visual_profile.references)
         .map_err(|_| "漫画视觉参考快照序列化失败")?;
+    let images = chapter_images(c, s, &docs, &render_options, &work_visual_profile, &work_visual_snapshot)?;
+    let text_ready = ["settings", "script", "storyboard"].iter().all(|k| {
+        docs.iter()
+            .any(|d| d.kind == *k && !d.stale && d.issues.is_empty())
+    });
+    let image_ready = docs
+        .iter()
+        .any(|d| d.kind == "page_prompt" && !d.stale && d.issues.is_empty());
+    Ok(Workspace {
+        source_revision_id: rev,
+        source_content: content,
+        documents: docs,
+        jobs: jobs(c, s)?,
+        images,
+        text_ready,
+        image_ready,
+        render_options,
+        work_visual_profile,
+        sync_plan: book.plan(),
+        affected_chapters: book.affected(),
+    })
+}
+
+/// Chapter-scoped rendered pages. The work-level inputs (`docs`, render options,
+/// visual profile) are passed in so callers that iterate many chapters of one
+/// work do not reload them per chapter.
+fn chapter_images(
+    c: &Connection,
+    s: &Scope,
+    docs: &[Document],
+    render_options: &RenderOptions,
+    work_visual_profile: &WorkVisualProfile,
+    work_visual_snapshot: &str,
+) -> Result<Vec<PageImage>, String> {
     let mut st=c.prepare("SELECT i.id,i.document_id,i.document_revision,i.page_no,i.path,i.created_at,i.prompt_injection,i.rerun_prompt_injection,i.visual_profile_revision,i.visual_reference_snapshot,r.markdown,j.input_snapshot,i.effective_prompt FROM comic_md_images i JOIN comic_md_documents d ON d.id=i.document_id JOIN comic_md_jobs j ON j.id=i.job_id LEFT JOIN comic_md_revisions r ON r.document_id=i.document_id AND r.revision=i.document_revision WHERE d.project_id=? AND d.novel_work_id=? AND d.chapter_id=? ORDER BY i.page_no,i.created_at DESC").map_err(sql)?;
     let rows = st
         .query_map(params![s.project_id, s.novel_work_id, s.chapter_id], |r| {
@@ -2408,27 +2491,7 @@ fn workspace(c: &Connection, s: &Scope) -> Result<Workspace, String> {
             })
         })
         .map_err(sql)?;
-    let images = rows.collect::<Result<_, _>>().map_err(sql)?;
-    let text_ready = ["settings", "script", "storyboard"].iter().all(|k| {
-        docs.iter()
-            .any(|d| d.kind == *k && !d.stale && d.issues.is_empty())
-    });
-    let image_ready = docs
-        .iter()
-        .any(|d| d.kind == "page_prompt" && !d.stale && d.issues.is_empty());
-    Ok(Workspace {
-        source_revision_id: rev,
-        source_content: content,
-        documents: docs,
-        jobs: jobs(c, s)?,
-        images,
-        text_ready,
-        image_ready,
-        render_options,
-        work_visual_profile,
-        sync_plan: book.plan(),
-        affected_chapters: book.affected(),
-    })
+    rows.collect::<Result<_, _>>().map_err(sql)
 }
 
 /// Rebuild a pre-v27 prompt only if its persisted job snapshot contains every
@@ -2466,14 +2529,14 @@ fn historical_effective_prompt(
         rerun_prompt_injection,
     ))
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn comic_md_workspace_get(
     db: tauri::State<'_, DbState>,
     input: Scope,
 ) -> Result<Workspace, String> {
     db::with_connection(&db, |c| workspace(c, &input))
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn comic_md_catalog_list(
     db: tauri::State<'_, DbState>,
     input: ComicCatalogListInput,
@@ -2509,17 +2572,39 @@ pub(crate) fn catalog_list(
 
     let mut entries = Vec::new();
     let mut emitted_documents = std::collections::HashSet::new();
-    for (work_id, chapter_id, chapter_no, chapter_title) in chapters {
-        let scope = Scope {
+    let mut index = 0;
+    while index < chapters.len() {
+        // Documents and the visual profile are work-scoped, so group the work's
+        // chapters and load them once per work. The previous loop reloaded the
+        // whole work (plus its reference-image digests) once per chapter.
+        let work_id = chapters[index].0.clone();
+        let mut group_end = index + 1;
+        while group_end < chapters.len() && chapters[group_end].0 == work_id {
+            group_end += 1;
+        }
+        let work_scope = Scope {
             project_id: project_id.to_string(),
             novel_work_id: work_id.clone(),
-            chapter_id: chapter_id.clone(),
+            chapter_id: chapters[index].1.clone(),
         };
         // Catalog reads are fail-closed: a canonical workspace error must
         // reach the caller rather than make a project look silently empty.
-        source(c, &scope)?;
-        let current = workspace(c, &scope)?;
-        for document in &current.documents {
+        source(c, &work_scope)?;
+        let book = lineage::Book::load(c, &work_scope)?;
+        let docs = book.documents();
+        let profile = work_visual_profile(c, project_id, &work_id)?;
+        let profile_snapshot = serde_json::to_string(&profile.references)
+            .map_err(|_| "漫画视觉参考快照序列化失败")?;
+        for (_, chapter_id, chapter_no, chapter_title) in &chapters[index..group_end] {
+            let scope = Scope {
+                project_id: project_id.to_string(),
+                novel_work_id: work_id.clone(),
+                chapter_id: chapter_id.clone(),
+            };
+            let render_options = render_options(c, &scope)?;
+            let images =
+                chapter_images(c, &scope, &docs, &render_options, &profile, &profile_snapshot)?;
+            for document in &docs {
             if !emitted_documents.insert(document.id.clone()) {
                 continue;
             }
@@ -2532,7 +2617,7 @@ pub(crate) fn catalog_list(
             let entry_chapter_no = if is_work_document {
                 None
             } else {
-                Some(chapter_no)
+                Some(*chapter_no)
             };
             let entry_chapter_title = if is_work_document {
                 None
@@ -2577,9 +2662,8 @@ pub(crate) fn catalog_list(
                 stale: document.stale || document.out_of_plan || !document.issues.is_empty(),
             });
         }
-        for image in current.images {
-            let document = current
-                .documents
+        for image in images {
+            let document = docs
                 .iter()
                 .find(|candidate| candidate.id == image.document_id);
             let document_kind = document.map(|candidate| candidate.kind.clone());
@@ -2593,7 +2677,7 @@ pub(crate) fn catalog_list(
                 kind: "image".into(),
                 novel_work_id: work_id.clone(),
                 novel_chapter_id: Some(chapter_id.clone()),
-                chapter_no: Some(chapter_no),
+                chapter_no: Some(*chapter_no),
                 chapter_title: chapter_title.clone(),
                 document_id: Some(image.document_id),
                 document_revision: Some(image.document_revision),
@@ -2616,11 +2700,13 @@ pub(crate) fn catalog_list(
                 stale: image.stale,
             });
         }
+        }
+        index = group_end;
     }
     entries.sort_by(|left, right| right.created_at.cmp(&left.created_at));
     Ok(entries)
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn comic_md_work_visual_get(
     db: tauri::State<'_, DbState>,
     input: WorkVisualGetInput,
@@ -2629,7 +2715,7 @@ pub fn comic_md_work_visual_get(
         work_visual_profile(c, &input.project_id, &input.novel_work_id)
     })
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn comic_md_work_visual_save(
     db: tauri::State<'_, DbState>,
     input: WorkVisualSaveInput,
@@ -2696,7 +2782,7 @@ pub async fn comic_md_work_visual_extract(
             .collect(),
     })
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn comic_md_document_save(
     db: tauri::State<'_, DbState>,
     input: SaveInput,
@@ -2708,7 +2794,7 @@ pub fn comic_md_document_save(
         Ok(d)
     })
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn comic_md_document_history(
     db: tauri::State<'_, DbState>,
     input: HistoryInput,
@@ -2992,7 +3078,7 @@ fn apply_completion(
     }
     apply_output(c, job, f, &completion.content)
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn comic_md_generate(
     app: tauri::AppHandle,
     db: tauri::State<'_, DbState>,
@@ -3113,7 +3199,7 @@ fn save_render_options(
     c.execute("INSERT INTO comic_md_render_options(chapter_id,novel_work_id,project_id,prompt_injection,revision,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(chapter_id) DO UPDATE SET prompt_injection=excluded.prompt_injection,revision=excluded.revision,updated_at=excluded.updated_at",params![input.scope.chapter_id,input.scope.novel_work_id,input.scope.project_id,options.prompt_injection,options.revision,now()]).map_err(sql)?;
     Ok(options)
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn comic_md_render_options_save(
     db: tauri::State<'_, DbState>,
     input: RenderOptionsSaveInput,
@@ -3517,7 +3603,7 @@ fn apply_optimization(
     tx.execute("UPDATE comic_md_jobs SET completed_pages=completed_pages+1,message=? WHERE id=? AND status='running'",params![format!("{}已优化并保存",document_label(&target.document)),job]).map_err(sql)?;
     tx.commit().map_err(sql)
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn comic_md_optimize(
     app: tauri::AppHandle,
     db: tauri::State<'_, DbState>,
@@ -3597,7 +3683,7 @@ pub fn comic_md_optimize(
     });
     Ok(j)
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn comic_md_render(
     app: tauri::AppHandle,
     db: tauri::State<'_, DbState>,
@@ -3674,13 +3760,13 @@ pub fn comic_md_render(
                 input_assets: vec![],
             };
             let result = crate::gateway::generate_image(&cfg, &req, &cfg.output_path()).await;
-            let saved = db::with_connection(&app.state::<DbState>(), |c| match result {
+            let saved = db::with_connection(&app.state::<DbState>(), |c| match &result {
                 Ok(assets) if !assets.is_empty() => {
                     let tx = c.unchecked_transaction().map_err(sql)?;
                     for a in assets {
-                        tx.execute("INSERT INTO comic_md_images(id,job_id,document_id,document_revision,page_no,path,created_at,prompt_injection,rerun_prompt_injection,visual_profile_revision,visual_reference_snapshot,effective_prompt) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",params![id(),job_id,d.id,d.revision,d.page_no,a.path,now(),options.prompt_injection,input.rerun_prompt_injection,work_visual.profile.revision,work_visual.references_json,effective_prompt]).map_err(sql)?;
+                        tx.execute("INSERT INTO comic_md_images(id,job_id,document_id,document_revision,page_no,path,created_at,prompt_injection,rerun_prompt_injection,visual_profile_revision,visual_reference_snapshot,effective_prompt) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",params![id(),job_id,d.id,d.revision,d.page_no,&a.path,now(),options.prompt_injection,input.rerun_prompt_injection,work_visual.profile.revision,work_visual.references_json,effective_prompt]).map_err(sql)?;
                     }
-                    tx.execute("UPDATE comic_md_jobs SET completed_pages=completed_pages+1,message=? WHERE id=?",params![format!("第{}页已生成",d.page_no.unwrap()),job_id]).map_err(sql)?;
+                    tx.execute("UPDATE comic_md_jobs SET completed_pages=completed_pages+1,message=? WHERE id=?",params![format!("第{}页已生成",d.page_no.unwrap_or(0)),job_id]).map_err(sql)?;
                     tx.commit().map_err(sql)
                 }
                 Err(error) => {
@@ -3690,6 +3776,13 @@ pub fn comic_md_render(
                 Ok(_) => Err("图像服务没有返回图片，已生成页面已保留".into()),
             });
             if let Err(e) = saved {
+                // The provider already wrote these files. Without this cleanup a
+                // failed insert would leave untracked images on disk forever.
+                if let Ok(assets) = &result {
+                    for asset in assets {
+                        let _ = std::fs::remove_file(&asset.path);
+                    }
+                }
                 let _ = db::with_connection(&app.state::<DbState>(), |c| {
                     finish(c, &job_id, "failed", &e)
                 });
@@ -3746,7 +3839,7 @@ fn export_to(
         files,
     })
 }
-#[tauri::command]
+#[tauri::command(async)]
 pub fn comic_md_export(
     db: tauri::State<'_, DbState>,
     input: ExportInput,

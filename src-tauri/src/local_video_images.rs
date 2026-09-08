@@ -181,7 +181,8 @@ pub fn verified_format_and_mime(bytes: &[u8]) -> Result<(&'static str, &'static 
         "webp" => "image/webp",
         _ => return Err("本地视频引用仅支持 PNG、JPEG 或 WebP 图片".into()),
     };
-    image::load_from_memory(bytes).map_err(|_| "本地图片格式不受支持或文件已损坏")?;
+    crate::assets::validate_image_checked(bytes)
+        .map_err(|_| "本地图片格式不受支持或文件已损坏")?;
     Ok((format, mime))
 }
 

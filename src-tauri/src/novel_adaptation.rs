@@ -2009,18 +2009,27 @@ fn page_panel_dialogues(page: &Value) -> Result<Vec<ComicPlanDialogueIntent>, St
             .as_array()
             .ok_or_else(|| "COMIC_PLAN_INTENT_DIALOGUE_MISMATCH".to_string())?;
         for item in items {
-            let speaker = item
-                .get("speaker")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "COMIC_PLAN_INTENT_DIALOGUE_MISMATCH".to_string())?;
-            let text = item
-                .get("text")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "COMIC_PLAN_INTENT_DIALOGUE_MISMATCH".to_string())?;
+            // The frozen contract allows `oneOf: [string, {text, speaker?}]` and
+            // the renderer accepts both shapes, so normalize instead of failing
+            // the whole analysis round on a schema-valid answer.
+            let (speaker, text) = match item {
+                Value::String(text) => (String::new(), text.clone()),
+                Value::Object(_) => (
+                    item.get("speaker")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    item.get("text")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| "COMIC_PLAN_INTENT_DIALOGUE_MISMATCH".to_string())?
+                        .to_owned(),
+                ),
+                _ => return Err("COMIC_PLAN_INTENT_DIALOGUE_MISMATCH".into()),
+            };
             dialogues.push(ComicPlanDialogueIntent {
                 panel_no,
-                speaker: speaker.to_owned(),
-                text: text.to_owned(),
+                speaker,
+                text,
             });
         }
     }

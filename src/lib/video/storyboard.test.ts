@@ -141,11 +141,18 @@ describe("video storyboard Markdown", () => {
     expect(parseStoryboardShots(MARKDOWN.replace("## 第2镜", "## 第3镜"))).toEqual([]);
   });
 
-  it("rejects duplicate or unknown fields instead of silently using the last value", () => {
+  it("rejects duplicate fields while folding unknown headings into the preceding field", () => {
     expect(parseStoryboardShots(MARKDOWN.replace("### 视频 Prompt\n", "### 视频 Prompt\n错误前值\n\n### 视频 Prompt\n"))).toEqual([]);
     expect(parseStoryboardShots(MARKDOWN.replace("### 时长\n3秒", "### 时长\n2秒\n\n### 时长\n3秒"))).toEqual([]);
     expect(parseStoryboardShots(MARKDOWN.replace("## 第2镜", "## 制作备注\n不能混入镜头块\n\n## 第2镜"))).toEqual([]);
-    expect(parseStoryboardShots(MARKDOWN.replace("### 情绪\n轻快", "### 未知字段\n内容\n\n### 情绪\n轻快"))).toEqual([]);
+    // A free-form sub-heading inside a field body is content, not a boundary.
+    // Rejecting the whole document made any LLM-written `### 运镜` inside the
+    // video Prompt permanently unparseable.
+    const withUnknown = MARKDOWN.replace("### 情绪\n轻快", "### 未知字段\n内容\n\n### 情绪\n轻快");
+    const shots = parseStoryboardShots(withUnknown);
+    expect(shots).toHaveLength(2);
+    expect(shots[0].action).toContain("未知字段");
+    expect(shots[0].emotion).toBe("轻快");
   });
 
   it("round-trips Markdown and preserves per-shot durations", () => {
@@ -167,11 +174,13 @@ describe("video storyboard Markdown", () => {
     expect(createEmptyStoryboardShot(parseStoryboardShots(MARKDOWN))).toMatchObject({ shotNo: 3, durationS: 5, continuityFrom: 2, styleAnchor: "style:main:v1" });
   });
 
-  it("ignores visual separators but refuses unknown headings for structured editing", () => {
+  it("ignores visual separators and preserves unknown sub-headings across a round trip", () => {
     const markdown = MARKDOWN.replace("\n\n## 第2镜", "\n\n---\n\n## 第2镜");
     expect(isStoryboardRoundTripSafe(markdown)).toBe(true);
     expect(parseStoryboardShots(markdown)[0].videoPrompt).not.toContain("---");
-    expect(isStoryboardRoundTripSafe(`${markdown}\n\n### 人工备注\n不要丢失`)).toBe(false);
+    const withNote = `${markdown}\n\n### 人工备注\n不要丢失`;
+    expect(isStoryboardRoundTripSafe(withNote)).toBe(true);
+    expect(serializeStoryboard(parseStoryboardShots(withNote))).toContain("### 人工备注\n不要丢失");
   });
 
   it("normalizes anchor IDs that were incorrectly placed in reference assets", () => {

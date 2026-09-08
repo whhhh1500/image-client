@@ -40,12 +40,18 @@ const MIGRATION_V25: &str =
 const MIGRATION_V26: &str =
     include_str!("../migrations/0026_comic_markdown_work_visual_profile.sql");
 const MIGRATION_V27: &str = include_str!("../migrations/0027_comic_markdown_effective_prompt.sql");
-const SCHEMA_VERSION: i64 = 27;
+const MIGRATION_V28: &str =
+    include_str!("../migrations/0028_assets_tasks_history_index.sql");
+const MIGRATION_V29: &str = include_str!("../migrations/0029_app_secrets.sql");
+const SCHEMA_VERSION: i64 = 29;
 const ALLOWED_TABLES: &[&str] = &["assets", "tasks", "settings", "workflows"];
 const MAX_QUERY_CHARS: usize = 8_192;
 const MAX_BIND_VALUES: usize = 128;
 const MAX_BIND_STRING_BYTES: usize = 32 * 1024 * 1024;
-const MAX_RESULT_ROWS: usize = 50_000;
+// Upper bound for a single renderer-issued SELECT. The library loader is
+// intentionally unpaginated (every panel filters the same in-memory list), so
+// this is a memory guard rather than a product limit.
+const MAX_RESULT_ROWS: usize = 200_000;
 const BACKUP_PAGE_COUNT: i32 = 100;
 const BACKUP_RETRY_DELAY: Duration = Duration::from_millis(25);
 const BACKUP_TOTAL_TIMEOUT: Duration = Duration::from_secs(3);
@@ -193,6 +199,12 @@ fn migrate(connection: &Connection) -> Result<(), String> {
     }
     if current < 27 {
         run_migration(connection, MIGRATION_V27, 27, "v27")?;
+    }
+    if current < 28 {
+        run_migration(connection, MIGRATION_V28, 28, "v28")?;
+    }
+    if current < 29 {
+        run_migration(connection, MIGRATION_V29, 29, "v29")?;
     }
     Ok(())
 }
@@ -484,13 +496,54 @@ pub fn with_connection_mut<T>(
     f(&mut connection)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn db_execute(
     state: tauri::State<'_, DbState>,
     query: String,
     bind_values: Vec<Value>,
 ) -> Result<DbQueryResult, String> {
     execute_inner(&state, &query, &bind_values)
+}
+
+/// Authorizer used only while a renderer-issued statement is prepared/run.
+///
+/// The string validation above is a best-effort filter (it cannot see through
+/// comma-joined FROM clauses or aliases), so the connection itself is the
+/// authority: SQLite reports the real table name for every read/write during
+/// preparation, including tables reached through joins or subqueries.
+fn install_frontend_authorizer(connection: &Connection) -> Result<(), String> {
+    connection
+        .authorizer(Some(
+            |ctx: rusqlite::hooks::AuthContext<'_>| -> rusqlite::hooks::Authorization {
+                use rusqlite::hooks::{AuthAction, Authorization};
+                match ctx.action {
+                    AuthAction::Read { table_name, .. }
+                    | AuthAction::Update { table_name, .. }
+                    | AuthAction::Insert { table_name }
+                    | AuthAction::Delete { table_name } => {
+                        if ALLOWED_TABLES.contains(&table_name) {
+                            Authorization::Allow
+                        } else {
+                            Authorization::Deny
+                        }
+                    }
+                    // SELECT itself carries no table; Read covers every table.
+                    AuthAction::Select
+                    | AuthAction::Function { .. }
+                    | AuthAction::Recursive
+                    | AuthAction::Transaction { .. }
+                    | AuthAction::Savepoint { .. } => Authorization::Allow,
+                    _ => Authorization::Deny,
+                }
+            },
+        ))
+        .map_err(|error| format!("初始化 SQLite 授权器失败: {error}"))
+}
+
+fn clear_frontend_authorizer(connection: &Connection) {
+    let _ = connection.authorizer(
+        None::<fn(rusqlite::hooks::AuthContext<'_>) -> rusqlite::hooks::Authorization>,
+    );
 }
 
 fn execute_inner(
@@ -508,16 +561,19 @@ fn execute_inner(
         .connection
         .lock()
         .map_err(|_| "SQLite 连接锁已损坏".to_string())?;
-    let rows_affected = connection
+    install_frontend_authorizer(&connection)?;
+    let result = connection
         .execute(query, params_from_iter(values.iter()))
-        .map_err(|error| format!("SQLite 执行失败: {error}"))?;
+        .map_err(|error| format!("SQLite 执行失败: {error}"));
+    clear_frontend_authorizer(&connection);
+    let rows_affected = result?;
     Ok(DbQueryResult {
         rows_affected,
         last_insert_id: Some(connection.last_insert_rowid()),
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn db_select(
     state: tauri::State<'_, DbState>,
     query: String,
@@ -537,9 +593,14 @@ fn select_inner(state: &DbState, query: &str, bind_values: &[Value]) -> Result<V
         .connection
         .lock()
         .map_err(|_| "SQLite 连接锁已损坏".to_string())?;
-    let mut statement = connection
+    install_frontend_authorizer(&connection)?;
+    // The authorizer is consulted while preparing the statement, so it can be
+    // cleared as soon as preparation succeeded or failed.
+    let prepared = connection
         .prepare(query)
-        .map_err(|error| format!("SQLite 查询准备失败: {error}"))?;
+        .map_err(|error| format!("SQLite 查询准备失败: {error}"));
+    clear_frontend_authorizer(&connection);
+    let mut statement = prepared?;
     let column_names: Vec<String> = statement
         .column_names()
         .iter()
@@ -675,9 +736,11 @@ fn sql_to_json(value: ValueRef<'_>) -> Value {
     match value {
         ValueRef::Null => Value::Null,
         ValueRef::Integer(value) => Value::Number(Number::from(value)),
-        ValueRef::Real(value) => Number::from_f64(value)
-            .map(Value::Number)
-            .unwrap_or(Value::Null),
+        ValueRef::Real(value) => Number::from_f64(value).map(Value::Number).unwrap_or_else(|| {
+            // JSON has no Infinity/NaN. Returning null silently lost the value;
+            // a string keeps it visible to the caller.
+            Value::String(format!("{value}"))
+        }),
         ValueRef::Text(value) => Value::String(String::from_utf8_lossy(value).into_owned()),
         ValueRef::Blob(value) => {
             Value::String(base64::engine::general_purpose::STANDARD.encode(value))
@@ -704,6 +767,59 @@ mod tests {
         )
         .is_err());
         assert!(validate_query("x", true).is_err());
+    }
+
+    #[test]
+    fn authorizer_denies_tables_that_the_string_filter_cannot_see() {
+        let dir = std::env::temp_dir().join(format!("image-client-authz-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = DbState::open(dir.join("test.db")).unwrap();
+        // The string filter accepts a comma-joined FROM clause because it only
+        // reads the first table token; the authorizer must still reject it.
+        assert!(select_inner(&state, "SELECT * FROM settings, sqlite_master", &[]).is_err());
+        assert!(select_inner(&state, "SELECT * FROM settings, novel_works", &[]).is_err());
+        assert!(select_inner(
+            &state,
+            "SELECT * FROM settings WHERE value IN (SELECT*FROM novel_works)",
+            &[],
+        )
+        .is_err());
+        // Whitelisted reads and writes keep working.
+        execute_inner(
+            &state,
+            "INSERT INTO settings (key, value) VALUES (?, ?)",
+            &[
+                Value::String("authz".into()),
+                Value::String("ok".into()),
+            ],
+        )
+        .unwrap();
+        // Secrets live outside the renderer-visible tables.
+        assert!(select_inner(&state, "SELECT value FROM app_secrets", &[]).is_err());
+        assert!(execute_inner(
+            &state,
+            "INSERT INTO app_secrets (key, value) VALUES (?, ?)",
+            &[Value::String("k".into()), Value::String("v".into())],
+        )
+        .is_err());
+        let rows = select_inner(
+            &state,
+            "SELECT value FROM settings WHERE key = ?",
+            &[Value::String("authz".into())],
+        )
+        .unwrap();
+        assert_eq!(rows[0]["value"], "ok");
+        // The authorizer must not leak into later internal callers.
+        with_connection(&state, |connection| {
+            let count: i64 = connection
+                .query_row("SELECT count(*) FROM novel_works", [], |row| row.get(0))
+                .map_err(|error| error.to_string())?;
+            assert_eq!(count, 0);
+            Ok(())
+        })
+        .unwrap();
+        drop(state);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1730,6 +1846,9 @@ mod tests {
         connection
             .execute_batch(
                 "PRAGMA user_version=24;
+                 CREATE TABLE assets(id TEXT PRIMARY KEY, created_at INTEGER NOT NULL);
+                 CREATE TABLE tasks(id TEXT PRIMARY KEY, created_at INTEGER NOT NULL);
+                 CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
                  CREATE TABLE comic_md_images(
                    id TEXT PRIMARY KEY,
                    job_id TEXT NOT NULL,
@@ -1979,6 +2098,36 @@ mod tests {
             )
             .unwrap();
         (path, connection)
+    }
+
+    #[test]
+    fn v28_migration_indexes_asset_and_task_history_without_temp_sort() {
+        let connection = Connection::open_in_memory().unwrap();
+        migrate(&connection).unwrap();
+        for (table, index) in [
+            ("assets", "idx_assets_created_at"),
+            ("tasks", "idx_tasks_created_at"),
+        ] {
+            let mut statement = connection
+                .prepare(&format!(
+                    "EXPLAIN QUERY PLAN SELECT id, created_at FROM {table} ORDER BY created_at DESC"
+                ))
+                .unwrap();
+            let plan = statement
+                .query_map([], |row| row.get::<_, String>(3))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+                .join(" | ");
+            assert!(
+                plan.contains(index),
+                "{table} history must use {index}: {plan}"
+            );
+            assert!(
+                !plan.contains("USE TEMP B-TREE"),
+                "{table} history must not sort outside its index: {plan}"
+            );
+        }
     }
 
     #[test]

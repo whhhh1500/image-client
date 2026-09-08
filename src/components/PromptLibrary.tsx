@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, RotateCcw, Search, Sparkles, X } from "lucide-react";
 import CachedCaseImage from "./CachedCaseImage";
 import { hydrateCaseImageCache, importCaseImage } from "../lib/caseImage";
@@ -56,8 +56,12 @@ export default function PromptLibrary({
   const [optimized, setOptimized] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Bumped on every open/close so a slow download+import that finishes after the
+  // dialog closed cannot write into the generation form.
+  const sessionRef = useRef(0);
 
   useEffect(() => {
+    sessionRef.current += 1;
     if (open) {
       void usePromptlibStore.getState().load();
       void hydrateCaseImageCache();
@@ -153,16 +157,18 @@ export default function PromptLibrary({
 
   const pickAsReference = async () => {
     if (!selected) return;
+    const session = sessionRef.current;
     setBusy("reference");
     setError(null);
     try {
       const asset = await importCaseImage(selected);
+      if (session !== sessionRef.current) return;
       onPick({ prompt: currentPrompt(), entry: selected, asReference: true, referencePath: asset.asset.path, referenceAsset: asset });
       onClose();
     } catch (e) {
-      setError(String(e));
+      if (session === sessionRef.current) setError(String(e));
     } finally {
-      setBusy(null);
+      if (session === sessionRef.current) setBusy(null);
     }
   };
 

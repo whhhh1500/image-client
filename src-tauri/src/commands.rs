@@ -14,7 +14,7 @@ use crate::AppState;
 
 const MAX_REFERENCE_IMAGE_BYTES: usize = 50 * 1024 * 1024;
 const MAX_TEXT_ASSET_BYTES: usize = 20 * 1024 * 1024;
-const MAX_MEDIA_ASSET_BYTES: usize = 512 * 1024 * 1024;
+pub(crate) const MAX_MEDIA_ASSET_BYTES: usize = 512 * 1024 * 1024;
 const MAX_PROMPTLIB_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 const PROMPTLIB_IMAGE_HOST: &str = "pub-7ecb2a3a62b94375a9abd336abf0bcc6.r2.dev";
 const PROMPTLIB_IMAGE_PREFIX: &str = "/img-case-assets/images/";
@@ -60,7 +60,7 @@ pub struct ClientLogEntry {
     fields: serde_json::Value,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn client_logs(entries: Vec<ClientLogEntry>) {
     crate::logging::client_batch(
         entries
@@ -73,13 +73,19 @@ pub fn client_logs(entries: Vec<ClientLogEntry>) {
 
 /// Copy a picked image into the centralized `assets/引用图` folder and return
 /// the new path (so reference images live alongside outputs).
-#[tauri::command]
-pub fn import_ref_image(src: String) -> Result<String, String> {
+#[tauri::command(async)]
+pub async fn import_ref_image(src: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || import_ref_image_inner(&src))
+        .await
+        .map_err(|error| format!("导入参考图任务失败: {error}"))?
+}
+
+fn import_ref_image_inner(src: &str) -> Result<String, String> {
     crate::logging::info(
         "asset.reference_import.start",
         serde_json::json!({ "sourcePath": src }),
     );
-    let src_path = Path::new(&src);
+    let src_path = Path::new(src);
     if !src_path.exists() {
         return Err(format!("文件不存在: {src}"));
     }
@@ -98,8 +104,62 @@ pub fn import_ref_image(src: String) -> Result<String, String> {
     Ok(asset.path)
 }
 
+/// Persist a produced batch of assets in one transaction. The renderer used to
+/// issue one `db_execute` per asset (one IPC + one implicit transaction each).
+#[tauri::command(async)]
+pub fn persist_assets_batch(
+    db: tauri::State<'_, crate::db::DbState>,
+    assets: Vec<crate::model::AssetRef>,
+    source: String,
+    model: Option<String>,
+    project_id: Option<String>,
+    params: serde_json::Value,
+) -> Result<(), String> {
+    if assets.is_empty() {
+        return Ok(());
+    }
+    crate::db::with_connection(&db, |connection| {
+        let transaction = connection
+            .unchecked_transaction()
+            .map_err(|error| format!("开始资产入库事务失败: {error}"))?;
+        let metadata = serde_json::json!({
+            "source": source,
+            "model": model,
+            "projectId": project_id,
+            "params": params,
+        })
+        .to_string();
+        let created_at = chrono::Utc::now().timestamp_millis();
+        for asset in &assets {
+            transaction
+                .execute(
+                    "INSERT INTO assets (id, kind, path, width, height, duration_s, format, created_at, metadata) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                     ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, path = excluded.path, width = excluded.width, \
+                       height = excluded.height, duration_s = excluded.duration_s, format = excluded.format, \
+                       metadata = excluded.metadata",
+                    rusqlite::params![
+                        asset.id,
+                        asset.kind,
+                        asset.path,
+                        asset.width,
+                        asset.height,
+                        asset.duration_s,
+                        asset.format,
+                        created_at,
+                        metadata,
+                    ],
+                )
+                .map_err(|error| format!("写入资产失败: {error}"))?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| format!("提交资产入库失败: {error}"))
+    })
+}
+
 /// Save generated text (script / storyboard / QC) as a `.md` asset.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_text(
     state: tauri::State<'_, AppState>,
     label: String,
@@ -114,7 +174,7 @@ pub fn save_text(
     save_text_with_config(&cfg, &label, &text, model.as_deref())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn read_text_asset(state: tauri::State<'_, AppState>, path: String) -> Result<String, String> {
     let cfg = state.cfg.read().unwrap().clone();
     let requested = PathBuf::from(&path);
@@ -201,7 +261,7 @@ pub struct DocumentVersionSaveResult {
     version: i64,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_document_version(
     app_state: tauri::State<'_, AppState>,
     database: tauri::State<'_, crate::db::DbState>,
@@ -304,15 +364,33 @@ fn save_document_version_with_config(
 }
 
 /// 保存前端 mediabunny 处理后的媒体（拼接/混音结果），返回资产引用。
-#[tauri::command]
-pub fn save_media_asset(
+#[tauri::command(async)]
+pub async fn save_media_asset(
     state: tauri::State<'_, AppState>,
     kind: String,
     ext: String,
-    data: Vec<u8>,
+    data_base64: String,
 ) -> Result<AssetRef, String> {
     let cfg = state.cfg.read().unwrap().clone();
-    save_media_asset_with_config(&cfg, &kind, &ext, &data)
+    tauri::async_runtime::spawn_blocking(move || {
+        let data = decode_media_base64(&data_base64)?;
+        save_media_asset_with_config(&cfg, &kind, &ext, &data)
+    })
+    .await
+    .map_err(|error| format!("保存媒体资产任务失败: {error}"))?
+}
+
+/// Decode a base64 media payload with a size pre-check, so a malformed or
+/// oversized request cannot allocate an unbounded buffer first.
+fn decode_media_base64(value: &str) -> Result<Vec<u8>, String> {
+    use base64::Engine;
+    let max_encoded = (MAX_MEDIA_ASSET_BYTES / 3 + 1) * 4;
+    if value.len() > max_encoded {
+        return Err("媒体资产超过 512 MiB 大小限制".into());
+    }
+    base64::engine::general_purpose::STANDARD
+        .decode(value)
+        .map_err(|_| "媒体数据不是有效的 base64".to_string())
 }
 
 pub(crate) fn save_media_asset_with_config(
@@ -427,7 +505,7 @@ async fn download_promptlib_image(file_name: &str) -> Result<PathBuf, String> {
             .unwrap_or("tmp"),
         std::process::id()
     ));
-    let response = reqwest::Client::new()
+    let response = crate::http::shared_client()?
         .get(&url)
         .timeout(Duration::from_secs(30))
         .send()
@@ -466,7 +544,7 @@ pub async fn cache_promptlib_image(file_name: String) -> Result<String, String> 
 }
 
 /// Already-downloaded case images, so the UI can skip R2 on later opens.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_cached_promptlib_images() -> Result<Vec<String>, String> {
     let dir = crate::paths::promptlib_images_dir();
     if !dir.is_dir() {
@@ -498,7 +576,7 @@ pub struct CleanupResult {
     failed: usize,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn cleanup_video_segments(
     state: tauri::State<'_, AppState>,
     paths: Vec<String>,
@@ -582,7 +660,7 @@ fn cleanup_video_segments_with_config(
     result
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn config_status(state: tauri::State<'_, AppState>) -> ConfigStatus {
     state.cfg.read().unwrap().status()
 }
@@ -641,7 +719,30 @@ pub fn validate_save_config(config: &SaveConfigRequest) -> Result<(), String> {
 }
 
 /// 契约（见前端 settings.ts）：空值保留后端已有值，允许只推部分配置。
-pub fn merge_config(new: &mut crate::config::ConfigState, config: &SaveConfigRequest) {
+///
+/// 例外：改变某个服务的地址时不允许继续沿用已保存的旧 Key。否则一个只改
+/// 地址的请求就能把已存密钥发往新主机（本地 REST 接口无鉴权，这条路径等于
+/// 凭据外发通道）。
+pub fn merge_config(
+    new: &mut crate::config::ConfigState,
+    config: &SaveConfigRequest,
+) -> Result<(), String> {
+    for (name, incoming_url, stored_url, stored_key, incoming_key) in [
+        ("image_api_url", &config.image_api_url, &new.image_api_url, &new.image_api_key, &config.image_api_key),
+        ("video_api_url", &config.video_api_url, &new.video_api_url, &new.video_api_key, &config.video_api_key),
+        ("llm_api_url", &config.llm_api_url, &new.llm_api_url, &new.llm_api_key, &config.llm_api_key),
+    ] {
+        let incoming = incoming_url.trim();
+        if incoming.is_empty() {
+            continue;
+        }
+        let endpoint_changed = !stored_url.trim().is_empty() && stored_url.trim() != incoming;
+        if endpoint_changed && !stored_key.trim().is_empty() && incoming_key.trim().is_empty() {
+            return Err(format!(
+                "{name} 已变更：请同时提交该服务的新 Key，不能沿用已保存的旧 Key（避免密钥被发往新地址）"
+            ));
+        }
+    }
     if !config.image_api_url.trim().is_empty() {
         new.image_api_url = config.image_api_url.trim().to_string();
     }
@@ -672,16 +773,17 @@ pub fn merge_config(new: &mut crate::config::ConfigState, config: &SaveConfigReq
     if !config.llm_api_key.trim().is_empty() {
         new.llm_api_key = config.llm_api_key.trim().to_string();
     }
+    Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_config(
     state: tauri::State<'_, AppState>,
     config: SaveConfigRequest,
 ) -> Result<ConfigStatus, String> {
     validate_save_config(&config)?;
     let mut new = state.cfg.read().unwrap().clone();
-    merge_config(&mut new, &config);
+    merge_config(&mut new, &config)?;
     new.source = "db".into();
     new.persist_backend()?;
 
@@ -753,9 +855,14 @@ async fn llm_once_for(
     user: &str,
     operation: &str,
 ) -> Result<String, String> {
-    crate::llm::complete_text(url, key, model, system, user, operation)
-        .await
-        .map(|text| strip_thinking(&text))
+    let completion =
+        crate::llm::complete_text_result(url, key, model, system, user, operation).await?;
+    // A truncated answer (finish_reason=length) must never be persisted or
+    // handed to a downstream step as if it were complete.
+    if !completion.completed {
+        return Err("文本服务返回不完整结果（可能被截断），未使用该结果；请重试或缩短输入".into());
+    }
+    Ok(strip_thinking(&completion.content))
 }
 
 #[derive(Clone, Deserialize)]
@@ -777,6 +884,8 @@ const MAX_TOOL_DESCRIPTION_CHARS: usize = 2_000;
 const MAX_TOOL_CALLS_PER_STEP: usize = 8;
 /// 一次编排全程最多执行的工具调用数。
 const MAX_TOOL_CALLS_TOTAL: usize = 24;
+/// 同一轮内并发执行的工具调用数上限（避免同时压满供应商限流）。
+const MAX_CONCURRENT_TOOL_CALLS: usize = 3;
 
 /// 校验 agent 编排的工具定义（名称非空唯一、长度上限与 api.rs 保持一致）。
 pub(crate) fn validate_agent_tools(tools: &[ToolDef]) -> Result<(), String> {
@@ -891,42 +1000,76 @@ pub(crate) async fn agent_run_with_config(
         )
         .await?;
         if completion.tool_calls.is_empty() {
+            if !completion.completed {
+                return Err(
+                    "文本服务返回不完整结果（可能被截断），未保存文档；请重试或缩短输入".into(),
+                );
+            }
             return Ok(strip_thinking(&completion.content));
         }
         messages.push(completion.assistant_message);
         let mut executed_this_step = 0usize;
         let mut skipped_by_budget = 0usize;
+        // Resolve the calls first so budget/skip semantics and the resulting
+        // message order stay identical to the sequential implementation.
+        let mut call_ids: Vec<String> = Vec::new();
+        let mut skipped: Vec<bool> = Vec::new();
+        let mut executable: Vec<(usize, String, String, String)> = Vec::new();
         for call in completion.tool_calls {
+            call_ids.push(call.id.clone());
             if executed_this_step >= MAX_TOOL_CALLS_PER_STEP
                 || total_tool_calls >= MAX_TOOL_CALLS_TOTAL
             {
                 skipped_by_budget += 1;
-                messages.push(serde_json::json!({
-                    "role": "tool",
-                    "tool_call_id": call.id,
-                    "content": "工具调用预算已用尽，本次调用未执行。"
-                }));
+                skipped.push(true);
                 continue;
             }
+            skipped.push(false);
             executed_this_step += 1;
             total_tool_calls += 1;
             let name = call.name;
-            let arg_json = call.arguments;
-            let input = serde_json::from_str::<serde_json::Value>(&arg_json)
+            let input = serde_json::from_str::<serde_json::Value>(&call.arguments)
                 .ok()
                 .and_then(|v| v["input"].as_str().map(String::from))
                 .unwrap_or_default();
             let tool = tools.iter().find(|t| t.name == name).ok_or("未知工具")?;
-            let result = llm_once_for(
-                &url,
-                &key,
-                &model,
-                &tool.system,
-                &input,
-                &format!("agent_tool_{name}"),
-            )
-            .await;
-            messages.push(serde_json::json!({"role":"tool","tool_call_id": call.id, "content": result.unwrap_or_else(|e| e)}));
+            executable.push((call_ids.len() - 1, tool.system.clone(), input, name));
+        }
+        // Independent tool calls are awaited concurrently (bounded) instead of
+        // one after another; results are re-ordered to the model's call order.
+        let mut results: Vec<Option<String>> = vec![None; call_ids.len()];
+        if !executable.is_empty() {
+            let semaphore =
+                std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_TOOL_CALLS));
+            let mut set = tokio::task::JoinSet::new();
+            for (index, tool_system, input, name) in executable {
+                let semaphore = semaphore.clone();
+                let url = url.clone();
+                let key = key.clone();
+                let model = model.clone();
+                set.spawn(async move {
+                    let _permit = semaphore.acquire_owned().await;
+                    let result =
+                        llm_once_for(&url, &key, &model, &tool_system, &input, &format!("agent_tool_{name}"))
+                            .await;
+                    (index, result)
+                });
+            }
+            while let Some(joined) = set.join_next().await {
+                let (index, result) =
+                    joined.map_err(|error| format!("工具调用任务失败: {error}"))?;
+                results[index] = Some(result.unwrap_or_else(|error| error));
+            }
+        }
+        for (index, id) in call_ids.iter().enumerate() {
+            let content = if skipped[index] {
+                "工具调用预算已用尽，本次调用未执行。".to_string()
+            } else {
+                results[index]
+                    .clone()
+                    .unwrap_or_else(|| "工具调用未返回结果。".to_string())
+            };
+            messages.push(serde_json::json!({"role":"tool","tool_call_id": id, "content": content}));
         }
         if skipped_by_budget > 0 {
             return Ok(format!(
@@ -951,7 +1094,7 @@ pub(crate) async fn list_image_models_with_config(
     let Some(url) = config::models_endpoint(&cfg.image_api_url) else {
         return Ok(config::known_image_models());
     };
-    let client = reqwest::Client::new();
+    let client = crate::http::client_for_url(&url)?;
     match client
         .get(&url)
         .bearer_auth(&cfg.image_api_key)
@@ -992,7 +1135,7 @@ pub(crate) async fn list_video_models_with_config(
     if cfg.video_api_key.trim().is_empty() {
         return Ok(config::known_video_models());
     }
-    let client = reqwest::Client::new();
+    let client = crate::http::client_for_url(&url)?;
     let response = client
         .get(&url)
         .bearer_auth(&cfg.video_api_key)
@@ -1026,7 +1169,7 @@ pub(crate) async fn list_video_models_with_config(
     Ok(models)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_video_model_capabilities() -> Vec<crate::video::VideoModelCapability> {
     crate::video::model_capabilities()
 }
@@ -1085,12 +1228,12 @@ fn string_array(value: &serde_json::Value, key: &str) -> Vec<String> {
         .collect()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_providers(state: tauri::State<'_, AppState>) -> Vec<ProviderInfo> {
     state.registry.list()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn set_active_provider(
     state: tauri::State<'_, AppState>,
     id: String,
@@ -1351,13 +1494,22 @@ fn list_image_variants(dir: &Path, stem: &str) -> Vec<ImageVariantInfo> {
     variants
 }
 
-#[tauri::command]
-pub fn inspect_image_file(
+#[tauri::command(async)]
+pub async fn inspect_image_file(
     state: tauri::State<'_, AppState>,
     path: String,
 ) -> Result<ImageFileInfo, String> {
     let cfg = state.cfg.read().unwrap().clone();
-    let canonical = path_in_allowed_roots(Path::new(&path), &cfg)?;
+    tauri::async_runtime::spawn_blocking(move || inspect_image_file_inner(&cfg, &path))
+        .await
+        .map_err(|error| format!("读取图片信息任务失败: {error}"))?
+}
+
+fn inspect_image_file_inner(
+    cfg: &crate::config::ConfigState,
+    path: &str,
+) -> Result<ImageFileInfo, String> {
+    let canonical = path_in_allowed_roots(Path::new(path), cfg)?;
     let meta = std::fs::metadata(&canonical).map_err(|e| format!("读取文件信息失败: {e}"))?;
     let dir = canonical.parent().ok_or("无法解析文件目录")?;
     let file_name = canonical
@@ -1403,21 +1555,33 @@ pub fn inspect_image_file(
     })
 }
 
-#[tauri::command]
-pub fn compress_image_file(
+#[tauri::command(async)]
+pub async fn compress_image_file(
     state: tauri::State<'_, AppState>,
     path: String,
     level: String,
 ) -> Result<AssetRef, String> {
     let cfg = state.cfg.read().unwrap().clone();
-    let canonical = path_in_allowed_roots(Path::new(&path), &cfg)?;
-    let grade = compression_level_label(&level)?;
+    // Decoding and re-encoding a large image takes seconds; keep it off both the
+    // UI thread and the async runtime's worker threads.
+    tauri::async_runtime::spawn_blocking(move || compress_image_file_inner(&cfg, &path, &level))
+        .await
+        .map_err(|error| format!("压缩图片任务失败: {error}"))?
+}
+
+fn compress_image_file_inner(
+    cfg: &crate::config::ConfigState,
+    path: &str,
+    level: &str,
+) -> Result<AssetRef, String> {
+    let canonical = path_in_allowed_roots(Path::new(path), cfg)?;
+    let grade = compression_level_label(level)?;
     let bytes = std::fs::read(&canonical).map_err(|e| format!("读取原图失败: {e}"))?;
     if bytes.len() > MAX_MEDIA_ASSET_BYTES {
         return Err("图片超过 512 MiB 大小限制".into());
     }
     let format = crate::assets::detect_format_checked(&bytes).ok_or("不支持的图片格式")?;
-    let img = image::load_from_memory(&bytes).map_err(|e| format!("解码图片失败: {e}"))?;
+    let img = crate::assets::decode_image_checked(&bytes)?;
     let encoded = encode_compressed(&img, format, grade)?;
     let dir = canonical.parent().ok_or("无法解析文件目录")?;
     let stem = canonical
@@ -1425,7 +1589,7 @@ pub fn compress_image_file(
         .and_then(|value| value.to_str())
         .unwrap_or("image");
     let origin = original_stem(stem);
-    let stamp = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
+    let stamp = chrono::Local::now().format("%Y%m%d%H%M%S%3f").to_string();
     let ext = match (grade, format) {
         ("lossless", "png" | "gif" | "bmp") => "png",
         ("lossless", "webp") => "webp",
@@ -1454,21 +1618,31 @@ pub fn compress_image_file(
     })
 }
 
-#[tauri::command]
-pub fn convert_image_file(
+#[tauri::command(async)]
+pub async fn convert_image_file(
     state: tauri::State<'_, AppState>,
     path: String,
     format: String,
 ) -> Result<AssetRef, String> {
     let cfg = state.cfg.read().unwrap().clone();
-    let canonical = path_in_allowed_roots(Path::new(&path), &cfg)?;
-    let target = convert_format_label(&format)?;
+    tauri::async_runtime::spawn_blocking(move || convert_image_file_inner(&cfg, &path, &format))
+        .await
+        .map_err(|error| format!("转换图片任务失败: {error}"))?
+}
+
+fn convert_image_file_inner(
+    cfg: &crate::config::ConfigState,
+    path: &str,
+    format: &str,
+) -> Result<AssetRef, String> {
+    let canonical = path_in_allowed_roots(Path::new(path), cfg)?;
+    let target = convert_format_label(format)?;
     let bytes = std::fs::read(&canonical).map_err(|e| format!("读取原图失败: {e}"))?;
     if bytes.len() > MAX_MEDIA_ASSET_BYTES {
         return Err("图片超过 512 MiB 大小限制".into());
     }
     crate::assets::detect_format_checked(&bytes).ok_or("不支持的图片格式")?;
-    let img = image::load_from_memory(&bytes).map_err(|e| format!("解码图片失败: {e}"))?;
+    let img = crate::assets::decode_image_checked(&bytes)?;
     let encoded = encode_converted(&img, target)?;
     let dir = canonical.parent().ok_or("无法解析文件目录")?;
     let stem = canonical
@@ -1476,7 +1650,7 @@ pub fn convert_image_file(
         .and_then(|value| value.to_str())
         .unwrap_or("image");
     let origin = original_stem(stem);
-    let stamp = chrono::Local::now().format("%Y%m%d%H%M%S").to_string();
+    let stamp = chrono::Local::now().format("%Y%m%d%H%M%S%3f").to_string();
     let file_name = format!("{origin}-{target}-{stamp}.{target}");
     let out_path = dir.join(&file_name);
     std::fs::write(&out_path, &encoded).map_err(|e| format!("写入转换图失败: {e}"))?;

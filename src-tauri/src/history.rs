@@ -68,12 +68,12 @@ impl HistorySyncState {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn mark_history_listener_ready(state: tauri::State<'_, Arc<HistorySyncState>>) {
     state.mark_frontend_ready();
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn acknowledge_history_revision(state: tauri::State<'_, Arc<HistorySyncState>>, revision: u64) {
     state.acknowledge(revision);
 }
@@ -84,6 +84,12 @@ fn connection(path: &Path) -> Result<Connection, String> {
     connection
         .busy_timeout(Duration::from_secs(10))
         .map_err(|error| format!("设置历史数据库等待时间失败: {error}"))?;
+    // Match the main connection's invariants: `assets` is referenced by six
+    // tables with ON DELETE RESTRICT, so whether a REPLACE-style write trips
+    // those constraints must not depend on this pragma.
+    connection
+        .pragma_update(None, "foreign_keys", "ON")
+        .map_err(|error| format!("启用历史数据库外键约束失败: {error}"))?;
     Ok(connection)
 }
 
@@ -130,7 +136,11 @@ fn persist_assets_to(
     for asset in assets {
         transaction
             .execute(
-                "INSERT OR REPLACE INTO assets (id, kind, path, width, height, duration_s, format, created_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO assets (id, kind, path, width, height, duration_s, format, created_at, metadata) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                 ON CONFLICT(id) DO UPDATE SET kind = excluded.kind, path = excluded.path, width = excluded.width, \
+                   height = excluded.height, duration_s = excluded.duration_s, format = excluded.format, \
+                   metadata = excluded.metadata",
                 params![
                     asset.id,
                     asset.kind,

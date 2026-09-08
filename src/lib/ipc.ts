@@ -1,4 +1,5 @@
 import type { AssetRef } from "../types";
+import { encodeBase64 } from "./base64";
 import { loggedInvoke } from "./logger";
 
 export type { AssetRef };
@@ -120,7 +121,7 @@ export type ExternalAssetImportEntry =
 
 export type AssetImportFileInput =
   | { source: "path"; path: string }
-  | { source: "bytes"; fileName: string; data: Uint8Array };
+  | { source: "bytes"; fileName: string; dataBase64: string };
 
 export interface AssetImportFilesRequest {
   projectId: string;
@@ -159,6 +160,8 @@ export interface MediaHostingSaveInput {
   authMode: MediaHostingAuthMode;
   /** An empty value deliberately preserves the already stored token. */
   token: string;
+  /** Explicitly remove the stored token (empty `token` means "keep"). */
+  clearToken?: boolean;
 }
 
 export interface AssetPublishMediaSource {
@@ -201,6 +204,15 @@ export const agentRun = (
 export const saveText = (label: string, text: string, model?: string): Promise<AssetRef> =>
   loggedInvoke<AssetRef>("save_text", { label, text, model });
 
+/** Persist a produced batch of assets in a single transaction. */
+export const persistAssetsBatch = (
+  assets: AssetRef[],
+  source: string,
+  model: string | undefined,
+  projectId: string | undefined,
+  params: Record<string, unknown>,
+): Promise<void> => loggedInvoke<void>("persist_assets_batch", { assets, source, model, projectId, params });
+
 export interface DocumentVersionSaveRequest {
   label: string;
   text: string;
@@ -225,7 +237,7 @@ export const readTextAsset = (path: string): Promise<string> =>
   loggedInvoke<string>("read_text_asset", { path });
 
 export const saveMediaAsset = (kind: string, ext: string, data: Uint8Array): Promise<AssetRef> =>
-  loggedInvoke<AssetRef>("save_media_asset", { kind, ext, data });
+  loggedInvoke<AssetRef>("save_media_asset", { kind, ext, dataBase64: encodeBase64(data) });
 
 export const cachePromptlibImage = (fileName: string): Promise<string> =>
   loggedInvoke<string>("cache_promptlib_image", { fileName });

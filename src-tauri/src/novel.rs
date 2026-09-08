@@ -671,7 +671,7 @@ pub struct NovelVolumeCreateInput {
     pub idempotency_key: String,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn novel_work_create(
     state: tauri::State<'_, DbState>,
     input: NovelWorkCreateInput,
@@ -765,7 +765,7 @@ pub(crate) fn novel_work_create_inner(
     )
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn novel_work_list(
     state: tauri::State<'_, DbState>,
     input: NovelWorkListInput,
@@ -792,7 +792,7 @@ pub fn novel_work_list(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn novel_work_get(
     state: tauri::State<'_, DbState>,
     input: NovelWorkLookupInput,
@@ -858,7 +858,7 @@ fn novel_work_set_status_inner(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn novel_work_archive(
     state: tauri::State<'_, DbState>,
     input: NovelWorkStatusInput,
@@ -868,7 +868,7 @@ pub fn novel_work_archive(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn novel_work_restore(
     state: tauri::State<'_, DbState>,
     input: NovelWorkStatusInput,
@@ -926,7 +926,7 @@ fn novel_volume_create_inner(
     )
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn novel_volume_create(
     state: tauri::State<'_, DbState>,
     input: NovelVolumeCreateInput,
@@ -1009,7 +1009,7 @@ fn chapter_in_work(
     .ok_or_else(|| "章节不存在或不属于当前小说".into())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn novel_chapter_revision_create(
     state: tauri::State<'_, DbState>,
     input: NovelChapterRevisionCreateInput,
@@ -1170,7 +1170,7 @@ fn novel_chapter_revision_create_inner(
     )
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn novel_snapshot(
     state: tauri::State<'_, DbState>,
     input: NovelWorkLookupInput,
@@ -4796,11 +4796,22 @@ fn artifact_update_inner(
     let key = input.idempotency_key.clone();
     with_receipt(conn, "novel_artifact_update", &key, &request, move |tx| {
         ensure_active_work_in_tx(tx, &work)?;
-        let (head,version):(Option<String>,i64)=tx.query_row("SELECT candidate_head_revision_id,optimistic_version FROM analysis_artifacts WHERE id=? AND novel_work_id=?",params![input.artifact_id,work.id],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(|e|format!("读取产物失败: {e}"))?.ok_or("产物不存在或不属于当前小说")?;
+        let (head,version,kind):(Option<String>,i64,String)=tx.query_row("SELECT candidate_head_revision_id,optimistic_version,artifact_type FROM analysis_artifacts WHERE id=? AND novel_work_id=?",params![input.artifact_id,work.id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(|e|format!("读取产物失败: {e}"))?.ok_or("产物不存在或不属于当前小说")?;
         if head.as_deref() != Some(&input.parent_revision_id)
             || version != input.expected_optimistic_version
         {
             return Err("产物版本已变化，请重新基准化".into());
+        }
+        // A manual edit must satisfy the same contract as an AI-produced
+        // artifact; otherwise an invalid structure could be adopted and
+        // published into Canon/State.
+        validate_artifact_content(&kind, &input.content)?;
+        if matches!(
+            kind.as_str(),
+            "world_facts" | "character_facts" | "faction_facts" | "location_facts" | "prop_facts"
+        ) && contains_dynamic_fact_key(&input.content)
+        {
+            return Err("事实类产物不得写入动态状态字段".into());
         }
         let no:i64=tx.query_row("SELECT COALESCE(MAX(version),0)+1 FROM analysis_artifact_revisions WHERE analysis_artifact_id=?",params![input.artifact_id],|r|r.get(0)).map_err(|e|e.to_string())?;
         let id = new_id("nartifactrev");

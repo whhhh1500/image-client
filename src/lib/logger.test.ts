@@ -37,6 +37,19 @@ describe("frontend log sanitization", () => {
     expect(summarizeForLog(new Uint8Array(128))).toEqual({ type: "Uint8Array", bytes: 128 });
   });
 
+  it("measures binary payloads under redacted keys instead of enumerating them", () => {
+    // Regression: `data` is a redacted key, and enumerating a 512 MiB payload
+    // used to allocate one string per byte before the IPC call was made.
+    expect(summarizeForLog({ kind: "video", ext: "mp4", data: new Uint8Array(1_000_000) })).toEqual({
+      kind: "video",
+      ext: "mp4",
+      data: { type: "Uint8Array", bytes: 1_000_000 },
+    });
+    expect(summarizeForLog({ bindValues: new Uint8Array(64) })).toEqual({
+      bindValues: { type: "Uint8Array", bytes: 64 },
+    });
+  });
+
   it("redacts credentials embedded in plain error text", () => {
     const safe = redactSensitiveText("HTTP 401 Authorization: Bearer TOPSECRET api_key=TOPSECRET password='pw' token=TOKEN access_token=ACCESS client_secret=SECRET SK-live-secret");
     expect(safe).toBe("HTTP 401 Authorization: Bearer <redacted> api_key=<redacted> password=<redacted> token=<redacted> access_token=<redacted> client_secret=<redacted> sk-<redacted>");

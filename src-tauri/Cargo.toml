@@ -1,6 +1,6 @@
 [package]
 name = "image-client"
-version = "0.2.3"
+version = "0.2.4"
 description = "Image-Client: cloud AI + local ffmpeg media editing client"
 authors = ["you"]
 edition = "2021"
@@ -41,9 +41,17 @@ sha2 = "0.10"
 axum = "0.7"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 tokio = { version = "1", features = ["process", "io-util", "net", "rt-multi-thread", "macros", "sync", "time"] }
-rusqlite = { version = "0.40", features = ["bundled", "backup"] }
+rusqlite = { version = "0.40", features = ["bundled", "backup", "hooks"] }
 dirs = "6"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "rayon"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+
+# Release builds were using the default profile (no LTO, 16 codegen units, no
+# stripping), which bloats the shipped binary and blocks cross-crate inlining.
+# `panic = "abort"` is deliberately omitted so `cargo test --release` still works.
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

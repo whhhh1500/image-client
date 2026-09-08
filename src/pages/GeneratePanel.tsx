@@ -103,8 +103,44 @@ function Field({ label, children, hint }: { label: string; children: React.React
   );
 }
 
+/** Read the live prompt for click-time use without subscribing the whole panel. */
+const readGenerationPrompt = () => useGenerationStore.getState().prompt;
+
+/**
+ * Owns the prompt subscription so a keystroke re-renders only this textarea
+ * instead of the whole generation panel.
+ */
+function PromptTextarea({ className, placeholder, onEdit }: { className: string; placeholder: string; onEdit?: () => void }) {
+  const prompt = useGenerationStore((s) => s.prompt);
+  const setGen = useGenerationStore((s) => s.set);
+  return (
+    <textarea
+      className={className}
+      value={prompt}
+      placeholder={placeholder}
+      onChange={(event) => {
+        // Manual editing detaches the form from the selected template so
+        // "AI 优化" and "存回模板" no longer use that template's rules.
+        onEdit?.();
+        setGen({ prompt: event.target.value });
+      }}
+    />
+  );
+}
+
 export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
-  const gen = useGenerationStore();
+  const references = useGenerationStore((s) => s.references);
+  const referencePath = useGenerationStore((s) => s.referencePath);
+  const importedSources = useGenerationStore((s) => s.importedSources);
+  const model = useGenerationStore((s) => s.model);
+  const size = useGenerationStore((s) => s.size);
+  const quality = useGenerationStore((s) => s.quality);
+  const background = useGenerationStore((s) => s.background);
+  // Subscribe to a boolean rather than the prompt string: the textarea owns the
+  // string subscription, so typing cannot re-render this whole panel.
+  const hasPrompt = useGenerationStore((s) => s.prompt.trim().length > 0);
+  const setGen = useGenerationStore((s) => s.set);
+  const loadGen = useGenerationStore((s) => s.load);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; asset: LibAsset } | null>(null);
@@ -118,12 +154,15 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
   const [promptlibEntry, setPromptlibEntry] = useState<PromptLibraryPick["entry"] | null>(null);
   const [canonicalComicEntries, setCanonicalComicEntries] = useState<ImportEntry[]>([]);
   const pendingImport = useGenerationImportQueue((state) => state.pending);
-  const provider = useProjectStore();
-  const defaultId = provider.projects[0]?.id;
-  const activeId = provider.activeId;
+  const projects = useProjectStore((s) => s.projects);
+  const activeId = useProjectStore((s) => s.activeId);
+  const defaultId = projects[0]?.id;
   const belongs = (pid?: string) => pid === activeId || (!pid && activeId === defaultId);
   const allAssets = useLibraryStore((s) => s.assets);
-  const assets = allAssets.filter((a) => belongs(a.projectId) && a.asset.kind === "image");
+  const assets = useMemo(
+    () => allAssets.filter((a) => (a.projectId === activeId || (!a.projectId && activeId === defaultId)) && a.asset.kind === "image"),
+    [allAssets, activeId, defaultId],
+  );
   const importEntries = useMemo(() => [
     ...allAssets.filter((asset) => belongs(asset.projectId)).map(libraryImportEntry),
     ...canonicalComicEntries,
@@ -140,29 +179,29 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
     return () => { cancelled = true; };
   }, [activeId, defaultId]);
 
-  const activeReferences = gen.references?.length
-    ? gen.references
-    : gen.referencePath.trim() ? [{ path: gen.referencePath.trim(), role: "base_image" as const, sortOrder: 0 }] : [];
+  const activeReferences = references?.length
+    ? references
+    : referencePath.trim() ? [{ path: referencePath.trim(), role: "base_image" as const, sortOrder: 0 }] : [];
   const isImg2Img = activeReferences.length > 0;
-  const originals = assets.filter((item) => !isCompressedAsset(item));
-  const previewItem = isImg2Img
+  const originals = useMemo(() => assets.filter((item) => !isCompressedAsset(item)), [assets]);
+  const previewItem = useMemo(() => (isImg2Img
     ? originals.find((a) => a.source === "图生图")
-    : originals.find((a) => a.source === "文生图") ?? originals[0] ?? assets[0];
+    : originals.find((a) => a.source === "文生图") ?? originals[0] ?? assets[0]), [isImg2Img, originals, assets]);
 
-  const canRun = gen.prompt.trim().length > 0 && !busy;
+  const canRun = hasPrompt && !busy;
 
   const removeReferenceAt = (index: number) => {
     const removed = activeReferences[index];
     if (!removed) return;
     const next = activeReferences.filter((_, itemIndex) => itemIndex !== index).map((item, sortOrder) => ({ ...item, sortOrder }));
     const removedAssetId = allAssets.find((asset) => asset.asset.path === removed.path)?.asset.id;
-    const importedSources = (gen.importedSources ?? []).flatMap((record) => {
+    const nextImportedSources = (importedSources ?? []).flatMap((record) => {
       if (record.action !== "reference") return [record];
       const sourceMaterials = record.sourceMaterials.filter((material) => material.path !== removed.path);
       const assetIds = removedAssetId ? record.assetIds.filter((id) => id !== removedAssetId) : record.assetIds;
       return sourceMaterials.length || assetIds.length ? [{ ...record, sourceMaterials, assetIds }] : [];
     });
-    gen.set({ references: next, referencePath: next[0]?.path ?? "", importedSources });
+    setGen({ references: next, referencePath: next[0]?.path ?? "", importedSources: nextImportedSources });
   };
 
   const applyReferenceEntries = (entries: readonly ImportEntry[], mode: "replace" | "append" = "replace") => {
@@ -176,11 +215,11 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
     if (!usable.length) throw new Error("所选参考资源没有可用的受控图片路径。");
     const record = createImportRecord("reference", usable.map((item) => item.entry), "生图参考资源");
     const existing = mode === "append" ? activeReferences : [];
-    gen.set({
+    setGen({
       references: [...existing.map((item) => ({ ...item })), ...usable.map((item) => ({ path: item.path, role: "base_image" as const, weight: 1 }))].map((item, index) => ({ ...item, sortOrder: index })),
       // Preserve the legacy field for existing consumers; references[] remains authoritative.
       referencePath: (existing[0] ?? usable[0]).path,
-      importedSources: [...(mode === "append" ? gen.importedSources ?? [] : (gen.importedSources ?? []).filter((item) => item.action !== "reference")), record],
+      importedSources: [...(mode === "append" ? importedSources ?? [] : (importedSources ?? []).filter((item) => item.action !== "reference")), record],
     });
   };
 
@@ -192,14 +231,14 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
     const usable = entries.filter((entry) => Boolean(importEntryPrompt(entry)));
     if (!usable.length) throw new Error("所选资产没有已保存的可用生成提示词；请改选实际生成资料或正文版本。");
     const excluded = entries.filter((entry) => !importEntryPrompt(entry));
-    const prompt = action === "prompt" ? replaceImportedPrompt(usable) : mergeImportedPrompts(gen.prompt, usable);
+    const prompt = action === "prompt" ? replaceImportedPrompt(usable) : mergeImportedPrompts(useGenerationStore.getState().prompt, usable);
     if (!prompt) throw new Error("所选资产没有已保存的可用生成提示词；请改选实际生成资料或正文版本。");
     const record = createImportRecord(action, usable, action === "prompt" ? "导入提示词" : "合并提示词");
-    gen.set({
+    setGen({
       prompt,
       importedSources: action === "prompt"
-        ? [...(gen.importedSources ?? []).filter((item) => item.action === "reference"), record]
-        : [...(gen.importedSources ?? []), record],
+        ? [...(importedSources ?? []).filter((item) => item.action === "reference"), record]
+        : [...(importedSources ?? []), record],
     });
     if (excluded.length) setError(`已排除 ${excluded.length} 项没有可见正文/已保存提示词的资源：${excluded.map((entry) => entry.entryType === "library_asset" ? entry.asset.source : entry.title).join("、")}`);
     clearPromptLibrarySelection();
@@ -240,12 +279,15 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
 
   const run = async () => {
     if (!canRun) return;
+    // Read the live values at click time: this panel no longer subscribes to the
+    // prompt string, and the user may have typed after the last render.
+    const current = useGenerationStore.getState();
     setBusy(true);
     setError(null);
     try {
       const template = promptlibId ? promptlibEntry : undefined;
       const sources: SourceMaterialSnapshot[] = [
-        ...(gen.importedSources ?? []).flatMap((item) => item.sourceMaterials),
+        ...(current.importedSources ?? []).flatMap((item) => item.sourceMaterials),
         ...(template ? [{
           kind: "context" as const,
           label: `提示词模板 · ${template.title}`,
@@ -254,19 +296,19 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
         }] : []),
       ];
       await generateImage({
-        prompt: gen.prompt,
-        referencePath: gen.referencePath,
-        references: gen.references,
-        size: gen.size,
-        quality: gen.quality,
-        background: gen.background,
-        model: gen.model,
-        importedSources: gen.importedSources,
+        prompt: current.prompt,
+        referencePath: current.referencePath,
+        references: current.references,
+        size: current.size,
+        quality: current.quality,
+        background: current.background,
+        model: current.model,
+        importedSources: current.importedSources,
       }, {
-        originalInput: gen.prompt,
-        generationInput: gen.prompt,
+        originalInput: current.prompt,
+        generationInput: current.prompt,
         sourceMaterials: sources.length ? sources : undefined,
-        parentAssetIds: [...new Set((gen.importedSources ?? []).flatMap((item) => item.assetIds))],
+        parentAssetIds: [...new Set((current.importedSources ?? []).flatMap((item) => item.assetIds))],
       });
     } catch (e) {
       setError(String(e));
@@ -276,12 +318,15 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
   };
 
   const clearPromptLibrarySelection = () => {
+    // Bail out when nothing is selected: this is also the prompt editor's
+    // on-edit hook and must not re-render the panel on every keystroke.
+    if (!promptlibId && !promptlibEntry) return;
     const cleared = emptyPromptLibrarySelection<PromptLibraryPick["entry"]>();
     setPromptlibId(cleared.id);
     setPromptlibEntry(cleared.entry);
   };
 
-  const modelOptions = gen.model && !IMAGE_MODELS.includes(gen.model) ? [gen.model, ...IMAGE_MODELS] : IMAGE_MODELS;
+  const modelOptions = model && !IMAGE_MODELS.includes(model) ? [model, ...IMAGE_MODELS] : IMAGE_MODELS;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -289,8 +334,8 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
       <div className="flex items-center gap-2 border-b border-slate-800 bg-slate-900/40 px-6 py-2.5">
         <span className="text-xs font-medium text-slate-400">图像模型</span>
         <select
-          value={gen.model}
-          onChange={(e) => gen.set({ model: e.target.value })}
+          value={model}
+          onChange={(e) => setGen({ model: e.target.value })}
           className="rounded-lg border border-slate-600 bg-slate-900/70 px-3 py-1.5 text-xs text-slate-100 outline-none transition focus:border-indigo-400"
         >
           {modelOptions.map((m) => (<option key={m} value={m}>{m}</option>))}
@@ -312,16 +357,11 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
 
         <div>
           <Field label="提示词">
-            <textarea
-              className={`${inputCls} h-24 resize-y leading-snug`}
-              value={gen.prompt}
-              placeholder="描述你想生成的画面…"
-              onChange={(e) => gen.set({ prompt: e.target.value })}
-            />
+            <PromptTextarea className={`${inputCls} h-24 resize-y leading-snug`} placeholder="描述你想生成的画面…" onEdit={clearPromptLibrarySelection} />
           </Field>
           <div className="mt-1 flex flex-wrap gap-2">
             <button type="button" onClick={() => { setLibraryLoaded(true); setLibraryOpen(true); }} className="flex items-center gap-1 text-[10px] text-indigo-300 hover:text-white"><Library size={11} /> 模板库</button>
-            <button type="button" onClick={() => setOptimizeOpen(true)} disabled={!gen.prompt.trim()} className="flex items-center gap-1 text-[10px] text-fuchsia-300 hover:text-white disabled:opacity-40"><Sparkles size={11} /> AI 优化成中文</button>
+            <button type="button" onClick={() => setOptimizeOpen(true)} disabled={!hasPrompt} className="flex items-center gap-1 text-[10px] text-fuchsia-300 hover:text-white disabled:opacity-40"><Sparkles size={11} /> AI 优化成中文</button>
             <button type="button" onClick={() => setPickerOpen(true)} className="flex items-center gap-1 text-[10px] text-cyan-200/75 hover:text-white"><FileInput size={11} /> 从资产库导入</button>
           </div>
           {promptlibId && (
@@ -345,7 +385,7 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
                   <button type="button" onClick={() => void importExternalReferences().catch((cause) => setError(String(cause)))} className="rounded px-2 py-1 text-[10px] text-cyan-200 hover:bg-slate-800">
                     上传并入库
                   </button>
-                  <button type="button" onClick={() => gen.set({ referencePath: "", references: [], importedSources: (gen.importedSources ?? []).filter((item) => item.action !== "reference") })} className="rounded px-1 py-1 text-slate-500 hover:text-rose-300">
+                  <button type="button" onClick={() => setGen({ referencePath: "", references: [], importedSources: (importedSources ?? []).filter((item) => item.action !== "reference") })} className="rounded px-1 py-1 text-slate-500 hover:text-rose-300">
                     <X size={13} />
                   </button>
                 </div>
@@ -373,19 +413,19 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
         </Field>
 
         <Field label="尺寸 / 比例">
-          <select className={inputCls} value={gen.size} onChange={(e) => gen.set({ size: e.target.value })}>
+          <select className={inputCls} value={size} onChange={(e) => setGen({ size: e.target.value })}>
             {SIZES.map((s) => (<option key={s} value={s}>{s}</option>))}
           </select>
         </Field>
 
         <Field label="质量">
-          <select className={inputCls} value={gen.quality} onChange={(e) => gen.set({ quality: e.target.value })}>
+          <select className={inputCls} value={quality} onChange={(e) => setGen({ quality: e.target.value })}>
             {["high", "medium", "low"].map((q) => (<option key={q} value={q}>{q}</option>))}
           </select>
         </Field>
 
         <Field label="背景">
-          <select className={inputCls} value={gen.background} onChange={(e) => gen.set({ background: e.target.value })}>
+          <select className={inputCls} value={background} onChange={(e) => setGen({ background: e.target.value })}>
             {["auto", "transparent", "opaque"].map((b) => (<option key={b} value={b}>{b}</option>))}
           </select>
         </Field>
@@ -462,7 +502,7 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
       <AssetDetailModal
         asset={previewAsset}
         onClose={() => setPreviewAsset(null)}
-        onLoadAsset={(asset) => { gen.load({ ...(asset.params ?? {}), ...(asset.model ? { model: asset.model } : {}) } as Partial<GenParams>); clearPromptLibrarySelection(); }}
+        onLoadAsset={(asset) => { loadGen({ ...(asset.params ?? {}), ...(asset.model ? { model: asset.model } : {}) } as Partial<GenParams>); clearPromptLibrarySelection(); }}
         onUseReference={(asset) => applyReferenceEntries([libraryImportEntry(asset)])}
       />
 
@@ -490,7 +530,7 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
                   const importedSources = pick.referencePath && pick.referenceAsset
                     ? [createImportRecord("reference", [libraryImportEntry(pick.referenceAsset)], "提示词模板参考图")]
                     : [];
-                  gen.set({
+                  setGen({
                     prompt: pick.prompt,
                     ...(pick.referencePath ? { referencePath: pick.referencePath, references: [] } : {}),
                     importedSources,
@@ -507,12 +547,12 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
 
       <OptimizePromptDialog
         open={optimizeOpen}
-        prompt={gen.prompt}
+        getPrompt={readGenerationPrompt}
         guidance={promptlibId ? promptlibEntry?.guidance : undefined}
         pitfalls={promptlibId ? promptlibEntry?.pitfalls : undefined}
         llmModel={llmModel}
         onClose={() => setOptimizeOpen(false)}
-        onAdopt={(prompt) => gen.set({ prompt })}
+        onAdopt={(prompt) => setGen({ prompt })}
         onSaveAsTemplate={promptlibId ? (prompt) => usePromptlibStore.getState().saveOverride(promptlibId, prompt) : undefined}
       />
     </div>

@@ -293,6 +293,8 @@ impl Book {
     }
     fn receipt(&self, ch: &str, kind: &str, page: Option<i64>) -> Receipt {
         let mut values = BTreeMap::new();
+        // Settings are work-scoped and intentionally stay valid when a chapter
+        // source changes (see source_change_marks_current_docs_stale_but_not_shared_settings).
         if kind == "settings" {
             return Receipt { version: 2, values };
         }

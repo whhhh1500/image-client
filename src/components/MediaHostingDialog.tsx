@@ -22,13 +22,14 @@ export default function MediaHostingDialog({ open, onClose, onSaved }: MediaHost
   const [urlField, setUrlField] = useState("url");
   const [authMode, setAuthMode] = useState<MediaHostingAuthMode>("bearer");
   const [token, setToken] = useState("");
+  const [clearToken, setClearToken] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    setError(null); setToken("");
+    setError(null); setToken(""); setClearToken(false);
     void mediaHostingGet().then((next) => {
       if (cancelled) return;
       setStatus(next); setEndpoint(next.endpoint); setFileField(next.fileField || "file"); setUrlField(next.urlField || "url"); setAuthMode(next.authMode);
@@ -40,8 +41,8 @@ export default function MediaHostingDialog({ open, onClose, onSaved }: MediaHost
   const save = async () => {
     setSaving(true); setError(null);
     try {
-      const next = await mediaHostingSave({ endpoint: endpoint.trim(), fileField: fileField.trim(), urlField: urlField.trim(), authMode, token });
-      setStatus(next); setToken(""); onSaved?.(next); onClose();
+      const next = await mediaHostingSave({ endpoint: endpoint.trim(), fileField: fileField.trim(), urlField: urlField.trim(), authMode, token, clearToken });
+      setStatus(next); setToken(""); setClearToken(false); onSaved?.(next); onClose();
     } catch (cause) {
       setError(String(cause));
     } finally { setSaving(false); }
@@ -54,6 +55,7 @@ export default function MediaHostingDialog({ open, onClose, onSaved }: MediaHost
         <div className="grid grid-cols-2 gap-3"><label className="block text-xs text-slate-300">文件字段<input aria-label="文件字段" value={fileField} onChange={(event) => setFileField(event.target.value)} className={`${inputClass} mt-1`} /></label><label className="block text-xs text-slate-300">JSON URL 字段<input aria-label="JSON URL 字段" value={urlField} onChange={(event) => setUrlField(event.target.value)} className={`${inputClass} mt-1`} /></label></div>
         <label className="block text-xs text-slate-300">令牌发送方式<select aria-label="令牌发送方式" value={authMode} onChange={(event) => setAuthMode(event.target.value as MediaHostingAuthMode)} className={`${inputClass} mt-1`}><option value="bearer">Bearer</option><option value="raw">Raw</option></select></label>
         <label className="block text-xs text-slate-300">令牌<input aria-label="媒体托管令牌" value={token} onChange={(event) => setToken(event.target.value)} type="password" placeholder={status?.hasToken ? "同一服务留空保留；更换服务需重新填写" : "可留空"} className={`${inputClass} mt-1`} /></label>
+        {status?.hasToken && <label className="flex items-center gap-2 text-[11px] text-slate-400"><input type="checkbox" aria-label="清除已保存令牌" checked={clearToken} onChange={(event) => setClearToken(event.target.checked)} />清除已保存的令牌（保存后需重新填写才能使用托管上传）</label>}
         <p className="text-[10px] leading-relaxed text-slate-500">保存只写入本机配置，不会测试连接或上传文件。{status?.configured ? " 当前已有可用配置。" : " 当前未配置。"}</p>
         {error && <p className="text-xs text-rose-300">{error}</p>}
       </div>

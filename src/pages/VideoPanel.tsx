@@ -117,12 +117,20 @@ export function resolveImportedStoryboardShots(
     const references = item.referenceAssetIds
       .map((id) => currentProjectMedia.find((asset) => asset.asset.id === id))
       .filter((asset): asset is LibAsset => Boolean(asset));
+    // Only public HTTPS URLs can be sent as provider video references. Local
+    // video files used to be kept here and then blocked the whole generation
+    // with no way to fix it; drop them (and log) exactly like the reviewed
+    // handoff does.
+    const localVideos = references.filter((asset) => asset.asset.kind === "video" && !isPublicHttpsUrl(asset.asset.path));
+    if (localVideos.length) {
+      logEvent("warn", "video.storyboard_local_video_skipped", { shotNo: item.shotNo, count: localVideos.length });
+    }
     return {
       ...item,
       id: `shot-${item.shotNo}`,
       referenceImages: references.filter((asset) => asset.asset.kind === "image" && isPublicHttpsUrl(asset.asset.path)).map((asset) => asset.asset.path),
       referenceLocalImages: references.filter((asset) => asset.asset.kind === "image" && !isPublicHttpsUrl(asset.asset.path)).map((asset) => ({ assetId: asset.asset.id, path: asset.asset.path, label: asset.source })),
-      referenceVideos: references.filter((asset) => asset.asset.kind === "video").map((asset) => asset.asset.path),
+      referenceVideos: references.filter((asset) => asset.asset.kind === "video" && isPublicHttpsUrl(asset.asset.path)).map((asset) => asset.asset.path),
     };
   });
 }
@@ -193,6 +201,69 @@ function workflowStepClass(phase: WorkflowPhase, index: number): string {
   return "border-slate-800 bg-slate-950/20 text-slate-600";
 }
 
+/** Coalesce shot-prompt keystrokes before they touch the shared video store. */
+const SHOT_PROMPT_DEBOUNCE_MS = 250;
+
+/**
+ * Local-state prompt field for one shot. Writing every keystroke to the store
+ * re-rendered this whole 860-line panel (and re-ran its validators), so edits
+ * are kept locally and committed after a short pause or on blur.
+ */
+function ShotPromptTextarea({
+  value,
+  onCommit,
+  className,
+  placeholder,
+}: {
+  value: string;
+  onCommit: (prompt: string) => void;
+  className: string;
+  placeholder: string;
+}) {
+  const [draft, setDraft] = useState(value);
+  const committedRef = useRef(value);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    // Adopt external changes (import/template/reset) but never clobber typing.
+    if (value === committedRef.current) return;
+    committedRef.current = value;
+    setDraft(value);
+  }, [value]);
+
+  useEffect(() => () => {
+    if (timerRef.current !== null) clearTimeout(timerRef.current);
+  }, []);
+
+  const commit = (next: string) => {
+    if (timerRef.current !== null) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    if (next === committedRef.current) return;
+    committedRef.current = next;
+    onCommit(next);
+  };
+
+  return (
+    <textarea
+      className={className}
+      value={draft}
+      placeholder={placeholder}
+      onChange={(event) => {
+        const next = event.target.value;
+        setDraft(next);
+        if (timerRef.current !== null) clearTimeout(timerRef.current);
+        timerRef.current = setTimeout(() => {
+          timerRef.current = null;
+          commit(next);
+        }, SHOT_PROMPT_DEBOUNCE_MS);
+      }}
+      onBlur={() => commit(draft)}
+    />
+  );
+}
+
 export default function VideoPanel() {
   const vid = useVideoStore();
   const [capabilities, setCapabilities] = useState<VideoModelCapability[]>([]);
@@ -218,9 +289,9 @@ export default function VideoPanel() {
   const pickerSession = useRef(0);
   const processingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const provider = useProjectStore();
-  const defaultId = provider.projects[0]?.id;
-  const activeId = provider.activeId;
+  const projects = useProjectStore((s) => s.projects);
+  const activeId = useProjectStore((s) => s.activeId);
+  const defaultId = projects[0]?.id;
   const belongs = (projectId?: string) => projectId === activeId || (!projectId && activeId === defaultId);
   const allAssets = useLibraryStore((state) => state.assets);
   const pendingImport = useGenerationImportQueue((state) => state.pending);
@@ -305,7 +376,10 @@ export default function VideoPanel() {
     if (vid.audios.length) return "当前视频工作区暂不处理声音或音频参考，请移除旧任务中的音频参数后再生成。";
     for (const shot of shots) {
       const shotMode = shot.referenceStrategy ?? vid.mode;
-      const unresolvedReferences = unresolvedShotReferenceIds(shot, allAssets, belongs);
+      // A text shot never sends media references, and its referenceAssetIds may
+      // legitimately hold text anchor ids for provenance. storyboardProductionIssues
+      // skips the same check for text shots, so blocking here contradicted it.
+      const unresolvedReferences = shotMode === "text" ? [] : unresolvedShotReferenceIds(shot, allAssets, belongs);
       if (unresolvedReferences.length) return `第 ${shot.shotNo} 镜包含不可用的参考资产：${unresolvedReferences.join("、")}。参考资产必须是当前项目的图像或视频资源。`;
       const shotDurations = durationOptionsFor(capability, shotMode);
       if (!shotDurations.includes(shot.durationS)) return `${capability.label} 在 ${shotMode} 模式下不支持第 ${shot.shotNo} 镜的 ${shot.durationS} 秒时长。`;
@@ -386,6 +460,11 @@ export default function VideoPanel() {
     const next = items.length ? items : [{ id: "shot-1", shotNo: 1, prompt: "", durationS: durationOptions[0] ?? capability.minDurationS }];
     vid.set({ shots: next.map((shot, index) => ({ ...shot, shotNo: index + 1 })) });
     setTextSource(null);
+  };
+
+  const commitShotPrompt = (shotId: string, prompt: string) => {
+    // Read the live shots: a debounced commit may land after other edits.
+    updateShots(useVideoStore.getState().shots.map((item) => (item.id === shotId ? { ...item, prompt } : item)));
   };
 
   const importTarget = shots.find((shot) => shot.id === importShotId) ?? shots[0];
@@ -741,7 +820,7 @@ export default function VideoPanel() {
                       </div>
                       <div className="flex items-center gap-2"><select aria-label={`第 ${shot.shotNo} 镜时长`} value={shot.durationS} onChange={(event) => updateShots(shots.map((item, itemIndex) => itemIndex === index ? { ...item, durationS: Number(event.target.value) } : item))} className="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] text-slate-200">{shotDurations.map((duration) => <option key={duration} value={duration}>{duration} 秒</option>)}</select><button type="button" disabled={shots.length === 1} onClick={() => updateShots(shots.filter((_, itemIndex) => itemIndex !== index))} className="rounded p-1 text-slate-500 hover:text-rose-300 disabled:opacity-30" title="删除镜头"><Trash2 size={12} /></button></div>
                     </div>
-                    <textarea className={`${inputCls} h-20 resize-y leading-snug`} value={shot.prompt} placeholder="这一镜的完整视频 Prompt…" onChange={(event) => updateShots(shots.map((item, itemIndex) => itemIndex === index ? { ...item, prompt: event.target.value } : item))} />
+                    <ShotPromptTextarea className={`${inputCls} h-20 resize-y leading-snug`} value={shot.prompt} placeholder="这一镜的完整视频 Prompt…" onCommit={(prompt) => commitShotPrompt(shot.id, prompt)} />
                     {((shot.referenceLocalImages?.length ?? 0) > 0 || (shot.referenceImages?.length ?? 0) > 0) && <div className="mt-2 space-y-1" aria-label={`第 ${shot.shotNo} 镜图片参考`}>
                       {(shot.referenceLocalImages ?? []).map((local) => <div key={local.assetId ?? local.sourceUri} className="flex items-center gap-2 rounded border border-cyan-300/10 bg-cyan-300/[0.03] p-1.5"><img src={convertFileSrc(local.path)} alt={local.label} className="h-8 w-8 rounded object-cover" /><span className="min-w-0 flex-1 truncate text-[10px] text-cyan-100">本地图片 · {local.label}<span className="ml-1 text-slate-500">随生成请求发送</span></span><button type="button" onClick={() => removeLocalImageReference(shot.id, local)} className="rounded p-1 text-slate-500 hover:text-rose-300" aria-label={`移除本地图片 ${local.label}`}><X size={11} /></button></div>)}
                       {(shot.referenceImages ?? []).map((url) => <div key={url} className="flex items-center gap-2 rounded border border-white/5 p-1.5"><span className="h-8 w-8 rounded bg-slate-800 text-center leading-8 text-[9px] text-slate-500">URL</span><span className="min-w-0 flex-1 truncate text-[10px] text-slate-400">托管图片 URL · {url}</span><button type="button" onClick={() => removeHostedImageReference(shot.id, url)} className="rounded p-1 text-slate-500 hover:text-rose-300" aria-label={`移除托管图片 ${url}`}><X size={11} /></button></div>)}

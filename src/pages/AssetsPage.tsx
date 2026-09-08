@@ -151,9 +151,45 @@ export default function AssetsPage({ onQueueImport }: { onQueueImport: (entries:
     const actionFor = (target: ImportTarget) => typeof actions === "string" ? actions : actions?.[target];
     return <div className={`mt-2 flex flex-wrap gap-1.5 ${className}`}><button type="button" onClick={(event) => { event.stopPropagation(); queueEntries(entriesForTarget?.("image") ?? entries, "image", actionFor("image")); }} className="rounded border border-cyan-300/20 px-2 py-1 text-[10px] text-cyan-100 hover:bg-cyan-300/10">用于生图</button><button type="button" onClick={(event) => { event.stopPropagation(); queueEntries(entriesForTarget?.("video") ?? entries, "video", actionFor("video")); }} className="rounded border border-fuchsia-300/20 px-2 py-1 text-[10px] text-fuchsia-100 hover:bg-fuchsia-300/10">用于视频</button></div>;
   };
-  const retry = async (task: TaskRecord) => { if (!task.params || retrying) return; setRetrying(task.id); try { if (task.kind === "video") await generateVideo(task.params as unknown as VideoParams); else await generateImage(task.params as unknown as GenParams); } catch (error) { logEvent("warn", "task.retry_failed", { taskId: task.id, error: String(error) }); } finally { setRetrying(null); } };
+  const retry = async (task: TaskRecord) => {
+    if (!task.params || retrying) return;
+    setRetrying(task.id);
+    setRefreshMessage(null);
+    try {
+      if (task.kind === "video") {
+        // Resume the original shot group so already-produced shots are not paid for twice.
+        const groupId = typeof task.params.shotGroupId === "string" ? task.params.shotGroupId : undefined;
+        await generateVideo(task.params as unknown as VideoParams, {}, { resumeShotGroupId: groupId });
+      } else {
+        await generateImage(task.params as unknown as GenParams);
+      }
+      setRefreshMessage("重试已完成");
+    } catch (error) {
+      logEvent("warn", "task.retry_failed", { taskId: task.id, error: String(error) });
+      setRefreshMessage(`重试失败：${String(error)}`);
+    } finally {
+      setRetrying(null);
+    }
+  };
   const refresh = async () => { if (refreshing) return; setRefreshing(true); setRefreshMessage(null); try { const [history, sources] = await Promise.all([refreshLibraryHistory("asset_center_refresh"), scope === "project" && activeId ? loadProjectSources(activeId) : Promise.resolve({ novels: 0, comics: 0, current: true, failed: false })]); setRefreshMessage(sources.current ? sources.failed ? `历史已刷新；小说或漫画资料读取失败` : `已刷新 · ${history.assets.length} 个资源、${sources.novels} 部小说、${sources.comics} 条漫画资料` : `已刷新 · ${history.assets.length} 个资源`); } catch (error) { setRefreshMessage(`刷新失败：${String(error)}`); } finally { setRefreshing(false); } };
-  const count = (category: AssetCatalogCategory | "all") => scopedAssets.filter((asset) => classifyAssetCatalog(asset).category !== "novel" && assetMatchesCatalogCategory(asset, category)).length + (scope === "project" && (category === "all" || category === "novel") ? currentNovelWorks?.length ?? 0 : 0) + (scope === "project" && (category === "all" || category === "comic") ? currentComicEntries?.length ?? 0 : 0);
+  // Counts are computed once per data change instead of once per tab button on
+  // every render (8 x N classifyAssetCatalog calls previously).
+  const counts = useMemo(() => {
+    const visible = scopedAssets.filter((asset) => classifyAssetCatalog(asset).category !== "novel");
+    const map = new Map<AssetCatalogCategory | "all", number>();
+    for (const item of tabs) {
+      map.set(item.id, visible.filter((asset) => assetMatchesCatalogCategory(asset, item.id)).length);
+    }
+    if (scope === "project") {
+      const novel = currentNovelWorks?.length ?? 0;
+      const comic = currentComicEntries?.length ?? 0;
+      if (map.has("all")) map.set("all", (map.get("all") ?? 0) + novel + comic);
+      if (map.has("novel")) map.set("novel", (map.get("novel") ?? 0) + novel);
+      if (map.has("comic")) map.set("comic", (map.get("comic") ?? 0) + comic);
+    }
+    return map;
+  }, [currentComicEntries, currentNovelWorks, scope, scopedAssets]);
+  const count = (category: AssetCatalogCategory | "all") => counts.get(category) ?? 0;
   const openFolder = (asset: LibAsset) => void revealItemInDir(asset.asset.path).catch((error) => logEvent("warn", "asset.reveal_failed", { error: String(error) }));
   const uploadFiles = async () => { if (!activeId || uploading) return; setUploadError(null); const selected = await openDialog({ multiple: true, directory: false, filters: [{ name: "图片或视频", extensions: ["png", "jpg", "jpeg", "webp", "gif", "mp4", "webm", "mov"] }] }); const paths = Array.isArray(selected) ? selected : selected ? [selected] : []; if (!paths.length) return; setUploading(true); try { await importExternalAssets({ projectId: activeId, importEntry: "asset_library_upload", files: paths.map((path) => ({ path })) }); await refresh(); } catch (error) { setUploadError(String(error)); } finally { setUploading(false); } };
 

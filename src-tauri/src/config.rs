@@ -171,9 +171,10 @@ fn resolve_output_path(raw: &str) -> PathBuf {
         .strip_prefix("~/")
         .or_else(|| value.strip_prefix("~\\"))
     {
-        return crate::paths::data_dir()
-            .parent()
-            .unwrap_or_else(|| Path::new(""))
+        // Expand against the real user home, not the data dir's parent: an
+        // IMAGE_CLIENT_DATA_DIR override must not redirect `~/...` paths.
+        return dirs::home_dir()
+            .unwrap_or_else(|| crate::paths::data_dir())
             .join(relative);
     }
     let path = PathBuf::from(&value);
@@ -233,26 +234,15 @@ fn persist_to_path(config: &ConfigState, path: &Path) -> Result<(), String> {
         return result;
     }
 
-    // Windows cannot rename over an existing file. Keep a same-directory backup
-    // so a failed replacement can restore the previous valid configuration.
-    let backup = parent.join(format!(".backend-config-{}.bak", uuid::Uuid::new_v4()));
-    std::fs::rename(path, &backup).map_err(|error| {
+    // `std::fs::rename` replaces an existing file on Windows (MoveFileExW with
+    // MOVEFILE_REPLACE_EXISTING), so the previous backup dance only introduced a
+    // window in which no config file existed at all.
+    std::fs::rename(&temp, path).map_err(|error| {
         let _ = std::fs::remove_file(&temp);
-        format!("备份旧后端配置失败: {error}")
+        format!("提交后端配置失败: {error}")
     })?;
-    match std::fs::rename(&temp, path) {
-        Ok(()) => {
-            let _ = std::fs::remove_file(&backup);
-            crate::paths::secure_file(path)
-                .map_err(|error| format!("设置后端配置权限失败: {error}"))?;
-            Ok(())
-        }
-        Err(error) => {
-            let _ = std::fs::rename(&backup, path);
-            let _ = std::fs::remove_file(&temp);
-            Err(format!("提交后端配置失败: {error}"))
-        }
-    }
+    crate::paths::secure_file(path).map_err(|error| format!("设置后端配置权限失败: {error}"))?;
+    Ok(())
 }
 
 /// Derive the `/v1/models` URL from an API URL like `.../v1/images/generations`.

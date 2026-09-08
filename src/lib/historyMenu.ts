@@ -5,6 +5,9 @@ import type { ConvertFormat } from "./ipc";
 import { logEvent } from "./logger";
 import type { LibAsset } from "../store/useLibraryStore";
 
+/** Writes that are already running, keyed by asset path + operation. */
+const inFlightWrites = new Set<string>();
+
 export function imageHistoryMenu(input: {
   asset: LibAsset;
   onPreview: (asset: LibAsset) => void;
@@ -17,29 +20,38 @@ export function imageHistoryMenu(input: {
     input.onCompressed?.(asset);
     input.onRefresh?.();
   };
+  const runWrite = (key: string, eventName: string, failureLabel: string, task: () => Promise<LibAsset>) => {
+    // Two writes in the same second produce the same output file name but two
+    // asset rows; refuse the duplicate instead of silently overwriting.
+    if (inFlightWrites.has(key)) return;
+    inFlightWrites.add(key);
+    void task()
+      .then(afterWrite)
+      .catch((error) => {
+        logEvent("warn", eventName, { error: String(error) });
+        window.alert(`${failureLabel}失败：${error}`);
+      })
+      .finally(() => inFlightWrites.delete(key));
+  };
   const compress = (label: string, level: "lossless" | "q80" | "q60") => ({
     label,
     icon: menuIcons.compress,
-    onClick: () => {
-      void compressHistoryImage(input.asset, level)
-        .then(afterWrite)
-        .catch((error) => {
-          logEvent("warn", "image.compress_failed", { error: String(error) });
-          window.alert(`压缩失败：${error}`);
-        });
-    },
+    onClick: () => runWrite(
+      `compress:${input.asset.asset.path}:${level}`,
+      "image.compress_failed",
+      "压缩",
+      () => compressHistoryImage(input.asset, level),
+    ),
   });
   const convert = (format: ConvertFormat) => ({
     label: `转换为 ${format.toUpperCase()}`,
     icon: menuIcons.compress,
-    onClick: () => {
-      void convertHistoryImage(input.asset, format)
-        .then(afterWrite)
-        .catch((error) => {
-          logEvent("warn", "image.convert_failed", { error: String(error) });
-          window.alert(`转换失败：${error}`);
-        });
-    },
+    onClick: () => runWrite(
+      `convert:${input.asset.asset.path}:${format}`,
+      "image.convert_failed",
+      "转换",
+      () => convertHistoryImage(input.asset, format),
+    ),
   });
   return [
     { label: "放大预览", icon: menuIcons.preview, onClick: () => input.onPreview(input.asset) },

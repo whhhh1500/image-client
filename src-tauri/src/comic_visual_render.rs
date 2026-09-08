@@ -1633,7 +1633,7 @@ pub(crate) fn validate_candidate_asset(
     let format =
         crate::assets::detect_format_checked(&bytes).ok_or("VISUAL_PROVIDER_RESULT_INVALID")?;
     if !matches!(format, "png" | "jpg" | "jpeg" | "webp")
-        || image::load_from_memory(&bytes).is_err()
+        || crate::assets::validate_image_checked(&bytes).is_err()
     {
         return Err("VISUAL_PROVIDER_RESULT_INVALID".into());
     }

@@ -53,21 +53,43 @@ export function novelWorkCreate(value: { projectId: string; title: string; descr
   return input("novel_work_create", value);
 }
 
+/**
+ * Chapter revisions already mirrored into the shared library this session, plus
+ * the in-flight publish per revision. `novelWorkGet` is a read path, so it must
+ * not re-issue one write per chapter on every call.
+ */
+const publishedRevisionIds = new Set<string>();
+const publishingRevisionIds = new Map<string, Promise<void>>();
+
 export function novelWorkGet(value: { projectId: string; novelWorkId: string }): Promise<NovelSnapshot> {
   return input<NovelSnapshot>("novel_work_get", value).then(async (snapshot) => {
     const revisions = snapshot.revisions ?? [];
+    const wanted = new Map<string, { chapterNo: number; title: string; revision: NovelChapterRevision }>();
     for (const chapter of snapshot.chapters) {
       const revision = revisions.find((item) => item.id === chapter.latestRevisionId);
-      if (revision) await publishNovelChapter(value.projectId, snapshot.work.id, chapter.chapterNo, chapter.title ?? `第${chapter.chapterNo}章`, revision).catch((error) => logEvent("warn", "novel.shared_source_publish_failed", { revisionId: revision.id, error: String(error) }));
+      if (!revision || publishedRevisionIds.has(revision.id)) continue;
+      wanted.set(revision.id, { chapterNo: chapter.chapterNo, title: chapter.title ?? `第${chapter.chapterNo}章`, revision });
     }
+    await Promise.all([...wanted.values()].map(({ chapterNo, title, revision }) => publishNovelChapter(
+      value.projectId,
+      snapshot.work.id,
+      chapterNo,
+      title,
+      revision,
+    )));
     return snapshot;
   });
 }
 
 async function publishNovelChapter(projectId: string, novelWorkId: string, chapterNo: number, title: string, revision: NovelChapterRevision) {
   const exists = useLibraryStore.getState().assets.some((asset) => asset.params?.novelChapterRevisionId === revision.id);
-  if (exists) return;
-  await saveDocumentVersion({
+  if (exists) {
+    publishedRevisionIds.add(revision.id);
+    return;
+  }
+  const inFlight = publishingRevisionIds.get(revision.id);
+  if (inFlight) return inFlight;
+  const task = saveDocumentVersion({
     title,
     text: revision.content,
     projectId,
@@ -76,7 +98,15 @@ async function publishNovelChapter(projectId: string, novelWorkId: string, chapt
     agentId: "novel_source",
     metadata: { sourceKind: "novel_chapter", novelWorkId, novelChapterId: revision.chapterId, novelChapterRevisionId: revision.id, chapterNo },
     provenance: { originalInput: revision.content, generationInput: revision.content, sourceMaterials: [], parentAssetIds: [] },
+  }).then(() => {
+    publishedRevisionIds.add(revision.id);
+  }).catch((error) => {
+    logEvent("warn", "novel.shared_source_publish_failed", { revisionId: revision.id, error: String(error) });
+  }).finally(() => {
+    publishingRevisionIds.delete(revision.id);
   });
+  publishingRevisionIds.set(revision.id, task);
+  return task;
 }
 
 export function novelChapterRevisionCreate(value: {

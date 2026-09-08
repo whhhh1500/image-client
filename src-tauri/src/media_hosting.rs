@@ -129,7 +129,7 @@ fn stored_config(db: &DbState) -> Result<StoredMediaHostingConfig, String> {
     db::with_connection(db, |connection| {
         let raw: Option<String> = connection
             .query_row(
-                "SELECT value FROM settings WHERE key=?",
+                "SELECT value FROM app_secrets WHERE key=?",
                 [SETTINGS_KEY],
                 |row| row.get(0),
             )
@@ -177,7 +177,7 @@ fn save_config_inner(
     db::with_connection(db, |connection| {
         connection
             .execute(
-                "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                "INSERT INTO app_secrets(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 rusqlite::params![SETTINGS_KEY, serialized],
             )
             .map_err(|error| format!("保存媒体托管设置失败: {error}"))?;
@@ -186,12 +186,12 @@ fn save_config_inner(
     Ok(public_config(&config))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn media_hosting_get(db: tauri::State<'_, DbState>) -> Result<MediaHostingConfig, String> {
     Ok(public_config(&stored_config(&db)?))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn media_hosting_save(
     db: tauri::State<'_, DbState>,
     input: MediaHostingSaveInput,
@@ -641,12 +641,12 @@ mod tests {
         assert!(asset_publish_media_inner(&db, publish()).await.is_err());
         db::with_connection(&db, |connection| {
             connection.execute("UPDATE assets SET metadata=? WHERE id='asset-a'", [r#"{"projectId":"project-a"}"#]).map_err(|error| error.to_string())?;
-            connection.execute("UPDATE settings SET value=? WHERE key=?", rusqlite::params![r#"{"endpoint":"http://example.com/upload","fileField":"file","urlField":"url","authMode":"bearer","token":"x"}"#, SETTINGS_KEY]).map_err(|error| error.to_string())?;
+            connection.execute("UPDATE app_secrets SET value=? WHERE key=?", rusqlite::params![r#"{"endpoint":"http://example.com/upload","fileField":"file","urlField":"url","authMode":"bearer","token":"x"}"#, SETTINGS_KEY]).map_err(|error| error.to_string())?;
             Ok(())
         }).unwrap();
         assert!(asset_publish_media_inner(&db, publish()).await.is_err());
         db::with_connection(&db, |connection| {
-            connection.execute("UPDATE settings SET value=? WHERE key=?", rusqlite::params![r#"{"endpoint":"https://localhost/upload","fileField":"file","urlField":"url","authMode":"bearer","token":"x"}"#, SETTINGS_KEY]).map_err(|error| error.to_string())?;
+            connection.execute("UPDATE app_secrets SET value=? WHERE key=?", rusqlite::params![r#"{"endpoint":"https://localhost/upload","fileField":"file","urlField":"url","authMode":"bearer","token":"x"}"#, SETTINGS_KEY]).map_err(|error| error.to_string())?;
             Ok(())
         }).unwrap();
         assert!(asset_publish_media_inner(&db, publish()).await.is_err());

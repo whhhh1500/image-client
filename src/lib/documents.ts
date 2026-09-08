@@ -82,7 +82,26 @@ export function inferDocumentType(source: string): DocumentType {
   return "document";
 }
 
+const documentMetaCache = new WeakMap<LibAsset, DocumentMeta | null>();
+
+/**
+ * Derive document metadata for an asset.
+ *
+ * The result is cached per asset object (the store replaces objects instead of
+ * mutating them) and `shots` is parsed lazily, because `getDocumentMeta` runs
+ * inside sort comparators and per-row list rendering. Parsing the storyboard
+ * Markdown eagerly made a single keystroke re-parse the same document thousands
+ * of times.
+ */
 export function getDocumentMeta(asset: LibAsset): DocumentMeta | null {
+  const cached = documentMetaCache.get(asset);
+  if (cached !== undefined) return cached;
+  const meta = buildDocumentMeta(asset);
+  documentMetaCache.set(asset, meta);
+  return meta;
+}
+
+function buildDocumentMeta(asset: LibAsset): DocumentMeta | null {
   if (asset.asset.kind !== "text") return null;
   const params = asset.params ?? {};
   const text = typeof params.text === "string" ? params.text : "";
@@ -95,8 +114,7 @@ export function getDocumentMeta(asset: LibAsset): DocumentMeta | null {
   const version = typeof params.version === "number" && Number.isFinite(params.version)
     ? Math.max(1, Math.floor(params.version))
     : 1;
-  const shots = documentType === "storyboard" ? parseStoryboardShots(text) : undefined;
-  return {
+  const meta: DocumentMeta = {
     text,
     title: typeof params.title === "string" && params.title.trim() ? params.title.trim() : asset.source,
     documentType,
@@ -105,16 +123,43 @@ export function getDocumentMeta(asset: LibAsset): DocumentMeta | null {
     parentAssetId: typeof params.parentAssetId === "string" ? params.parentAssetId : undefined,
     changeType: typeof params.changeType === "string" ? params.changeType as DocumentChangeType : "generated",
     agentId: typeof params.agentId === "string" ? params.agentId : undefined,
-    shots,
     provenance: historyProvenanceFromParams(params) ?? undefined,
   };
+  if (documentType === "storyboard") {
+    Object.defineProperty(meta, "shots", {
+      enumerable: true,
+      configurable: true,
+      get() {
+        const parsed = parseStoryboardShots(text);
+        Object.defineProperty(meta, "shots", { value: parsed, enumerable: true, configurable: true });
+        return parsed;
+      },
+    });
+  }
+  return meta;
+}
+
+let versionIndexCache: { assets: LibAsset[]; byDocument: Map<string, LibAsset[]> } | null = null;
+
+/** Group text documents by `documentId` once per assets array identity. */
+function versionIndex(allAssets: LibAsset[]): Map<string, LibAsset[]> {
+  if (versionIndexCache?.assets === allAssets) return versionIndexCache.byDocument;
+  const byDocument = new Map<string, LibAsset[]>();
+  for (const candidate of allAssets) {
+    const meta = getDocumentMeta(candidate);
+    if (!meta) continue;
+    const list = byDocument.get(meta.documentId);
+    if (list) list.push(candidate);
+    else byDocument.set(meta.documentId, [candidate]);
+  }
+  versionIndexCache = { assets: allAssets, byDocument };
+  return byDocument;
 }
 
 export function getDocumentVersions(asset: LibAsset, allAssets = useLibraryStore.getState().assets): LibAsset[] {
   const meta = getDocumentMeta(asset);
   if (!meta) return [];
-  return allAssets
-    .filter((candidate) => getDocumentMeta(candidate)?.documentId === meta.documentId)
+  return [...(versionIndex(allAssets).get(meta.documentId) ?? [])]
     .sort((a, b) => (getDocumentMeta(b)?.version ?? 0) - (getDocumentMeta(a)?.version ?? 0));
 }
 

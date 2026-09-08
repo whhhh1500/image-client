@@ -31,6 +31,32 @@ pub fn is_valid_image_bytes(bytes: &[u8]) -> bool {
     detect_format_checked(bytes).is_some()
 }
 
+/// Strict decode bounds. A 50 MiB PNG can declare billions of pixels, and an
+/// allocation failure inside a decoder aborts the process (no unwinding), so
+/// every user-controlled decode goes through these limits.
+pub const MAX_IMAGE_DIMENSION: u32 = 16_384;
+pub const MAX_IMAGE_ALLOC_BYTES: u64 = 1024 * 1024 * 1024;
+
+pub fn decode_image_checked(bytes: &[u8]) -> Result<image::DynamicImage, String> {
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|error| format!("识别图片格式失败: {error}"))?;
+    // `image::Limits` is non-exhaustive, so start from Default and tighten it.
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_IMAGE_DIMENSION);
+    limits.max_image_height = Some(MAX_IMAGE_DIMENSION);
+    limits.max_alloc = Some(MAX_IMAGE_ALLOC_BYTES);
+    reader.limits(limits);
+    reader
+        .decode()
+        .map_err(|error| format!("解码图片失败: {error}"))
+}
+
+/// Decode-and-discard, for content validation paths that never use the pixels.
+pub fn validate_image_checked(bytes: &[u8]) -> Result<(), String> {
+    decode_image_checked(bytes).map(|_| ())
+}
+
 pub fn is_valid_mp4_bytes(bytes: &[u8]) -> bool {
     bytes.len() >= 12 && &bytes[4..8] == b"ftyp"
 }
@@ -41,6 +67,46 @@ pub fn is_valid_video_bytes(bytes: &[u8], extension: &str) -> bool {
         "webm" => bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]),
         _ => false,
     }
+}
+
+/// SHA-256 (lowercase hex) of a file, cached while `(path, mtime, len)` is
+/// unchanged. Re-hashing hundreds of megabytes on every "open export" click was
+/// pure waste; the cache keeps the external-modification check honest because a
+/// changed file always changes its mtime or length.
+pub fn cached_file_sha256(path: &str, max_bytes: u64) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::UNIX_EPOCH;
+
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() || meta.len() > max_bytes {
+        return None;
+    }
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    static CACHE: OnceLock<Mutex<HashMap<String, (u128, u64, String)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(guard) = cache.lock() {
+        if let Some((cached_modified, cached_len, digest)) = guard.get(path) {
+            if *cached_modified == modified && *cached_len == meta.len() {
+                return Some(digest.clone());
+            }
+        }
+    }
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.len() as u64 > max_bytes {
+        return None;
+    }
+    let digest = format!("{:x}", Sha256::digest(&bytes));
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(path.to_string(), (modified, meta.len(), digest.clone()));
+    }
+    Some(digest)
 }
 
 fn ext_for_kind(kind: &str, format: &str) -> String {

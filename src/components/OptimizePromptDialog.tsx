@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2, Sparkles, X } from "lucide-react";
 import { LLM_MODELS } from "../lib/models";
 import { optimizeImagePrompt } from "../lib/optimizePrompt";
@@ -8,7 +8,7 @@ const inputCls =
 
 export default function OptimizePromptDialog({
   open,
-  prompt,
+  getPrompt,
   guidance,
   pitfalls,
   llmModel,
@@ -17,7 +17,8 @@ export default function OptimizePromptDialog({
   onSaveAsTemplate,
 }: {
   open: boolean;
-  prompt: string;
+  /** Read once when the dialog opens; the caller must pass a stable function. */
+  getPrompt: () => string;
   guidance?: string[];
   pitfalls?: string[];
   llmModel?: string;
@@ -25,39 +26,46 @@ export default function OptimizePromptDialog({
   onAdopt: (prompt: string) => void;
   onSaveAsTemplate?: (prompt: string) => void | Promise<void>;
 }) {
+  const [source, setSource] = useState("");
   const [note, setNote] = useState("");
   const [result, setResult] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Every open/close bumps the token, so a response that arrives after the
+  // dialog was closed can never leak into the next session.
+  const requestRef = useRef(0);
 
   useEffect(() => {
-    if (!open) {
-      setNote("");
-      setResult("");
-      setError(null);
-      setBusy(false);
-    }
-  }, [open]);
+    requestRef.current += 1;
+    setNote("");
+    setResult("");
+    setError(null);
+    setBusy(false);
+    if (open) setSource(getPrompt());
+  }, [open, getPrompt]);
 
   if (!open) return null;
 
   const run = async () => {
+    const token = ++requestRef.current;
     setBusy(true);
     setError(null);
     try {
       const model = llmModel && LLM_MODELS.includes(llmModel) ? llmModel : undefined;
       const optimized = await optimizeImagePrompt({
-        prompt,
+        prompt: source,
         userIntent: note,
         guidance,
         pitfalls,
         model,
       });
+      if (token !== requestRef.current) return;
       setResult(optimized);
     } catch (e) {
+      if (token !== requestRef.current) return;
       setError(String(e));
     } finally {
-      setBusy(false);
+      if (token === requestRef.current) setBusy(false);
     }
   };
 
@@ -71,7 +79,7 @@ export default function OptimizePromptDialog({
         <div className="grid gap-3 md:grid-cols-2">
           <label className="block">
             <div className="mb-1 text-[11px] text-slate-400">当前</div>
-            <pre className="h-40 overflow-auto whitespace-pre-wrap rounded-lg border border-slate-700 bg-slate-950/60 p-3 text-[11px] leading-relaxed text-slate-300">{prompt || "（空）"}</pre>
+            <pre className="h-40 overflow-auto whitespace-pre-wrap rounded-lg border border-slate-700 bg-slate-950/60 p-3 text-[11px] leading-relaxed text-slate-300">{source || "（空）"}</pre>
           </label>
           <label className="block">
             <div className="mb-1 text-[11px] text-slate-400">优化后</div>
@@ -82,7 +90,7 @@ export default function OptimizePromptDialog({
         {error && <div className="mt-3 rounded-lg bg-rose-500/10 px-3 py-2 text-[11px] text-rose-300">{error}</div>}
         <div className="mt-4 flex flex-wrap justify-end gap-2">
           <button type="button" onClick={onClose} className="rounded-lg border border-slate-600 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800">取消</button>
-          <button type="button" disabled={busy || !prompt.trim()} onClick={run} className="flex items-center gap-1 rounded-lg bg-fuchsia-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-fuchsia-400 disabled:opacity-50">
+          <button type="button" disabled={busy || !source.trim()} onClick={run} className="flex items-center gap-1 rounded-lg bg-fuchsia-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-fuchsia-400 disabled:opacity-50">
             {busy ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
             {result ? "再优化一次" : "开始优化"}
           </button>

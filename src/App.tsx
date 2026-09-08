@@ -35,6 +35,9 @@ import { queueGenerationAssetImport, useGenerationImportQueue } from "./store/us
 type Mode = "image" | "video";
 type Tab = "generate" | "comic" | "pipeline" | "assets";
 
+/** Coalesce a burst of `history://changed` events into one library reload. */
+const HISTORY_EVENT_DEBOUNCE_MS = 400;
+
 const GeneratePanel = lazy(() => import("./pages/GeneratePanel"));
 const VideoPanel = lazy(() => import("./pages/VideoPanel"));
 const VideoMarkdownWorkspace = lazy(() => import("./components/video/VideoMarkdownWorkspace"));
@@ -68,14 +71,18 @@ function App() {
     getDb()
       .then(async () => {
         const s = await loadSettings();
-        const st = await applyActive(s).catch(() => null);
+        // These four steps are independent; running them in parallel removes
+        // three serial IPC+SQL round-trips from cold start.
+        const [st, , , hist] = await Promise.all([
+          applyActive(s).catch(() => null),
+          usePromptlibStore.getState().load(),
+          useProjectStore.getState().load(),
+          loadHistory().catch(() => ({ assets: [], tasks: [] })),
+        ]);
         if (st && !cancelled) setCfgStatus(st);
-        await useProjectStore.getState().load();
-        await usePromptlibStore.getState().load();
         const projectState = useProjectStore.getState();
         const project = projectState.projects.find((p) => p.id === projectState.activeId);
         if (project) applyProjectProfile(project);
-        const hist = await loadHistory().catch(() => ({ assets: [], tasks: [] }));
         if (!cancelled) {
           useLibraryStore.getState().loadAssets(hist.assets);
           useLibraryStore.getState().loadTasks(hist.tasks);
@@ -93,10 +100,21 @@ function App() {
     if (!dbReady) return;
     let disposed = false;
     let unlisten: (() => void) | undefined;
+    let debounce: number | undefined;
+    let pendingRevision = 0;
     void listen<{ revision: number; operation: string; assetIds: string[]; changedAt: number }>("history://changed", (event) => {
-      void refreshLibraryHistory("backend_event")
-        .then(() => acknowledgeHistoryRevision(event.payload.revision))
-        .catch(() => {});
+      // The REST API emits one event per produced asset, and each reload reads
+      // the whole library. Coalesce a burst into a single refresh and always
+      // acknowledge the newest revision so the backend can observe progress.
+      pendingRevision = Math.max(pendingRevision, event.payload.revision);
+      if (debounce !== undefined) window.clearTimeout(debounce);
+      debounce = window.setTimeout(() => {
+        debounce = undefined;
+        const revision = pendingRevision;
+        void refreshLibraryHistory("backend_event")
+          .then(() => acknowledgeHistoryRevision(revision))
+          .catch((error) => logEvent("error", "history.refresh_after_event_failed", { revision, error: String(error) }));
+      }, HISTORY_EVENT_DEBOUNCE_MS);
     }).then((dispose) => {
       if (disposed) dispose();
       else {
@@ -108,6 +126,7 @@ function App() {
     }).catch((error) => logEvent("error", "history.event_listener_failed", { error: String(error) }));
     return () => {
       disposed = true;
+      if (debounce !== undefined) window.clearTimeout(debounce);
       unlisten?.();
     };
   }, [dbReady]);
@@ -159,7 +178,8 @@ function App() {
   };
 
   const switchProject = async (id: string) => {
-    await useProjectStore.getState().switch(id);
+    // A superseded switch (fast A→B) must not apply A's profile or wipe B's form.
+    if (!(await useProjectStore.getState().switch(id))) return;
     const project = useProjectStore.getState().projects.find((p) => p.id === id);
     if (project) applyProjectProfile(project);
     // 清空上一个项目的私有生成参数，避免跨项目引用资产。

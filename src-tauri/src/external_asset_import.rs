@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tauri::Manager;
 
 use crate::{db, model::AssetRef};
 
@@ -32,7 +33,19 @@ pub struct AssetImportFilesInput {
 )]
 pub enum AssetImportFile {
     Path { path: String },
-    Bytes { file_name: String, data: Vec<u8> },
+    Bytes { file_name: String, data_base64: String },
+}
+
+/// Decode a base64 import payload with a size pre-check so an oversized request
+/// is rejected before the decoded buffer is allocated.
+fn decode_import_base64(value: &str) -> Result<Vec<u8>, String> {
+    use base64::Engine;
+    if value.len() > (MAX_VIDEO_IMPORT_BYTES / 3 + 1) * 4 {
+        return Err("导入文件超过 512 MiB 大小限制".into());
+    }
+    base64::engine::general_purpose::STANDARD
+        .decode(value)
+        .map_err(|_| "导入文件内容不是有效的 base64".to_string())
 }
 
 #[derive(Debug, Serialize)]
@@ -97,10 +110,11 @@ fn read_input(input: AssetImportFile) -> Result<(String, Vec<u8>), String> {
                 std::fs::read(&canonical).map_err(|error| format!("读取导入文件失败：{error}"))?;
             Ok((file_name(&canonical), bytes))
         }
-        AssetImportFile::Bytes { file_name, data } => {
+        AssetImportFile::Bytes { file_name, data_base64 } => {
             if file_name.trim().is_empty() {
                 return Err("导入文件名不能为空".into());
             }
+            let data = decode_import_base64(&data_base64)?;
             if data.len() > MAX_VIDEO_IMPORT_BYTES {
                 return Err("导入文件超过 512 MiB 大小限制".into());
             }
@@ -124,11 +138,13 @@ fn input_len(input: &AssetImportFile) -> Result<usize, String> {
             }
             usize::try_from(metadata.len()).map_err(|_| "导入文件超过允许大小".into())
         }
-        AssetImportFile::Bytes { file_name, data } => {
+        AssetImportFile::Bytes { file_name, data_base64 } => {
             if file_name.trim().is_empty() {
                 return Err("导入文件名不能为空".into());
             }
-            Ok(data.len())
+            // Approximate the decoded length so the batch preflight stays
+            // allocation-free; the exact check happens after decoding.
+            Ok(data_base64.len() / 4 * 3)
         }
     }
 }
@@ -138,7 +154,8 @@ fn classify(source: String, bytes: Vec<u8>) -> Result<PendingImport, String> {
         if bytes.len() > MAX_IMAGE_IMPORT_BYTES {
             return Err(format!("图片“{source}”超过 50 MiB 大小限制"));
         }
-        image::load_from_memory(&bytes).map_err(|_| format!("图片“{source}”内容格式校验失败"))?;
+        crate::assets::validate_image_checked(&bytes)
+            .map_err(|_| format!("图片“{source}”内容格式校验失败"))?;
         return Ok(PendingImport {
             source,
             bytes,
@@ -221,11 +238,21 @@ fn catalog_metadata(input: &AssetImportFilesInput) -> Result<Value, String> {
     Ok(params)
 }
 
-fn import_files_inner(
-    connection: &mut Connection,
+/// Everything needed to persist an import, prepared without holding the global
+/// SQLite connection lock.
+struct PreparedImport {
+    input: AssetImportFilesInput,
+    params: Value,
+    pending: Vec<PendingImport>,
+}
+
+/// Validate the request and read/decode every file. This runs outside the DB
+/// lock: reading up to 512 MiB and decoding images used to block every other
+/// database caller for the duration of the import.
+fn prepare_import(
     mut input: AssetImportFilesInput,
-    destination: &Path,
-) -> Result<Vec<ImportedLibraryAsset>, String> {
+    _destination: &Path,
+) -> Result<PreparedImport, String> {
     input.project_id = input.project_id.trim().to_string();
     input.import_entry = input.import_entry.trim().to_string();
     input.upload_batch_id = input.upload_batch_id.trim().to_string();
@@ -238,7 +265,6 @@ fn import_files_inner(
     if input.upload_batch_id.trim().is_empty() {
         return Err("导入批次 ID 不能为空".into());
     }
-    verify_project(connection, &input.project_id)?;
     let params = catalog_metadata(&input)?;
     let mut declared_batch_bytes = 0usize;
     for file in &input.files {
@@ -253,8 +279,8 @@ fn import_files_inner(
             return Err("导入批次超过 512 MiB 大小限制".into());
         }
     }
-    let pending = input
-        .files
+    let files = std::mem::take(&mut input.files);
+    let pending = files
         .into_iter()
         .map(read_input)
         .collect::<Result<Vec<_>, _>>()?
@@ -275,6 +301,16 @@ fn import_files_inner(
             input.import_entry, required, item.source
         ));
     }
+    Ok(PreparedImport { input, params, pending })
+}
+
+fn persist_import(
+    connection: &mut Connection,
+    prepared: PreparedImport,
+    destination: &Path,
+) -> Result<Vec<ImportedLibraryAsset>, String> {
+    let PreparedImport { input, params, pending } = prepared;
+    verify_project(connection, &input.project_id)?;
 
     let mut written: Vec<(AssetRef, String)> = Vec::with_capacity(pending.len());
     for item in pending {
@@ -351,20 +387,25 @@ fn import_files_inner(
         .collect())
 }
 
-#[tauri::command]
-pub fn asset_import_files(
-    db_state: tauri::State<'_, db::DbState>,
+#[tauri::command(async)]
+pub async fn asset_import_files(
+    app: tauri::AppHandle,
     input: AssetImportFilesInput,
 ) -> Result<Vec<ImportedLibraryAsset>, String> {
     let project_id = input.project_id.clone();
     let import_entry = input.import_entry.clone();
-    let result = db::with_connection_mut(&db_state, |connection| {
-        import_files_inner(
-            connection,
-            input,
-            &crate::paths::assets_dir().join("外部导入"),
-        )
-    });
+    // The whole import (up to 512 MiB of reads plus image decoding) runs on the
+    // blocking pool; the connection lock is only taken for the persist phase.
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let destination = crate::paths::assets_dir().join("外部导入");
+        let prepared = prepare_import(input, &destination)?;
+        let db_state: tauri::State<'_, db::DbState> = app.state();
+        db::with_connection_mut(&db_state, |connection| {
+            persist_import(connection, prepared, &destination)
+        })
+    })
+    .await
+    .map_err(|error| format!("导入资产任务失败: {error}"))?;
     match &result {
         Ok(imported) => crate::logging::info(
             "asset.external_import.end",
@@ -412,6 +453,11 @@ mod tests {
         bytes
     }
 
+    fn base64_of(bytes: &[u8]) -> String {
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
     fn input() -> AssetImportFilesInput {
         AssetImportFilesInput {
             project_id: "project-a".into(),
@@ -419,10 +465,19 @@ mod tests {
             upload_batch_id: "batch-a".into(),
             files: vec![AssetImportFile::Bytes {
                 file_name: "source.png".into(),
-                data: png(),
+                data_base64: base64_of(&png()),
             }],
             params: json!({ "scope": "reference" }),
         }
+    }
+
+    fn import_files_inner(
+        connection: &mut Connection,
+        input: AssetImportFilesInput,
+        destination: &Path,
+    ) -> Result<Vec<ImportedLibraryAsset>, String> {
+        let prepared = prepare_import(input, destination)?;
+        persist_import(connection, prepared, destination)
     }
 
     #[test]
@@ -465,7 +520,7 @@ mod tests {
         request.import_entry = "short_drama_video_reference".into();
         request.files = vec![AssetImportFile::Bytes {
             file_name: "not-video.mp4".into(),
-            data: png(),
+            data_base64: base64_of(&png()),
         }];
         assert!(import_files_inner(&mut connection(), request, &root).is_err());
         assert!(std::fs::read_dir(&root).unwrap().next().is_none());
@@ -478,7 +533,7 @@ mod tests {
         let mut request = input();
         request.files = vec![AssetImportFile::Bytes {
             file_name: "truncated.png".into(),
-            data: vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A],
+            data_base64: base64_of(&vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]),
         }];
         assert!(import_files_inner(&mut connection(), request, &root).is_err());
         assert!(std::fs::read_dir(&root).unwrap().next().is_none());
@@ -488,14 +543,14 @@ mod tests {
     #[test]
     fn accepts_the_browser_file_json_shape() {
         let file: AssetImportFile = serde_json::from_value(json!({
-            "source": "bytes", "fileName": "browser.png", "data": png(),
+            "source": "bytes", "fileName": "browser.png", "dataBase64": base64_of(&png()),
         }))
         .unwrap();
-        let AssetImportFile::Bytes { file_name, data } = file else {
+        let AssetImportFile::Bytes { file_name, data_base64 } = file else {
             panic!("browser payload must deserialize as bytes")
         };
         assert_eq!(file_name, "browser.png");
-        assert_eq!(data, png());
+        assert_eq!(decode_import_base64(&data_base64).unwrap(), png());
     }
 
     #[test]

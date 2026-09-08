@@ -19,8 +19,8 @@ let dbPromise: Promise<DatabaseClient> | null = null;
  */
 async function loadDb(): Promise<DatabaseClient> {
   const started = performance.now();
-  const dir = await loggedInvoke<string>("data_dir");
   try {
+    const dir = await loggedInvoke<string>("data_dir");
     const db: DatabaseClient = {
       execute: (query, bindValues = []) => loggedInvoke<QueryResult>("db_execute", { query, bindValues }),
       select: <T>(query: string, bindValues: unknown[] = []) => loggedInvoke<T>("db_select", { query, bindValues }),
@@ -35,7 +35,12 @@ async function loadDb(): Promise<DatabaseClient> {
 
 export function getDb(): Promise<DatabaseClient> {
   if (!dbPromise) {
-    dbPromise = loadDb();
+    // A rejected promise must not be cached: a single transient IPC failure
+    // would otherwise disable every later dbExecute/dbSelect for the whole run.
+    dbPromise = loadDb().catch((error: unknown) => {
+      dbPromise = null;
+      throw error;
+    });
   }
   return dbPromise;
 }

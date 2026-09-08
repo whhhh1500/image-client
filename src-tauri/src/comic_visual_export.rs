@@ -21,6 +21,8 @@ use crate::{
 
 const COMMAND_EXPORT: &str = "comic_visual_batch_export";
 const EXPORT_UNAVAILABLE: &str = "VISUAL_EXPORT_UNAVAILABLE";
+/// Upper bound for a single exported page image when re-verifying hashes.
+const MAX_EXPORT_FILE_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -233,7 +235,7 @@ fn export_inner_at_with_policy(
                 return Err("VISUAL_EXPORT_DEFAULT_PNG_REQUIRED".into());
             }
             let bytes = fs::read(&asset.path).map_err(|_| EXPORT_UNAVAILABLE.to_string())?;
-            image::load_from_memory(&bytes)
+            crate::assets::validate_image_checked(&bytes)
                 .map_err(|_| "VISUAL_EXPORT_SOURCE_INVALID".to_string())?;
             let digest = sha256(&bytes);
             let extension = asset
@@ -275,6 +277,14 @@ fn export_inner_at_with_policy(
     })();
     if let Err(error) = outcome {
         mark_failed(conn, &export_id, &error)?;
+        // A failed attempt must stay retryable with the same idempotency key
+        // (the receipt is committed before the artifacts exist) and must not
+        // leave a half-written directory behind.
+        let _ = conn.execute(
+            "DELETE FROM comic_visual_export_command_receipts WHERE command_name=? AND idempotency_key=? AND export_id=?",
+            params![COMMAND_EXPORT, input.idempotency_key, export_id],
+        );
+        let _ = std::fs::remove_dir_all(&directory);
         return Err(error);
     }
     read_export_verified(conn, &input.project_id, &input.novel_work_id, &export_id)
@@ -537,10 +547,10 @@ fn read_export_verified(
     if files.is_empty()
         || files.iter().any(|f| {
             let path = Path::new(&f.path).canonicalize().ok();
+            let expected = f.sha256.strip_prefix("sha256:").unwrap_or(&f.sha256);
             path.as_ref().is_none_or(|p| !p.starts_with(&directory))
-                || fs::read(&f.path)
-                    .ok()
-                    .is_none_or(|b| sha256(&b) != f.sha256)
+                || crate::assets::cached_file_sha256(&f.path, MAX_EXPORT_FILE_BYTES)
+                    .is_none_or(|digest| digest != expected)
         })
         || manifest_value
             != serde_json::from_str::<serde_json::Value>(&selection_json)

@@ -31,6 +31,11 @@ it("shows the changelog and closes with Escape", () => {
     expect(section, `${version} section`).toBeTruthy();
     return within(section!);
   };
+  const v024 = versionSection("v0.2.4");
+  expect(v024.getByText("2026-09-09")).toBeTruthy();
+  expect(v024.getByText(/不再重复生成并计费已成功的镜头/)).toBeTruthy();
+  expect(v024.getByText(/导入大文件时不再卡住整个应用/)).toBeTruthy();
+
   const v023 = versionSection("v0.2.3");
   expect(v023.getByText("2026-09-08")).toBeTruthy();
   expect(v023.getByText(/短剧采用带修订号的章节快照/)).toBeTruthy();
