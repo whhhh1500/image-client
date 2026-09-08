@@ -4,7 +4,7 @@ import source from "./VideoMarkdownWorkspace.tsx?raw";
 describe("VideoMarkdownWorkspace", () => {
   it("uses a staged Markdown workflow for novels and ideas", () => {
     for (const label of ["原始资料", "改编规划", "剧本", "视频锚点", "视频分镜", "质检", "视频结果"]) expect(source).toContain(label);
-    expect(source).toContain("小说 / 章节");
+    expect(source).toContain("小说章节快照");
     expect(source).toContain("脑洞 / 梗概");
   });
 

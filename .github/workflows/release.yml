@@ -54,28 +54,20 @@ jobs:
         include:
           - platform: windows-latest
             artifact: windows-x64
-            args: --bundles nsis
-            artifact_path: src-tauri/target/release/bundle/nsis/*.exe
+            args: --no-bundle
+            package_args: --platform windows-x64
             cache_key: windows-x64
           - platform: ubuntu-22.04
             artifact: linux-x64
-            args: --bundles appimage,deb
-            artifact_path: |
-              src-tauri/target/release/bundle/appimage/*.AppImage
-              src-tauri/target/release/bundle/deb/*.deb
+            args: --bundles appimage
+            package_args: --platform linux-x64
             cache_key: linux-x64
           - platform: macos-latest
             artifact: macos-arm64
             target: aarch64-apple-darwin
-            args: --target aarch64-apple-darwin --bundles dmg
-            artifact_path: src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+            args: --target aarch64-apple-darwin --bundles app
+            package_args: --platform macos-arm64 --target aarch64-apple-darwin
             cache_key: macos-arm64
-          - platform: macos-15-intel
-            artifact: macos-x64
-            target: x86_64-apple-darwin
-            args: --target x86_64-apple-darwin --bundles dmg
-            artifact_path: src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
-            cache_key: macos-x64
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 30
     steps:
@@ -107,11 +99,16 @@ jobs:
         run: echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
       - name: Build native bundle
         run: pnpm tauri build --ci ${{ matrix.args }}
+      - name: Prepare one portable release file
+        shell: bash
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          node scripts/package-release.mjs ${{ matrix.package_args }} --version "$version" --output-dir "release-exe/${{ github.ref_name }}"
       - name: Upload native bundle
         uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.artifact }}
-          path: ${{ matrix.artifact_path }}
+          path: release-exe/${{ github.ref_name }}/*
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
@@ -123,23 +120,35 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
       - uses: actions/download-artifact@v8
         with:
           pattern: release-*
           path: release-artifacts
+      - name: Verify release files and generate release notes
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          node scripts/package-release.mjs --verify-all --version "$version" --output-dir release-artifacts
+          node scripts/package-release.mjs --release-notes --version "$version" --notes-file release-notes.md
       - name: Publish one complete GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
-          cat > release-notes.md <<'NOTES'
-          跨平台安装包见下方附件。此版本未进行商业代码签名，系统首次打开时可能显示安全提示。
-
-          完整变更请查看仓库中的 CHANGELOG.md。
-          NOTES
-          mapfile -d '' assets < <(find release-artifacts -type f -print0)
-          test "${#assets[@]}" -eq 5
+          version="${GITHUB_REF_NAME#v}"
+          assets=(
+            "release-artifacts/release-windows-x64/Image-Client_${version}_x64_portable.exe"
+            "release-artifacts/release-macos-arm64/Image-Client_${version}_aarch64.app.tar.gz"
+            "release-artifacts/release-linux-x64/Image-Client_${version}_amd64.AppImage"
+          )
+          for asset in "${assets[@]}"; do test -f "$asset"; done
           gh release create "${GITHUB_REF_NAME}" "${assets[@]}" \
             --title "Image-Client ${GITHUB_REF_NAME}" \
             --notes-file release-notes.md \

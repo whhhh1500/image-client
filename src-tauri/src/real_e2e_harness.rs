@@ -1561,11 +1561,11 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     use super::{
-        acceptance_comic_plan_intent, assert_one_irregular_five_panel_page, sample_sections,
-        create_export_destination, validate_bootstrap_root, validate_runtime_root,
-        validate_sealed_ancestor_snapshot, Audit,
-        ComicVisualManifest, ImageOnlyProvenance, ResumeProvenance, RunLock, AUDIT_FILE,
-        EXPECTED_DIALOGUES, MARKER_FILE, RESUME_PROVENANCE_FILE,
+        acceptance_comic_plan_intent, assert_one_irregular_five_panel_page,
+        create_export_destination, sample_sections, validate_bootstrap_root, validate_runtime_root,
+        validate_sealed_ancestor_snapshot, Audit, ComicVisualManifest, ImageOnlyProvenance,
+        ResumeProvenance, RunLock, AUDIT_FILE, EXPECTED_DIALOGUES, MARKER_FILE,
+        RESUME_PROVENANCE_FILE,
     };
     #[cfg(windows)]
     use super::{canonical_d_audit_root, D_AUDIT_ROOT};

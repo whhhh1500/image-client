@@ -4,6 +4,7 @@ import { agentLabel, agentSystem } from "../../store/useAgentStore";
 import { useLibraryStore, type LibAsset } from "../../store/useLibraryStore";
 import { useProjectStore } from "../../store/useProjectStore";
 import { llmChat } from "../../lib/ipc";
+import { confirmAction } from "../../lib/confirm";
 import {
   documentChangeLabel,
   getDocumentMeta,
@@ -21,11 +22,12 @@ import {
   previousChapterAnchorAssets,
   VIDEO_REVIEW_POLICY_VERSION,
   videoOptimizationSystem,
-  videoWorkflowIdForSource,
   type VideoMarkdownStage,
 } from "../../lib/video/markdownWorkflow";
 import { snapshotAsset } from "../../lib/provenance";
+import { importExternalAssets } from "../../lib/externalAssetImport";
 import AssetPicker from "../AssetPicker";
+import NovelAssetManager, { type NovelAssetSelection } from "../novel/NovelAssetManager";
 import {
   buildVideoQualityReviewRequest,
   deterministicVideoQualityIssues,
@@ -41,7 +43,7 @@ import VideoQualityReviewCard from "./VideoQualityReviewCard";
 import VideoStageNavigation, { videoResultStageStatus, type VideoStageStatus } from "./VideoStageNavigation";
 
 type View = "source" | VideoMarkdownStage | "videos";
-type SourceKind = "novel" | "idea";
+type SourceKind = "manual" | "novel" | "idea";
 type DraftChangeType = Exclude<DocumentChangeType, "copy">;
 type DependencyMode = "current" | "view_history" | "preserve_history" | "migrate_latest";
 type BusyAction = "generate" | "optimize" | "review" | "save";
@@ -53,6 +55,8 @@ interface StageDraft {
   changeType: DraftChangeType;
   sourceKind?: SourceKind;
   sourceAssetId?: string;
+  novelSourceReference?: NovelSourceReference;
+  sourceReferenceCleared?: boolean;
   dependencyMode: DependencyMode;
   reviewMarkdown?: string;
   reviewStatus?: VideoQualityReviewStatus;
@@ -60,6 +64,39 @@ interface StageDraft {
   reviewedText?: string;
   reviewAt?: number;
   reviewPolicyVersion?: number;
+}
+
+type NovelSourceReference = Omit<NovelAssetSelection, "revisionNo" | "chapterNo" | "workTitle"> & {
+  revisionNo?: number;
+  chapterNo?: number;
+  workTitle?: string;
+  sourceAssetId?: string;
+};
+
+function sourcePlainText(text: string, isVideoSourceDocument = false): string {
+  return (isVideoSourceDocument ? text.replace(/^# 原始资料[\s\S]*?## 正文\s*/u, "") : text).trim();
+}
+
+function isVideoSourceDocument(asset?: LibAsset): boolean {
+  const meta = asset ? getDocumentMeta(asset) : null;
+  return meta?.agentId === "source" && (typeof asset?.params?.videoWorkflowId === "string" || meta.title.startsWith("视频原始资料"));
+}
+
+function novelSourceReferenceFromAsset(asset?: LibAsset): NovelSourceReference | undefined {
+  const reference = novelSourceReferenceFromUnknown(asset?.params?.novelSourceReference);
+  if (reference) return reference;
+  const params = asset?.params;
+  const projectId = asset?.projectId;
+  if (!params || !projectId || typeof params.novelWorkId !== "string" || typeof params.novelChapterId !== "string" || typeof params.novelChapterRevisionId !== "string") return undefined;
+  const content = sourcePlainText(getDocumentMeta(asset)?.text ?? String(params.text ?? ""), isVideoSourceDocument(asset));
+  if (!content) return undefined;
+  return { projectId, novelWorkId: params.novelWorkId, novelChapterId: params.novelChapterId, novelChapterRevisionId: params.novelChapterRevisionId, ...(typeof params.chapterNo === "number" ? { chapterNo: params.chapterNo } : {}), title: typeof params.chapterNo === "number" ? `第${params.chapterNo}章` : "章节", content, ...(typeof params.sourceAssetId === "string" ? { sourceAssetId: params.sourceAssetId } : {}) };
+}
+
+function novelSourceLabel(reference: NovelSourceReference): string {
+  const chapter = reference.chapterNo ? `第${reference.chapterNo}章` : "章节号未知";
+  const revision = reference.revisionNo ? `正文第${reference.revisionNo}版` : "正文版本号未知";
+  return `${reference.workTitle ? `《${reference.workTitle}》 · ` : ""}${chapter} · ${reference.title} · ${revision} · ${reference.novelChapterRevisionId}`;
 }
 
 function readVideoWorkReferences(projectId: string | null): Record<string, string[]> {
@@ -84,6 +121,13 @@ const views: Array<{ id: View; label: string; agentId?: string; title?: string; 
 ];
 const videoOptimizationCascade: VideoMarkdownStage[] = ["director", "script", "anchors", "storyboard", "qc"];
 
+function isOtherTextSourceCandidate(asset: LibAsset): boolean {
+  const meta = getDocumentMeta(asset);
+  const isNonSourceVideoStage = typeof asset.params?.videoWorkflowId === "string"
+    && views.some((item) => item.id !== "source" && item.id !== "videos" && item.agentId === meta?.agentId);
+  return !isNonSourceVideoStage && !novelSourceReferenceFromAsset(asset);
+}
+
 const button = "rounded-lg border border-slate-700 px-3 py-2 text-xs text-slate-200 transition hover:border-cyan-300/30 hover:text-cyan-100 disabled:cursor-not-allowed disabled:opacity-40";
 const primary = "rounded-lg bg-cyan-500 px-3 py-2 text-xs font-medium text-white transition hover:bg-cyan-400 disabled:cursor-not-allowed disabled:bg-slate-800 disabled:text-slate-500 disabled:opacity-70";
 const field = "w-full rounded-xl border border-slate-700 bg-slate-950/60 px-3 py-2 text-sm text-slate-100 outline-none focus:border-cyan-300/50";
@@ -102,12 +146,6 @@ function isStageAsset(asset: LibAsset, view: View): boolean {
   const meta = getDocumentMeta(asset);
   if (view === "source") return meta?.agentId === "source" || meta?.title.startsWith("视频原始资料") === true;
   return Boolean(stageSpec(view)?.agentId && meta?.agentId === stageSpec(view)?.agentId);
-}
-
-function isVideoSourceCandidate(asset: LibAsset): boolean {
-  const meta = getDocumentMeta(asset);
-  const sourceKind = asset.params?.sourceKind;
-  return meta?.documentType === "novel" || meta?.agentId === "source" || sourceKind === "novel_chapter" || sourceKind === "idea";
 }
 
 function latest(assets: LibAsset[], projectId: string, view: View, workflowId?: string): LibAsset | undefined {
@@ -161,8 +199,10 @@ function readDraft(key: string): StageDraft | undefined {
       optimizationInstruction: typeof value.optimizationInstruction === "string" ? value.optimizationInstruction : "",
       appliedOptimizationInstruction: typeof value.appliedOptimizationInstruction === "string" ? value.appliedOptimizationInstruction : undefined,
       changeType: value.changeType === "generated" || value.changeType === "ai_optimized" ? value.changeType : "manual",
-      sourceKind: value.sourceKind === "idea" ? "idea" : value.sourceKind === "novel" ? "novel" : undefined,
+      sourceKind: value.sourceKind === "idea" ? "idea" : value.sourceKind === "novel" ? "novel" : value.sourceKind === "manual" ? "manual" : undefined,
       sourceAssetId: typeof value.sourceAssetId === "string" ? value.sourceAssetId : undefined,
+      novelSourceReference: novelSourceReferenceFromUnknown(value.novelSourceReference),
+      sourceReferenceCleared: value.sourceReferenceCleared === true,
       dependencyMode: ["current", "view_history", "preserve_history", "migrate_latest"].includes(String(value.dependencyMode)) ? value.dependencyMode as DependencyMode : "current",
       reviewMarkdown: typeof value.reviewMarkdown === "string" ? value.reviewMarkdown : undefined,
       reviewStatus: value.reviewStatus === "passed" || value.reviewStatus === "needs_changes" ? value.reviewStatus : undefined,
@@ -174,6 +214,20 @@ function readDraft(key: string): StageDraft | undefined {
   } catch {
     return undefined;
   }
+}
+
+function novelSourceReferenceFromUnknown(value: unknown): NovelSourceReference | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const source = value as Record<string, unknown>;
+  const projectId = typeof source.projectId === "string" ? source.projectId : undefined;
+  const novelWorkId = typeof source.novelWorkId === "string" ? source.novelWorkId : undefined;
+  const novelChapterId = typeof source.novelChapterId === "string" ? source.novelChapterId : undefined;
+  const novelChapterRevisionId = typeof source.novelChapterRevisionId === "string" ? source.novelChapterRevisionId : undefined;
+  const chapterNo = typeof source.chapterNo === "number" ? source.chapterNo : undefined;
+  const title = typeof source.title === "string" ? source.title : undefined;
+  const content = typeof source.content === "string" ? source.content : undefined;
+  if (!projectId || !novelWorkId || !novelChapterId || !novelChapterRevisionId || !title || content === undefined) return undefined;
+  return { projectId, novelWorkId, novelChapterId, novelChapterRevisionId, ...(typeof source.revisionNo === "number" ? { revisionNo: source.revisionNo } : {}), ...(chapterNo !== undefined ? { chapterNo } : {}), title, content, ...(typeof source.workTitle === "string" ? { workTitle: source.workTitle } : {}), ...(typeof source.sourceAssetId === "string" ? { sourceAssetId: source.sourceAssetId } : {}) };
 }
 
 function writeDraft(key: string, draft?: StageDraft) {
@@ -213,9 +267,9 @@ function productionReviewStatus(asset?: LibAsset): VideoQualityReviewStatus | un
 function draftDiffersFromSaved(draft: StageDraft, asset: LibAsset | undefined, view: View): boolean {
   const meta = asset ? getDocumentMeta(asset) : null;
   const saved = savedReview(asset);
-  const savedSourceKind: SourceKind = asset?.params?.sourceKind === "idea" ? "idea" : "novel";
+  const savedSourceKind: SourceKind = asset?.params?.sourceKind === "idea" ? "idea" : novelSourceReferenceFromAsset(asset) ? "novel" : "manual";
   return draft.text !== (meta?.text ?? "")
-    || (view === "source" && (draft.sourceKind ?? "novel") !== savedSourceKind)
+    || (view === "source" && (draft.sourceKind ?? "manual") !== savedSourceKind)
     || draft.dependencyMode === "preserve_history"
     || draft.dependencyMode === "migrate_latest"
     || draft.reviewMarkdown !== saved.reviewMarkdown
@@ -250,10 +304,14 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
   const [drafts, setDrafts] = useState<Record<string, StageDraft>>({});
   const [documentViews, setDocumentViews] = useState<Record<string, VideoDocumentView>>({});
   const [activeWorkflowId, setActiveWorkflowId] = useState<string>();
+  const currentProjectIdRef = useRef(projectId);
+  const currentWorkflowIdRef = useRef<string | undefined>(undefined);
   const [busy, setBusy] = useState<BusyAction | null>(null);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const [pickerOpen, setPickerOpen] = useState(false);
+  const [novelPickerOpen, setNovelPickerOpen] = useState(false);
+  const [novelManagerOpen, setNovelManagerOpen] = useState(false);
+  const [otherSourcePickerOpen, setOtherSourcePickerOpen] = useState(false);
   const [videoPickerOpen, setVideoPickerOpen] = useState(false);
   const [importingVideo, setImportingVideo] = useState(false);
   const [videoReferencesByWorkflow, setVideoReferencesByWorkflow] = useState<Record<string, string[]>>(() => readVideoWorkReferences(projectId));
@@ -305,9 +363,11 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
       if (id && !result.some((item) => workflowIdFromSource(item) === id)) result.push(asset);
       return result;
     }, []);
-  const rememberedWorkflowId = activeWorkflowId && workspaceSources.some((asset) => workflowIdFromSource(asset) === activeWorkflowId) ? activeWorkflowId : undefined;
+  const rememberedWorkflowId = activeWorkflowId && (workspaceSources.some((asset) => workflowIdFromSource(asset) === activeWorkflowId) || activeWorkflowId.startsWith("video:novel:") || activeWorkflowId.startsWith("video:idea:")) ? activeWorkflowId : undefined;
   const requiresWorkspaceSelection = workspaceSources.length > 1 && !rememberedWorkflowId;
   const workflowId = rememberedWorkflowId ?? (workspaceSources.length === 1 ? workflowIdFromSource(workspaceSources[0]) : undefined) ?? `video:idea:${projectId}`;
+  currentProjectIdRef.current = projectId;
+  currentWorkflowIdRef.current = workflowId;
   const videoReferenceIds = videoReferencesByWorkflow[workflowId] ?? [];
   const videoWorkReferences = videoReferenceIds
     .map((assetId) => assets.find((asset) => asset.asset.id === assetId && asset.projectId === projectId && asset.asset.kind === "video"))
@@ -331,19 +391,18 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
     setImportingVideo(true);
     setError("");
     try {
-      const { saveMediaAsset } = await import("../../lib/ipc");
-      const { persistAssets } = await import("../../lib/dbWrite");
-      const importedIds: string[] = [];
-      for (const file of Array.from(files).slice(0, 8)) {
-        if (file.size > 512 * 1024 * 1024) throw new Error(`${file.name} 超过 512 MiB 大小限制`);
-        const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
-        if (!new Set(["mp4", "webm", "mov"]).has(extension)) throw new Error(`${file.name} 不是支持的 MP4、WebM 或 MOV 视频`);
-        const saved = await saveMediaAsset("video", extension, new Uint8Array(await file.arrayBuffer()));
-        const params = { videoWorkflowId: workflowId, videoWorkReference: true };
-        await persistAssets([saved], file.name, { projectId, params });
-        useLibraryStore.getState().addAssets([saved], file.name, { projectId, params });
-        importedIds.push(saved.id);
-      }
+      const selected = Array.from(files).slice(0, 8);
+      const invalid = selected.find((file) => !new Set(["mp4", "webm", "mov"]).has(file.name.split(".").pop()?.toLowerCase() ?? ""));
+      if (invalid) throw new Error(`${invalid.name} 不是支持的 MP4、WebM 或 MOV 视频`);
+      const imported = await importExternalAssets({
+        projectId,
+        importEntry: "short_drama_video_reference",
+        files: selected.map((file) => ({ file })),
+        params: { videoWorkflowId: workflowId, videoWorkReference: true },
+      });
+      if (currentProjectIdRef.current !== projectId || currentWorkflowIdRef.current !== workflowId) return;
+      const importedIds = imported.filter((asset) => asset.asset.kind === "video").map((asset) => asset.asset.id);
+      if (importedIds.length !== imported.length) throw new Error("短剧视频参考仅接受实际视频文件；未关联任何非视频导入项。");
       saveVideoReferenceIds([...videoReferenceIds, ...importedIds]);
       setMessage(`已导入 ${importedIds.length} 个本地视频作品，并关联到当前短剧工作区。`);
     } catch (cause) {
@@ -366,7 +425,7 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
   const novelWorkId = typeof lineage.novelWorkId === "string" ? lineage.novelWorkId : undefined;
   const chapterNo = typeof lineage.chapterNo === "number" ? lineage.chapterNo : undefined;
   const novelChapterId = typeof lineage.novelChapterId === "string" ? lineage.novelChapterId : undefined;
-  const latestPublishedChapter = novelChapterId ? assets
+  const latestPublishedChapter = novelChapterId && !novelSourceReferenceFromAsset(sourceAsset) ? assets
     .filter((asset) => asset.projectId === projectId && asset.asset.kind === "text")
     .filter((asset) => getDocumentMeta(asset)?.documentType === "novel" && asset.params?.novelChapterId === novelChapterId)
     .sort((left, right) => right.createdAt - left.createdAt)[0] : undefined;
@@ -408,15 +467,21 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
     text: selectedMeta?.text ?? "",
     optimizationInstruction: selectedMeta?.provenance?.revision?.instruction ?? "",
     changeType: "manual",
-    sourceKind: selectedAsset?.params?.sourceKind === "idea" ? "idea" : "novel",
+    sourceKind: selectedAsset?.params?.sourceKind === "idea" ? "idea" : novelSourceReferenceFromAsset(selectedAsset) ? "novel" : "manual",
     sourceAssetId: typeof selectedAsset?.params?.sourceAssetId === "string" ? selectedAsset.params.sourceAssetId : undefined,
+    novelSourceReference: novelSourceReferenceFromAsset(selectedAsset),
+    sourceReferenceCleared: false,
     dependencyMode: historical ? "view_history" : "current",
     ...savedReview(selectedAsset),
   };
   const sourceParent = assets.find((asset) => asset.asset.id === activeDraft.sourceAssetId);
-  const savedSourceKind: SourceKind = selectedAsset?.params?.sourceKind === "idea" ? "idea" : "novel";
+  const activeNovelSource = activeDraft.sourceReferenceCleared
+    ? undefined
+    : activeDraft.novelSourceReference ?? novelSourceReferenceFromAsset(selectedAsset);
+  const novelSourceAdjusted = Boolean(activeNovelSource && sourcePlainText(activeDraft.text, isVideoSourceDocument(selectedAsset)) !== activeNovelSource.content.trim());
+  const savedSourceKind: SourceKind = selectedAsset?.params?.sourceKind === "idea" ? "idea" : novelSourceReferenceFromAsset(selectedAsset) ? "novel" : "manual";
   const contentDirty = activeDraft.text !== (selectedMeta?.text ?? "")
-    || (view === "source" && (activeDraft.sourceKind ?? "novel") !== savedSourceKind)
+    || (view === "source" && (activeDraft.sourceKind ?? "manual") !== savedSourceKind)
     || activeDraft.dependencyMode === "preserve_history"
     || activeDraft.dependencyMode === "migrate_latest";
   const selectedSavedReview = savedReview(selectedAsset);
@@ -506,6 +571,8 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
       text: getDocumentMeta(latestPublishedChapter)?.text ?? String(latestPublishedChapter.params?.text ?? ""),
       sourceKind: "novel",
       sourceAssetId: latestPublishedChapter.asset.id,
+      novelSourceReference: novelSourceReferenceFromAsset(latestPublishedChapter),
+      sourceReferenceCleared: false,
       changeType: "manual",
       dependencyMode: "current",
     }, true);
@@ -537,8 +604,10 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
       text: selectedMeta?.text ?? "",
       optimizationInstruction: selectedMeta?.provenance?.revision?.instruction ?? "",
       changeType: "manual",
-      sourceKind: selectedAsset?.params?.sourceKind === "idea" ? "idea" : "novel",
+      sourceKind: selectedAsset?.params?.sourceKind === "idea" ? "idea" : novelSourceReferenceFromAsset(selectedAsset) ? "novel" : "manual",
       sourceAssetId: typeof selectedAsset?.params?.sourceAssetId === "string" ? selectedAsset.params.sourceAssetId : undefined,
+      novelSourceReference: novelSourceReferenceFromAsset(selectedAsset),
+      sourceReferenceCleared: false,
       dependencyMode: historical ? "view_history" : "current",
       ...savedReview(selectedAsset),
     };
@@ -611,11 +680,28 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
 
   const currentLineage = (): Record<string, unknown> => {
     const parent = sourceParent ?? sourceAsset;
+    const reference = activeDraft.sourceReferenceCleared
+      ? undefined
+      : activeDraft.novelSourceReference ?? novelSourceReferenceFromAsset(sourceAsset);
+    if (reference) {
+      return {
+        videoWorkflowId: workflowId,
+        sourceKind: "novel_chapter",
+        ...(reference.sourceAssetId ? { sourceAssetId: reference.sourceAssetId } : {}),
+        novelWorkId: reference.novelWorkId,
+        novelChapterId: reference.novelChapterId,
+        novelChapterRevisionId: reference.novelChapterRevisionId,
+        ...(reference.chapterNo ? { chapterNo: reference.chapterNo } : {}),
+        novelSourceReference: reference,
+      };
+    }
     return {
       videoWorkflowId: workflowId,
-      ...sourceLineage(parent),
-      sourceKind: activeDraft.sourceKind ?? parent?.params?.sourceKind ?? "idea",
-      sourceAssetId: activeDraft.sourceAssetId ?? parent?.params?.sourceAssetId,
+      ...(!activeDraft.sourceReferenceCleared ? sourceLineage(parent) : {}),
+      sourceKind: activeDraft.sourceKind ?? (!activeDraft.sourceReferenceCleared ? parent?.params?.sourceKind : undefined) ?? "manual",
+      ...(activeDraft.sourceAssetId ?? (!activeDraft.sourceReferenceCleared ? parent?.params?.sourceAssetId : undefined)
+        ? { sourceAssetId: activeDraft.sourceAssetId ?? parent?.params?.sourceAssetId }
+        : {}),
     };
   };
 
@@ -667,9 +753,10 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
     setError("");
     setMessage("");
     try {
-      const sourceKind = activeDraft.sourceKind ?? "novel";
+      const sourceKind = activeDraft.sourceKind ?? "manual";
+      const selectedNovelSource = activeNovelSource;
       const body = view === "source"
-        ? `# 原始资料\n\n## 类型\n${sourceKind === "novel" ? "小说" : "脑洞"}\n\n## 正文\n${activeDraft.text.replace(/^# 原始资料[\s\S]*?## 正文\s*/u, "").trim()}`
+        ? `# 原始资料\n\n## 类型\n${selectedNovelSource ? "小说章节" : sourceKind === "idea" ? "脑洞" : "手动原文"}\n\n## 正文\n${sourcePlainText(activeDraft.text, isVideoSourceDocument(selectedAsset))}`
         : activeDraft.text.trim();
       if (view === "storyboard" && !parseStoryboardShots(body).length) {
         throw new Error("视频分镜 Markdown 字段不完整，无法保存");
@@ -711,7 +798,12 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
         expectedHeadAssetId: preservingBranch ? undefined : current?.asset.id,
         allowBranch: preservingBranch,
         provenance: view === "source"
-          ? sourceParent ? {
+          ? selectedNovelSource ? {
+              originalInput: selectedNovelSource.content,
+              generationInput: body,
+              sourceMaterials: [{ kind: "text", label: `小说章节快照 · ${novelSourceLabel(selectedNovelSource)}`, source: `novel_chapter_revision:${selectedNovelSource.novelChapterRevisionId}`, text: selectedNovelSource.content }],
+              parentAssetIds: selectedNovelSource.sourceAssetId ? [selectedNovelSource.sourceAssetId] : [],
+            } : sourceParent ? {
               originalInput: getDocumentMeta(sourceParent)?.text ?? String(sourceParent.params?.text ?? ""),
               generationInput: body,
               sourceMaterials: [snapshotAsset(sourceParent, getDocumentMeta(sourceParent)?.text, "共享原始资料")],
@@ -741,7 +833,9 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
           : activeDraft.optimizationInstruction,
         changeType: "manual",
         sourceKind,
-        sourceAssetId: activeDraft.sourceAssetId,
+        sourceAssetId: selectedNovelSource?.sourceAssetId ?? activeDraft.sourceAssetId,
+        novelSourceReference: selectedNovelSource,
+        sourceReferenceCleared: !selectedNovelSource,
         dependencyMode: preservingBranch ? "view_history" : "current",
         ...savedReview(saved),
       };
@@ -1004,19 +1098,20 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
     changeType: activeDraft.changeType === "generated" || activeDraft.changeType === "ai_optimized" ? activeDraft.changeType : "manual",
   }, true);
 
-  const onPickSource = (asset: LibAsset) => {
-    const nextWorkflowId = videoWorkflowIdForSource(asset);
+  const applyNovelSource = (selection: NovelSourceReference) => {
+    const nextWorkflowId = `video:novel:${selection.novelWorkId}:${selection.novelChapterId}`;
     const nextStageKey = `${projectId}:${nextWorkflowId}:source`;
     const existing = latest(assets, projectId, "source", nextWorkflowId);
     const selectedId = existing?.asset.id;
     const nextEditorKey = `${nextStageKey}:${selectedId ?? "new"}`;
-    const sourceKind: SourceKind = asset.params?.sourceKind === "novel_chapter" || getDocumentMeta(asset)?.documentType === "novel" ? "novel" : "idea";
     const nextDraft: StageDraft = {
-      text: getDocumentMeta(asset)?.text ?? String(asset.params?.text ?? ""),
+      text: selection.content,
       optimizationInstruction: "",
       changeType: "manual",
-      sourceKind,
-      sourceAssetId: asset.asset.id,
+      sourceKind: "novel",
+      sourceAssetId: selection.sourceAssetId,
+      novelSourceReference: selection,
+      sourceReferenceCleared: false,
       dependencyMode: "current",
     };
     setActiveWorkflowId(nextWorkflowId);
@@ -1025,10 +1120,76 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
     setSelectedByStage((state) => ({ ...state, [nextStageKey]: selectedId }));
     setDrafts((state) => ({ ...state, [nextEditorKey]: nextDraft }));
     writeDraft(nextEditorKey, nextDraft);
-    setPickerOpen(false);
+    setNovelPickerOpen(false);
     setMessage(existing
-      ? "已打开该章节的视频工作区，并载入共享章节的最新正文作为待保存草稿"
-      : "已建立该章节的视频工作区；请检查正文后保存原始资料版本");
+      ? "已打开该章节的视频工作区，并载入所选章节修订作为待保存快照"
+      : "已建立该章节的视频工作区；请检查章节快照后保存原始资料版本");
+    setError("");
+  };
+  const onSelectNovelSource = async (selection: NovelAssetSelection) => {
+    if (selection.projectId !== projectId) {
+      setError("所选小说章节不属于当前项目，当前原文未改动。");
+      return;
+    }
+    const source: NovelSourceReference = selection;
+    const originWorkflowId = workflowId;
+    const nextWorkflowId = `video:novel:${source.novelWorkId}:${source.novelChapterId}`;
+    const existing = latest(assets, projectId, "source", nextWorkflowId);
+    const nextEditorKey = `${projectId}:${nextWorkflowId}:source:${existing?.asset.id ?? "new"}`;
+    const targetDraft = drafts[nextEditorKey] ?? readDraft(nextEditorKey);
+    if (targetDraft && draftDiffersFromSaved(targetDraft, existing, "source")) {
+      let confirmed = false;
+      try {
+        confirmed = await confirmAction("所选章节的视频原文草稿尚未保存。确定用新选择替换它吗？");
+      } catch (cause) {
+        setError(`无法确认替换当前草稿：${String(cause)}`);
+        return;
+      }
+      if (!confirmed) {
+        setMessage("未替换原文，当前草稿保持不变。");
+        return;
+      }
+      if (currentProjectIdRef.current !== projectId || currentWorkflowIdRef.current !== originWorkflowId) return;
+    }
+    applyNovelSource(source);
+  };
+  const onNovelAssetChanged = (change: { projectId: string; novelWorkId: string; novelChapterId: string; novelChapterRevisionId: string }) => {
+    if (change.projectId !== currentProjectIdRef.current) return;
+    setMessage("小说原文资产已保存为新修订；当前短剧原文快照未改动。需要更新改编用稿时，请明确引用/采用该章节版本。");
+    setError("");
+  };
+  const onPickOtherSource = async (asset: LibAsset) => {
+    const originWorkflowId = workflowId;
+    const text = getDocumentMeta(asset)?.text ?? String(asset.params?.text ?? "");
+    if (!text.trim()) {
+      setError("所选文本资产没有可引用的正文，当前原文未改动。");
+      return;
+    }
+    if (draftDiffersFromSaved(activeDraft, selectedAsset, "source")) {
+      let confirmed = false;
+      try {
+        confirmed = await confirmAction("当前视频原文草稿尚未保存。确定用所选文本资产替换它吗？");
+      } catch (cause) {
+        setError(`无法确认替换当前草稿：${String(cause)}`);
+        return;
+      }
+      if (!confirmed) {
+        setMessage("未替换原文，当前草稿保持不变。");
+        return;
+      }
+      if (currentProjectIdRef.current !== projectId || currentWorkflowIdRef.current !== originWorkflowId) return;
+    }
+    updateDraft({
+      text,
+      sourceKind: asset.params?.sourceKind === "idea" ? "idea" : "manual",
+      sourceAssetId: asset.asset.id,
+      novelSourceReference: undefined,
+      sourceReferenceCleared: true,
+      changeType: "manual",
+      dependencyMode: "current",
+    }, true);
+    setOtherSourcePickerOpen(false);
+    setMessage(`已引用文本资产“${asset.source}”作为固定的可编辑原文快照。`);
     setError("");
   };
 
@@ -1106,7 +1267,8 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
         <div><p className="text-sm text-slate-200">短剧视频 Markdown 工作台</p><p className="mt-1 text-[11px] text-slate-500">章节文字可共享；图片资产、视频资产和各自分镜继续隔离。</p></div>
         <div className="flex flex-wrap items-center gap-2">
           {workspaceSources.length > 0 && <label className="flex items-center gap-2 text-xs text-slate-400">工作区<select aria-label="视频工作区" value={requiresWorkspaceSelection ? "" : workflowId} onChange={(event) => { if (event.target.value) chooseWorkflow(event.target.value); }} className="max-w-64 rounded-lg border border-slate-700 bg-slate-950 px-2 py-2 text-xs text-slate-200">{requiresWorkspaceSelection && <option value="">请选择工作区</option>}{workspaceSources.map((asset) => <option key={workflowIdFromSource(asset)} value={workflowIdFromSource(asset)}>{chapterLabel(asset)} · {asset.source}</option>)}</select></label>}
-          <button className={button} onClick={() => setPickerOpen(true)}><FileInput size={13} className="mr-1 inline" />切换章节 / 资料</button>
+          <button aria-label="打开小说原文资产管理" className={button} onClick={() => setNovelManagerOpen(true)}><FileInput size={13} className="mr-1 inline" />管理小说原文资产</button>
+          <button className={button} onClick={() => setNovelPickerOpen(true)}><FileInput size={13} className="mr-1 inline" />引用小说章节</button>
           {!requiresWorkspaceSelection && <button className={button} onClick={() => setVideoPickerOpen(true)}><Clapperboard size={13} className="mr-1 inline" />导入视频作品</button>}
           {!requiresWorkspaceSelection && <button className={button} disabled={importingVideo} onClick={() => videoFileInputRef.current?.click()}><FileInput size={13} className="mr-1 inline" />{importingVideo ? "导入中…" : "上传本地视频"}</button>}
           <input ref={videoFileInputRef} type="file" accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov" multiple hidden onChange={(event) => void importLocalVideoWorks(event.target.files)} />
@@ -1130,7 +1292,7 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
       aria-labelledby={requiresWorkspaceSelection ? undefined : `${stageTabsId}-tab-${view}`}
       className="min-h-0 flex-1 overflow-y-auto p-5"
     >
-      {requiresWorkspaceSelection ? <section className="mx-auto max-w-3xl rounded-2xl border border-cyan-300/15 bg-slate-950/40 p-6"><h2 className="text-lg font-semibold text-slate-100">请选择视频工作区</h2><p className="mt-2 text-sm leading-6 text-slate-400">当前项目有多个小说章节或脑洞工作区。为避免误改最近保存的其他章节，系统不会替你自动选择。</p><div className="mt-5 grid gap-3 sm:grid-cols-2">{workspaceSources.map((asset) => <button key={workflowIdFromSource(asset)} onClick={() => chooseWorkflow(workflowIdFromSource(asset)!)} className="rounded-xl border border-slate-700 bg-slate-900/50 p-4 text-left hover:border-cyan-300/30"><span className="block text-sm font-medium text-slate-100">{chapterLabel(asset)} · {asset.source}</span><span className="mt-2 block text-xs text-slate-500">原始资料 v{getDocumentMeta(asset)?.version ?? 1}</span></button>)}</div><button className={`${button} mt-4`} onClick={() => setPickerOpen(true)}>选择其他小说章节 / 资料</button></section> : view === "videos" ? <div className="space-y-4">
+      {requiresWorkspaceSelection ? <section className="mx-auto max-w-3xl rounded-2xl border border-cyan-300/15 bg-slate-950/40 p-6"><h2 className="text-lg font-semibold text-slate-100">请选择视频工作区</h2><p className="mt-2 text-sm leading-6 text-slate-400">当前项目有多个小说章节或脑洞工作区。为避免误改最近保存的其他章节，系统不会替你自动选择。</p><div className="mt-5 grid gap-3 sm:grid-cols-2">{workspaceSources.map((asset) => <button key={workflowIdFromSource(asset)} onClick={() => chooseWorkflow(workflowIdFromSource(asset)!)} className="rounded-xl border border-slate-700 bg-slate-900/50 p-4 text-left hover:border-cyan-300/30"><span className="block text-sm font-medium text-slate-100">{chapterLabel(asset)} · {asset.source}</span><span className="mt-2 block text-xs text-slate-500">原始资料 v{getDocumentMeta(asset)?.version ?? 1}</span></button>)}</div><div className="mt-4 flex flex-wrap gap-2"><button className={button} onClick={() => setNovelPickerOpen(true)}>引用其他小说章节</button><button className={button} onClick={() => setNovelManagerOpen(true)}>管理小说原文资产</button></div></section> : view === "videos" ? <div className="space-y-4">
         <div className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950/30 p-4"><div><h2 className="text-base font-semibold">逐镜视频资源 · {completedShotCount}/{savedStoryboardShots.length || 0}</h2><p className="mt-1 text-xs text-slate-500">一个分镜对应一次请求和独立资源；这里不自动拼接。{failedVideoTasks.length ? ` 当前分镜有 ${failedVideoTasks.length} 个失败任务。` : ""}</p></div><button disabled={!storyboardReady} className={primary} onClick={() => { if (storyboardAsset) onSendToVideo(parseStoryboardShots(getDocumentMeta(storyboardAsset)?.text ?? ""), storyboardAsset, { anchorAssetId: anchorAsset?.asset.id, qcAssetId: qcAsset?.asset.id, approvedModel: project?.videoModel ?? "", approvedAspectRatio: project?.aspectRatio ?? "", approvedResolution: project?.videoResolution || "720p" }); }}><Clapperboard size={13} className="mr-1 inline" />发送当前分镜到视频生成</button></div>
         {!storyboardReady && <section className="rounded-xl border border-rose-300/15 bg-rose-300/5 p-4"><h3 className="text-sm font-semibold text-rose-100">当前不能进入视频生成</h3><ul className="mt-2 space-y-1 text-xs text-rose-200/80">{gateReasons.map((reason) => <li key={reason}>• {reason}</li>)}</ul></section>}
         <div className="space-y-3">{parseStoryboardShots(storyboardAsset ? getDocumentMeta(storyboardAsset)?.text ?? "" : "").map((shot) => { const resources = videos.filter((asset) => Number(asset.params?.shotNo) === shot.shotNo); return <article key={shot.shotNo} className="rounded-xl border border-slate-800 bg-slate-950/30 p-4"><div className="flex flex-wrap items-center gap-3"><span className="rounded-full bg-violet-400/10 px-2 py-1 text-xs text-violet-100">第 {shot.shotNo} 镜 · {shot.durationS} 秒</span><span className="min-w-0 flex-1 truncate text-xs text-slate-400">{shot.scene} · {shot.shotType}</span><span className="text-xs text-slate-500">{resources.length ? `${resources.length} 个资源版本` : "未生成"}</span></div>{resources.length > 0 && <div className="mt-3 grid gap-2 md:grid-cols-3">{resources.map((asset) => <div key={asset.asset.id} className="rounded-lg border border-white/5 p-3"><div className="truncate text-xs text-slate-200">{asset.source}</div><div className="mt-1 text-[10px] text-slate-500">{asset.model} · {asset.asset.durationS ?? shot.durationS} 秒</div></div>)}</div>}</article>; })}</div>
@@ -1138,7 +1300,8 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
         <main className="min-w-0">
           <div className="sticky top-0 z-10 mb-3 rounded-xl border border-slate-800 bg-slate-950/95 p-3 shadow-xl shadow-black/10 backdrop-blur">
             <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-base font-semibold">{stageSpec(view)?.label}</h2><p className="mt-1 text-xs text-slate-500">{selectedAsset ? `v${selectedMeta?.version ?? 1} · ${documentChangeLabel(selectedMeta?.changeType ?? "manual")}` : "尚未保存"}{historical ? " · 历史版本" : ""}{dirty ? " · 草稿未保存" : ""}{view === "source" && sourceParent ? ` · 来源：${sourceParent.source}` : ""}</p></div><div className="flex flex-wrap gap-2">{dirty && <button className={button} disabled={Boolean(busy)} onClick={(event) => openDiscardDialog(event.currentTarget)}><RotateCcw size={13} className="mr-1 inline" />放弃草稿并恢复已保存内容…</button>}<button title={saveDisabledReason || undefined} className={primary} disabled={!canSave} onClick={() => void save()}>{busy === "save" ? <Loader2 size={13} className="mr-1 inline animate-spin" /> : <Save size={13} className="mr-1 inline" />}{saveLabel}</button></div></div>
-            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/5 pt-3">{versions.length > 0 && <label className="flex items-center gap-2 text-xs text-slate-400"><History size={13} />保存版本<select aria-label="保存版本" value={selectedAssetId ?? ""} onChange={(event) => selectVersion(event.target.value)} className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-2 text-xs text-slate-200">{versions.map((asset) => { const meta = getDocumentMeta(asset); const branch = asset.params?.videoBranch === true; return <option key={asset.asset.id} value={asset.asset.id}>v{meta?.version ?? 1}{asset.asset.id === current?.asset.id ? "（当前生产版）" : branch ? "（历史分支）" : "（历史）"} · {documentChangeLabel(meta?.changeType ?? "manual")}</option>; })}</select></label>}{view === "source" && <select value={activeDraft.sourceKind ?? "novel"} onChange={(event) => updateDraft({ sourceKind: event.target.value as SourceKind, changeType: "manual" })} className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-2 text-xs text-slate-200"><option value="novel">小说 / 章节</option><option value="idea">脑洞 / 梗概</option></select>}<span className="ml-auto text-[10px] text-slate-500">Ctrl/Cmd + S 保存可用草稿</span></div>
+            {view === "source" && activeNovelSource && <div className="mt-3 rounded-lg border border-violet-300/15 bg-violet-300/[0.04] p-3 text-xs text-violet-100"><div>小说原文资产来源：{novelSourceLabel(activeNovelSource)}</div><div className="mt-1 text-violet-200/70">这是固定到短剧工作区的可编辑改编用稿快照；编辑或保存它只创建短剧版本，不会回写小说。小说后续修订也不会自动覆盖。{novelSourceAdjusted ? "当前正文已在该章节快照基础上调整。" : "当前正文与所选章节快照一致。"}</div></div>}
+            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/5 pt-3">{versions.length > 0 && <label className="flex items-center gap-2 text-xs text-slate-400"><History size={13} />保存版本<select aria-label="保存版本" value={selectedAssetId ?? ""} onChange={(event) => selectVersion(event.target.value)} className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-2 text-xs text-slate-200">{versions.map((asset) => { const meta = getDocumentMeta(asset); const branch = asset.params?.videoBranch === true; return <option key={asset.asset.id} value={asset.asset.id}>v{meta?.version ?? 1}{asset.asset.id === current?.asset.id ? "（当前生产版）" : branch ? "（历史分支）" : "（历史）"} · {documentChangeLabel(meta?.changeType ?? "manual")}</option>; })}</select></label>}{view === "source" && <><button className={button} disabled={Boolean(busy)} onClick={() => setNovelPickerOpen(true)}>引用/采用小说章节为短剧快照</button><button className={button} disabled={Boolean(busy)} onClick={() => setNovelManagerOpen(true)}>管理小说原文资产</button><button className={button} disabled={Boolean(busy)} onClick={() => setOtherSourcePickerOpen(true)}>从其他文本资产选择</button><select aria-label="原文来源类型" value={activeNovelSource ? "novel" : activeDraft.sourceKind ?? "manual"} onChange={(event) => { const nextKind = event.target.value as SourceKind; if (nextKind === "novel") { setNovelPickerOpen(true); return; } updateDraft({ sourceKind: nextKind, sourceAssetId: undefined, novelSourceReference: undefined, sourceReferenceCleared: true, changeType: "manual" }); }} className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-2 text-xs text-slate-200"><option value="novel">小说章节快照</option><option value="manual">手动原文</option><option value="idea">脑洞 / 梗概</option></select></>}<span className="ml-auto text-[10px] text-slate-500">Ctrl/Cmd + S 保存可用草稿</span></div>
             {needsDependencyChoice && <div role="alert" className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-amber-300/15 bg-amber-300/5 p-3 text-xs text-amber-100"><GitBranch size={14} /><span className="mr-auto">{supersededWhileEditing ? "编辑期间出现了新的当前生产版。当前草稿仍完整保留，但必须明确选择依赖策略后才能保存或继续调用 AI。" : "正在只读查看历史版本。不会自动把旧内容伪装成已适配最新依赖。"}</span><button className={button} onClick={() => beginHistoricalDraft("preserve_history")}>按原依赖创建分支</button><button className={button} onClick={() => beginHistoricalDraft("migrate_latest")}>迁移到最新依赖…</button></div>}
           </div>
           <section className="mb-3 flex flex-wrap items-center gap-3 rounded-xl border border-cyan-300/15 bg-cyan-300/5 p-3"><ArrowRight size={15} className="text-cyan-200" /><div><div className="text-[10px] uppercase tracking-wider text-cyan-300/70">推荐下一步</div><div className="mt-1 text-sm text-cyan-50">{recommendation}</div></div>{blockedDependencies.length > 0 && <div className="ml-auto flex flex-wrap gap-2">{blockedDependencies.map((id) => <button key={id} className={button} onClick={() => setView(id)}>打开{stageSpec(id)?.label}</button>)}</div>}</section>
@@ -1154,14 +1317,16 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
 
           {view !== "source" && <><VideoQualityReviewCard review={reviewValid ? activeDraft.reviewMarkdown : undefined} status={activeReviewStatus} score={reviewValid ? activeDraft.reviewScore : undefined} busy={busy === "review"} disabled={Boolean(reviewDisabledReason)} onReview={() => void reviewCurrent()} onUseSuggestions={useReviewSuggestions} />{reviewDisabledReason && <p className="-mt-2 text-[10px] text-amber-200/80">审查不可用：{reviewDisabledReason}</p>}</>}
 
-          <section className="rounded-xl border border-slate-800 bg-slate-950/30 p-4"><div className="text-xs font-semibold text-slate-300">依赖检查</div><div className="mt-3 space-y-2">{dependencyViews(view).map((id) => { const latestAsset = stageAsset(id); const parentIds = new Set(selectedMeta?.provenance?.parentAssetIds ?? []); const referenced = assets.find((asset) => parentIds.has(asset.asset.id) && isStageAsset(asset, id)); const state = !latestAsset ? "缺失" : !stageUsable(id) ? stale(id) ? "需更新" : productionReviewStatus(latestAsset) === "needs_changes" ? "质量未通过" : "待审查" : "当前"; const hasDraft = stageHasUnsavedDraft(id); return <div key={id} className="rounded-lg border border-white/5 p-3 text-[11px]"><div className="flex items-center gap-2"><span className={state === "当前" ? "text-emerald-300" : "text-amber-300"}>{state === "当前" ? "✓" : "○"}</span><span className="font-medium text-slate-300">{stageSpec(id)?.label}</span><span className="ml-auto text-slate-500">{state}</span></div><div className="mt-2 text-slate-500">当前文档引用：{referenced ? `v${getDocumentMeta(referenced)?.version ?? 1}` : "无"} · 最新：{latestAsset ? `v${getDocumentMeta(latestAsset)?.version ?? 1}` : "无"}</div>{hasDraft && <div className="mt-2 rounded bg-cyan-300/5 px-2 py-1 text-cyan-200">另有未保存草稿，不参与当前下游生产</div>}<button className="mt-2 text-[11px] text-cyan-300 hover:text-cyan-100" onClick={() => setView(id)}>打开{stageSpec(id)?.label}</button></div>; })}{view === "source" && <p className="text-[11px] leading-5 text-slate-500">直接引用小说章节或输入脑洞，不需要上传 TXT/MD。切换工作区时，原工作区未保存草稿仍保留。</p>}{view !== "source" && <p className="text-[11px] leading-5 text-slate-500">AI 联动优化会读取本工作区全部文字产物及媒体关联元数据，并直接更新当前阶段和已有下游文字产物；媒体只保留历史结果，不会自动付费重生成。</p>}</div></section>
+          <section className="rounded-xl border border-slate-800 bg-slate-950/30 p-4"><div className="text-xs font-semibold text-slate-300">依赖检查</div><div className="mt-3 space-y-2">{dependencyViews(view).map((id) => { const latestAsset = stageAsset(id); const parentIds = new Set(selectedMeta?.provenance?.parentAssetIds ?? []); const referenced = assets.find((asset) => parentIds.has(asset.asset.id) && isStageAsset(asset, id)); const state = !latestAsset ? "缺失" : !stageUsable(id) ? stale(id) ? "需更新" : productionReviewStatus(latestAsset) === "needs_changes" ? "质量未通过" : "待审查" : "当前"; const hasDraft = stageHasUnsavedDraft(id); return <div key={id} className="rounded-lg border border-white/5 p-3 text-[11px]"><div className="flex items-center gap-2"><span className={state === "当前" ? "text-emerald-300" : "text-amber-300"}>{state === "当前" ? "✓" : "○"}</span><span className="font-medium text-slate-300">{stageSpec(id)?.label}</span><span className="ml-auto text-slate-500">{state}</span></div><div className="mt-2 text-slate-500">当前文档引用：{referenced ? `v${getDocumentMeta(referenced)?.version ?? 1}` : "无"} · 最新：{latestAsset ? `v${getDocumentMeta(latestAsset)?.version ?? 1}` : "无"}</div>{hasDraft && <div className="mt-2 rounded bg-cyan-300/5 px-2 py-1 text-cyan-200">另有未保存草稿，不参与当前下游生产</div>}<button className="mt-2 text-[11px] text-cyan-300 hover:text-cyan-100" onClick={() => setView(id)}>打开{stageSpec(id)?.label}</button></div>; })}{view === "source" && <p className="text-[11px] leading-5 text-slate-500">可从小说资产选择、从其他文本资产选择，或直接手动输入原文。切换工作区时，原工作区未保存草稿仍保留。</p>}{view !== "source" && <p className="text-[11px] leading-5 text-slate-500">AI 联动优化会读取本工作区全部文字产物及媒体关联元数据，并直接更新当前阶段和已有下游文字产物；媒体只保留历史结果，不会自动付费重生成。</p>}</div></section>
 
           {view === "anchors" && <section className="rounded-xl border border-violet-400/15 bg-violet-400/5 p-4"><div className="text-xs font-semibold text-violet-100">跨章锚点承接</div><p className="mt-2 text-[11px] leading-5 text-slate-400">固定锚定跨章继承；伤势、换装、天气、道具归属和场景状态按剧情建立版本锚点。本章保存完整快照。</p><div className="mt-3 space-y-2">{inheritedAnchors.length ? inheritedAnchors.map((asset) => <div key={asset.asset.id} className="rounded-lg border border-white/5 p-2 text-[11px] text-slate-300">{chapterLabel(asset)} · v{getDocumentMeta(asset)?.version ?? 1} · {asset.source}</div>) : <p className="text-[11px] text-slate-500">本章没有可继承的前章锚点。</p>}</div></section>}
         </aside>
       </div>}
     </div>
 
-    <AssetPicker open={pickerOpen} onClose={() => setPickerOpen(false)} kinds={["text"]} strictProject filter={isVideoSourceCandidate} title="选择小说章节或视频原始资料" onPick={onPickSource} />
+    <NovelAssetManager projectId={projectId} open={novelPickerOpen} onClose={() => setNovelPickerOpen(false)} mode="select" onSelect={onSelectNovelSource} initialSelection={activeNovelSource?.projectId === projectId ? { projectId, novelWorkId: activeNovelSource.novelWorkId, novelChapterId: activeNovelSource.novelChapterId } : undefined} />
+    <NovelAssetManager projectId={projectId} open={novelManagerOpen} onClose={() => setNovelManagerOpen(false)} mode="manage" onChanged={onNovelAssetChanged} initialSelection={activeNovelSource?.projectId === projectId ? { projectId, novelWorkId: activeNovelSource.novelWorkId, novelChapterId: activeNovelSource.novelChapterId } : undefined} />
+    <AssetPicker open={otherSourcePickerOpen} onClose={() => setOtherSourcePickerOpen(false)} kinds={["text"]} strictProject filter={isOtherTextSourceCandidate} title="选择其他文本原文资产" onPick={(asset) => void onPickOtherSource(asset)} />
     <AssetPicker open={videoPickerOpen} onClose={() => setVideoPickerOpen(false)} kinds={["video"]} strictProject filter={(asset) => !videoReferenceIds.includes(asset.asset.id)} title="导入当前项目的视频作品参考" onPick={addVideoWorkReference} />
 
     {discardConfirmOpen && <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"><section ref={discardDialogRef} role="dialog" aria-modal="true" aria-labelledby="discard-video-draft-title" aria-describedby="discard-video-draft-description" tabIndex={-1} onKeyDown={(event) => {

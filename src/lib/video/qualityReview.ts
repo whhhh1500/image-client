@@ -1,6 +1,7 @@
 import { stripThinking } from "../aiOutput";
 import { parseStoryboardShots } from "./storyboard";
 import { isVideoProviderRefusal, type VideoMarkdownStage } from "./markdownWorkflow";
+import { isPublicHttpsUrl } from "./referenceUrl";
 
 export type VideoQualityReviewStatus = "passed" | "needs_changes";
 
@@ -234,8 +235,13 @@ export function storyboardProductionIssues(input: {
     const records = shot.referenceAssetIds.map((id) => assetRecords.get(id)).filter((asset): asset is { id: string; kind: string; path: string } => Boolean(asset));
     const unsupported = records.filter((asset) => asset.kind !== "image" && asset.kind !== "video");
     if (unsupported.length) issues.push(`第${shot.shotNo}镜引用了非图片/视频资产：${unsupported.map((asset) => asset.id).join("、")}`);
-    const local = records.filter((asset) => !/^https:\/\//i.test(asset.path));
-    if (local.length) issues.push(`第${shot.shotNo}镜的参考资产不是公网 HTTPS，当前 Provider 无法提交：${local.map((asset) => asset.id).join("、")}`);
+    const nonPublicVideos = records.filter((asset) => asset.kind === "video" && !isPublicHttpsUrl(asset.path));
+    if (nonPublicVideos.length) issues.push(`第${shot.shotNo}镜的参考视频必须是无凭据的公网 HTTPS URL：${nonPublicVideos.map((asset) => asset.id).join("、")}`);
+    const nonPublicImageUrls = records.filter((asset) => asset.kind === "image"
+      && /^[a-z][a-z\d+.-]*:/i.test(asset.path)
+      && !/^[a-z]:[\\/]/i.test(asset.path)
+      && !isPublicHttpsUrl(asset.path));
+    if (nonPublicImageUrls.length) issues.push(`第${shot.shotNo}镜的图片 URL 必须是无凭据的公网 HTTPS URL：${nonPublicImageUrls.map((asset) => asset.id).join("、")}`);
     if (shot.referenceStrategy === "first_frame" && (records.length !== 1 || records[0]?.kind !== "image")) issues.push(`第${shot.shotNo}镜的 first_frame 必须且只能引用 1 张图片资产`);
   }
   return [...new Set(issues)];

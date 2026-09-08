@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { LibAsset } from "../store/useLibraryStore";
 import { createEmptyStoryboardShot, serializeStoryboard } from "../lib/video/storyboard";
 import { useLibraryStore } from "../store/useLibraryStore";
@@ -11,21 +11,28 @@ import { isPublicHttpsUrl } from "../lib/video/referenceUrl";
 
 vi.mock("@tauri-apps/api/core", () => ({ convertFileSrc: (path: string) => path }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ revealItemInDir: vi.fn() }));
-vi.mock("../lib/generateVideo", () => ({ concatVideoAssets: vi.fn(), generateVideo: vi.fn() }));
-const picker = vi.hoisted(() => ({ onPick: null as ((asset: unknown) => void) | null, kinds: [] as string[] }));
-vi.mock("../components/AssetPicker", () => ({
-  default: ({ onPick, kinds }: { onPick: (asset: unknown) => void; kinds: string[] }) => {
-    picker.onPick = onPick;
+const videoApi = vi.hoisted(() => ({ concatVideoAssets: vi.fn(), generateVideo: vi.fn().mockResolvedValue([]) }));
+vi.mock("../lib/generateVideo", () => videoApi);
+const mediaHosting = vi.hoisted(() => ({
+  get: vi.fn().mockResolvedValue({ endpoint: "https://host.example/upload", fileField: "file", urlField: "url", authMode: "bearer", hasToken: true, configured: true }),
+  publish: vi.fn(),
+}));
+type PickerInput = { action: "prompt" | "merge_prompt" | "reference"; referenceMode: "replace" | "append"; localImageDelivery?: "direct" | "hosting"; entries: unknown[] };
+const picker = vi.hoisted(() => ({ onApply: null as ((input: PickerInput) => void) | null, kinds: [] as string[], version: 0 }));
+vi.mock("../components/AssetImportPicker", () => ({
+  default: ({ onApply, kinds }: { onApply: (input: PickerInput) => void; kinds: string[] }) => {
+    picker.onApply = onApply; picker.version += 1;
     picker.kinds = kinds;
     return null;
   },
 }));
+vi.mock("../lib/comic/markdownApi", () => ({ comicMdCatalogList: vi.fn().mockResolvedValue([]) }));
 vi.mock("../lib/ipc", () => ({
   listVideoModels: vi.fn().mockResolvedValue(["model"]),
   listVideoModelCapabilities: vi.fn().mockResolvedValue([{
     id: "model",
     label: "Model",
-    modes: ["text", "reference"],
+    modes: ["text", "first_frame", "reference"],
     minDurationS: 1,
     maxDurationS: 5,
     durationOptions: [1, 2, 3, 4, 5],
@@ -37,6 +44,8 @@ vi.mock("../lib/ipc", () => ({
     maxReferenceDurationS: 3,
     note: "",
   }]),
+  mediaHostingGet: mediaHosting.get,
+  assetPublishMedia: mediaHosting.publish,
 }));
 
 import VideoPanel, {
@@ -47,12 +56,18 @@ import VideoPanel, {
 } from "./VideoPanel";
 
 afterEach(() => {
-  cleanup();
-  useLibraryStore.setState({ assets: [], tasks: [] });
+  picker.onApply = null;
+  mediaHosting.get.mockReset().mockResolvedValue({ endpoint: "https://host.example/upload", fileField: "file", urlField: "url", authMode: "bearer", hasToken: true, configured: true });
+  mediaHosting.publish.mockReset();
+  videoApi.generateVideo.mockReset().mockResolvedValue([]);
 });
 
 function asset(id: string, kind: "image" | "video" | "text", projectId: string, path = `https://cdn.example/${id}`): LibAsset {
   return { asset: { id, kind, path }, source: id, projectId, createdAt: 1 };
+}
+
+function project(id: string) {
+  return { id, name: "测试项目", description: "", storyStyle: "", artStyle: "", aspectRatio: "16:9", imageModel: "image-model", imageQuality: "high", videoModel: "model", videoResolution: "720p" };
 }
 
 describe("VideoPanel storyboard import", () => {
@@ -64,7 +79,7 @@ describe("VideoPanel storyboard import", () => {
 
     render(<VideoPanel />);
     await waitFor(() => expect(picker.kinds).toContain("video"));
-    act(() => picker.onPick?.(video));
+    act(() => picker.onApply?.({ action: "reference", referenceMode: "replace", entries: [{ entryType: "library_asset", asset: video }] }));
 
     expect(useVideoStore.getState()).toMatchObject({
       mode: "reference",
@@ -72,19 +87,143 @@ describe("VideoPanel storyboard import", () => {
     });
   });
 
-  it("imports a local video as creative-reference provenance instead of pretending it is a provider URL", async () => {
+  it("keeps a local PNG as a target-shot reference while hosting only the local MP4", async () => {
     useProjectStore.setState({ activeId: "project-a", projects: [{ id: "project-a", name: "测试项目", description: "", storyStyle: "", artStyle: "", aspectRatio: "16:9", imageModel: "image-model", imageQuality: "high", videoModel: "model", videoResolution: "720p" }] });
     useVideoStore.getState().load({ model: "model", mode: "text", aspectRatio: "16:9", resolution: "720p", images: [], videos: [], audios: [], shots: [{ id: "shot-1", shotNo: 1, prompt: "镜头", durationS: 3 }] });
+    const image = asset("local-image", "image", "project-a", "D:/local-image.png");
     const video = asset("local-video", "video", "project-a", "D:/local-video.mp4");
-    useLibraryStore.setState({ assets: [video], tasks: [] });
+    useLibraryStore.setState({ assets: [image, video], tasks: [] });
+    mediaHosting.publish.mockResolvedValue({ results: [
+      { key: "asset:local-video", url: "https://cdn.example/local-video.mp4", sha256: "video-sha" },
+    ] });
 
     render(<VideoPanel />);
-    await waitFor(() => expect(picker.onPick).not.toBeNull());
-    act(() => picker.onPick?.(video));
+    await waitFor(() => expect(picker.onApply).not.toBeNull());
+    await act(async () => { await picker.onApply?.({ action: "reference", referenceMode: "replace", entries: [{ entryType: "library_asset", asset: image }, { entryType: "library_asset", asset: video }] }); });
+    expect(mediaHosting.publish).toHaveBeenCalledWith({ projectId: "project-a", expectedEndpoint: "https://host.example/upload", sources: [{ assetId: "local-video" }] });
+    expect(useVideoStore.getState().shots[0]).toMatchObject({ referenceLocalImages: [{ assetId: "local-image", path: "D:/local-image.png", label: "local-image" }], referenceVideos: ["https://cdn.example/local-video.mp4"] });
+    expect(useVideoStore.getState().importedSources?.[0].sourceMaterials).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: "D:/local-image.png", assetId: "local-image" }),
+      expect.objectContaining({ path: "D:/local-video.mp4", publishedUrl: "https://cdn.example/local-video.mp4", sha256: "video-sha" }),
+    ]));
+    fireEvent.click(screen.getByRole("button", { name: /生成 1 个视频镜头/ }));
+    await waitFor(() => expect(videoApi.generateVideo).toHaveBeenCalledWith(expect.objectContaining({ shots: [expect.objectContaining({ referenceLocalImages: [expect.objectContaining({ assetId: "local-image" })], referenceVideos: ["https://cdn.example/local-video.mp4"] })] }), expect.any(Object)));
+  });
 
-    expect(useVideoStore.getState().shots[0].prompt).toContain("本地视频作品创作参考");
-    expect(useVideoStore.getState().shots[0].referenceVideos).toBeUndefined();
-    expect(await screen.findByText(/zzone 的参考视频参数只接受公网 HTTPS URL/)).toBeTruthy();
+  it("sends one local image directly as a first frame and submits the enabled generation form", async () => {
+    useProjectStore.setState({ activeId: "project-a", projects: [project("project-a")] });
+    useVideoStore.getState().load({ model: "model", mode: "text", aspectRatio: "16:9", resolution: "720p", images: [], videos: [], audios: [], shots: [{ id: "shot-1", shotNo: 1, prompt: "镜头", durationS: 3 }] });
+    const image = asset("direct-image", "image", "project-a", "D:/direct.png");
+    useLibraryStore.setState({ assets: [image], tasks: [] });
+
+    render(<VideoPanel />);
+    await waitFor(() => expect(picker.onApply).not.toBeNull());
+    await act(async () => { await picker.onApply?.({ action: "reference", referenceMode: "replace", localImageDelivery: "direct", entries: [{ entryType: "library_asset", asset: image }] }); });
+
+    expect(mediaHosting.publish).not.toHaveBeenCalled();
+    expect(useVideoStore.getState()).toMatchObject({ mode: "first_frame", shots: [expect.objectContaining({ referenceStrategy: "first_frame", referenceLocalImages: [expect.objectContaining({ assetId: "direct-image", path: "D:/direct.png" })] })] });
+    const generate = screen.getByRole("button", { name: /生成 1 个视频镜头/ }) as HTMLButtonElement;
+    expect(generate.disabled).toBe(false);
+    fireEvent.click(generate);
+    await waitFor(() => expect(videoApi.generateVideo).toHaveBeenCalledWith(expect.objectContaining({ shots: [expect.objectContaining({ referenceLocalImages: [expect.objectContaining({ assetId: "direct-image" })] })] }), expect.any(Object)));
+  });
+
+  it("keeps canonical comic images as direct local identities", async () => {
+    useProjectStore.setState({ activeId: "project-a", projects: [project("project-a")] });
+    useVideoStore.getState().load({ model: "model", mode: "text", aspectRatio: "16:9", resolution: "720p", images: [], videos: [], audios: [], shots: [{ id: "shot-1", shotNo: 1, prompt: "镜头", durationS: 3 }] });
+    render(<VideoPanel />);
+    await waitFor(() => expect(picker.onApply).not.toBeNull());
+    await act(async () => { await picker.onApply?.({
+      action: "reference", referenceMode: "replace", localImageDelivery: "direct", entries: [{
+        entryType: "canonical_comic", readonly: true, sourceUri: "comic://work/page-1", projectId: "project-a", kind: "image", title: "漫画第 1 页", path: "D:/comic-page.png", createdAt: 1,
+      }],
+    }); });
+    expect(mediaHosting.publish).not.toHaveBeenCalled();
+    expect(useVideoStore.getState().shots[0].referenceLocalImages).toEqual([{ sourceUri: "comic://work/page-1", path: "D:/comic-page.png", label: "漫画第 1 页" }]);
+  });
+
+  it("keeps the remaining delivery path and provenance when the same image is removed from the other path", async () => {
+    useProjectStore.setState({ activeId: "project-a", projects: [project("project-a")] });
+    useVideoStore.getState().load({ model: "model", mode: "text", aspectRatio: "16:9", resolution: "720p", images: [], videos: [], audios: [], shots: [{ id: "shot-1", shotNo: 1, prompt: "镜头", durationS: 3 }] });
+    const image = asset("dual-image", "image", "project-a", "D:/dual.png");
+    useLibraryStore.setState({ assets: [image], tasks: [] });
+    mediaHosting.publish.mockResolvedValue({ results: [{ key: "asset:dual-image", url: "https://cdn.example/dual.png", sha256: "local-bytes-sha" }] });
+
+    render(<VideoPanel />);
+    await waitFor(() => expect(picker.onApply).not.toBeNull());
+    const input = { action: "reference" as const, entries: [{ entryType: "library_asset" as const, asset: image }] };
+    await act(async () => { await picker.onApply?.({ ...input, referenceMode: "replace", localImageDelivery: "direct" }); });
+    await act(async () => { await picker.onApply?.({ ...input, referenceMode: "append", localImageDelivery: "hosting" }); });
+    expect(mediaHosting.publish).toHaveBeenCalledWith({ projectId: "project-a", expectedEndpoint: "https://host.example/upload", sources: [{ assetId: "dual-image" }] });
+    expect(useVideoStore.getState().shots[0]).toMatchObject({ referenceImages: ["https://cdn.example/dual.png"], referenceLocalImages: [expect.objectContaining({ assetId: "dual-image" })], referenceAssetIds: ["dual-image"] });
+
+    fireEvent.click(screen.getByRole("button", { name: "移除托管图片 https://cdn.example/dual.png" }));
+    expect(useVideoStore.getState().shots[0]).toMatchObject({ referenceImages: [], referenceLocalImages: [expect.objectContaining({ assetId: "dual-image" })], referenceAssetIds: ["dual-image"] });
+    expect(useVideoStore.getState().importedSources?.flatMap((record) => record.sourceMaterials)).toEqual(expect.arrayContaining([expect.objectContaining({ assetId: "dual-image", path: "D:/dual.png" })]));
+
+    await act(async () => { await picker.onApply?.({ ...input, referenceMode: "append", localImageDelivery: "hosting" }); });
+    expect(mediaHosting.publish).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "移除本地图片 dual-image" }));
+    expect(useVideoStore.getState().shots[0]).toMatchObject({ referenceImages: ["https://cdn.example/dual.png"], referenceLocalImages: [], referenceAssetIds: ["dual-image"] });
+    expect(useVideoStore.getState().importedSources?.flatMap((record) => record.sourceMaterials)).toEqual(expect.arrayContaining([expect.objectContaining({ assetId: "dual-image", publishedUrl: "https://cdn.example/dual.png" })]));
+  });
+
+  it("does not publish when hosting is unconfigured or model slots are exceeded", async () => {
+    useProjectStore.setState({ activeId: "project-a", projects: [project("project-a")] });
+    useVideoStore.getState().load({ model: "model", mode: "text", aspectRatio: "16:9", resolution: "720p", images: [], videos: [], audios: [], shots: [{ id: "shot-1", shotNo: 1, prompt: "镜头", durationS: 3 }] });
+    const image = asset("local-image", "image", "project-a", "D:/local-image.png");
+    useLibraryStore.setState({ assets: [image], tasks: [] });
+    mediaHosting.get.mockResolvedValue({ endpoint: "", fileField: "file", urlField: "url", authMode: "bearer", hasToken: false, configured: false });
+    const pickerVersion = picker.version;
+    picker.onApply = null;
+    render(<VideoPanel />);
+    await waitFor(() => expect(picker.version).toBeGreaterThan(pickerVersion));
+    await (picker.onApply as unknown as (input: unknown) => Promise<void>)({ action: "reference", referenceMode: "replace", entries: [{ entryType: "library_asset", asset: image }] });
+    expect(mediaHosting.publish).not.toHaveBeenCalled();
+
+    useVideoStore.getState().load({ model: "model", mode: "text", aspectRatio: "16:9", resolution: "720p", images: [], videos: [], audios: [], shots: [{ id: "shot-1", shotNo: 1, prompt: "镜头", durationS: 3 }] });
+    const tooMany = Array.from({ length: 5 }, (_, index) => asset(`overflow-${index}`, "image", "project-a", `D:/overflow-${index}.png`));
+    useLibraryStore.setState({ assets: tooMany, tasks: [] });
+    await expect((picker.onApply as unknown as (input: unknown) => Promise<void>)({ action: "reference", referenceMode: "replace", entries: tooMany.map((asset) => ({ entryType: "library_asset", asset })) })).rejects.toThrow(/槽位不足/);
+    expect(mediaHosting.publish).not.toHaveBeenCalled();
+  });
+
+  it("keeps successful media cached when a partial publish fails and retries only failed sources", async () => {
+    useProjectStore.setState({ activeId: "project-a", projects: [project("project-a")] });
+    useVideoStore.getState().load({ model: "model", mode: "text", aspectRatio: "16:9", resolution: "720p", images: [], videos: [], audios: [], shots: [{ id: "shot-1", shotNo: 1, prompt: "镜头", durationS: 3 }] });
+    const image = asset("retry-image", "image", "project-a", "D:/retry.png");
+    const video = asset("retry-video", "video", "project-a", "D:/retry.mp4");
+    useLibraryStore.setState({ assets: [image, video], tasks: [] });
+    mediaHosting.publish.mockResolvedValueOnce({ results: [
+      { key: "asset:retry-image", url: "https://cdn.example/retry.png", sha256: "a" },
+      { key: "asset:retry-video", error: "temporary failure" },
+    ] }).mockResolvedValueOnce({ results: [{ key: "asset:retry-video", url: "https://cdn.example/retry.mp4", sha256: "b" }] });
+    picker.onApply = null;
+    render(<VideoPanel />);
+    await waitFor(() => expect(picker.onApply).not.toBeNull());
+    const input = { action: "reference", referenceMode: "replace", entries: [{ entryType: "library_asset", asset: image }, { entryType: "library_asset", asset: video }] };
+    await expect((picker.onApply as unknown as (input: unknown) => Promise<void>)(input)).rejects.toThrow(/retry-video/);
+    await (picker.onApply as unknown as (input: unknown) => Promise<void>)(input);
+    expect(mediaHosting.publish.mock.calls[1][0]).toEqual({ projectId: "project-a", expectedEndpoint: "https://host.example/upload", sources: [{ assetId: "retry-video" }] });
+    expect(useVideoStore.getState().shots[0]).toMatchObject({ referenceLocalImages: [expect.objectContaining({ assetId: "retry-image" })], referenceVideos: ["https://cdn.example/retry.mp4"] });
+  });
+
+  it("does not backfill hosted references after the active project changes", async () => {
+    useProjectStore.setState({ activeId: "project-a", projects: [project("project-a"), project("project-b")] });
+    useVideoStore.getState().load({ model: "model", mode: "text", aspectRatio: "16:9", resolution: "720p", images: [], videos: [], audios: [], shots: [{ id: "shot-1", shotNo: 1, prompt: "镜头", durationS: 3 }] });
+    const video = asset("switch-video", "video", "project-a", "D:/switch.mp4");
+    useLibraryStore.setState({ assets: [video], tasks: [] });
+    let finishPublish: ((value: { results: Array<{ key: string; url: string }> }) => void) | undefined;
+    mediaHosting.publish.mockImplementation(() => new Promise((resolve) => { finishPublish = resolve; }));
+    picker.onApply = null;
+    render(<VideoPanel />);
+    await waitFor(() => expect(picker.onApply).not.toBeNull());
+    const applying = (picker.onApply as unknown as (input: unknown) => Promise<void>)({ action: "reference", referenceMode: "replace", entries: [{ entryType: "library_asset", asset: video }] });
+    await waitFor(() => expect(finishPublish).toBeDefined());
+    useProjectStore.setState({ activeId: "project-b" });
+    finishPublish?.({ results: [{ key: "asset:switch-video", url: "https://cdn.example/switch.mp4" }] });
+    await expect(applying).rejects.toThrow(/项目.*变化/);
+    expect(useVideoStore.getState().shots[0].referenceImages).toBeUndefined();
   });
   it("accepts only public credential-free HTTPS reference URLs", () => {
     expect(isPublicHttpsUrl("https://cdn.example.com/reference.png")).toBe(true);
@@ -211,7 +350,7 @@ describe("VideoPanel storyboard import", () => {
     expect(Array.from(screen.getByLabelText("第 2 镜时长").querySelectorAll("option"), (option) => option.getAttribute("value"))).toEqual(["1", "2", "3", "4", "5"]);
   });
 
-  it("wires AssetPicker Markdown import to current-project media resolution without admitting anchor text or another project's asset", async () => {
+  it("does not let a normal import rewrite a reviewed production manifest", async () => {
     const shot = createEmptyStoryboardShot([]);
     shot.referenceStrategy = "first_frame";
     shot.referenceAssetIds = ["image-current", "anchor-document", "image-other-project"];
@@ -254,17 +393,29 @@ describe("VideoPanel storyboard import", () => {
     });
 
     render(<VideoPanel />);
-    await waitFor(() => expect(picker.onPick).not.toBeNull());
-    act(() => picker.onPick?.(source));
+    await waitFor(() => expect(picker.onApply).not.toBeNull());
+    await expect((picker.onApply as unknown as (input: unknown) => Promise<void>)({ action: "prompt", referenceMode: "replace", entries: [{ entryType: "library_asset", asset: source }] })).rejects.toThrow(/已加载审查生产清单/);
+    expect(useVideoStore.getState().storyboardSourceAssetId).toBe("approved-storyboard");
+    expect(productionManifestMismatch(useVideoStore.getState())).toBeNull();
+  });
 
-    expect(useVideoStore.getState().shots).toMatchObject([{
-      id: "shot-1",
-      referenceAssetIds: ["image-current", "anchor-document", "image-other-project"],
-      referenceImages: ["https://cdn.example/current.png"],
-      referenceVideos: [],
-    }]);
-    expect(useVideoStore.getState().storyboardSourceAssetId).toBe("storyboard");
-    expect(productionManifestMismatch(useVideoStore.getState())).toBe("当前分镜来源已变化");
+  it("replacing prompt imports for shot 2 keeps shot 1's import record", async () => {
+    useProjectStore.setState({ activeId: "project-a", projects: [project("project-a")] });
+    const first = asset("prompt-one", "text", "project-a"); first.params = { text: "第一镜新提示词" };
+    const second = asset("prompt-two", "text", "project-a"); second.params = { text: "第二镜新提示词" };
+    useLibraryStore.setState({ assets: [first, second], tasks: [] });
+    useVideoStore.getState().load({ model: "model", mode: "text", aspectRatio: "16:9", resolution: "720p", images: [], videos: [], audios: [], shots: [
+      { id: "shot-1", shotNo: 1, prompt: "一", durationS: 3 }, { id: "shot-2", shotNo: 2, prompt: "二", durationS: 3 },
+    ] });
+    render(<VideoPanel />);
+    await waitFor(() => expect(picker.onApply).not.toBeNull());
+    act(() => picker.onApply?.({ action: "prompt", referenceMode: "replace", entries: [{ entryType: "library_asset", asset: first }] }));
+    fireEvent.change(screen.getByLabelText("导入目标镜头"), { target: { value: "shot-2" } });
+    act(() => picker.onApply?.({ action: "prompt", referenceMode: "replace", entries: [{ entryType: "library_asset", asset: second }] }));
+    expect(useVideoStore.getState().importedSources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ targetShotId: "shot-1", assetIds: ["prompt-one"] }),
+      expect.objectContaining({ targetShotId: "shot-2", assetIds: ["prompt-two"] }),
+    ]));
   });
 
   it("fails closed when the provider lists a model without a verified local capability", async () => {

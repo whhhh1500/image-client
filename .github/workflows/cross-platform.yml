@@ -52,6 +52,7 @@ jobs:
   # Native jobs only prove and prewarm the release build for each target. The
   # tag workflow reuses these exact caches and performs the final bundling.
   warm-native:
+    if: github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
@@ -64,10 +65,6 @@ jobs:
             cache_key: macos-arm64
             target: aarch64-apple-darwin
             build_args: --target aarch64-apple-darwin
-          - platform: macos-15-intel
-            cache_key: macos-x64
-            target: x86_64-apple-darwin
-            build_args: --target x86_64-apple-darwin
     runs-on: ${{ matrix.platform }}
     timeout-minutes: 25
     steps:

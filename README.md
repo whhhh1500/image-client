@@ -14,8 +14,8 @@
 
 ## 功能
 
-- 图像与视频生成，支持参考图、历史记录和本地资产管理。
-- 小说转漫画工作区，覆盖章节正文、作品级多图画风参考、视觉宪法、剧本、分镜、批量生成与单页重画。
+- 图像与视频生成，支持参考图、历史记录和本地资产管理；视频逐镜可在实际生成时发送当前项目的本地图片，或使用用户主动托管的公网 HTTPS 图片 URL。
+- 小说转漫画工作区，覆盖共享章节文本资产及其修订、作品级多图画风参考、视觉宪法、剧本、分镜、批量生成与单页重画。
 - 短剧 Agent 工作流，覆盖导演、编剧、一致性、视频分镜与质检。
 - 短剧工作区可上传或选择当前项目的视频作品作为工作区级参考；本地视频用于 Agent 资源元数据与溯源，公网 HTTPS 视频可在模型支持时作为 zzone 生成参考。
 - 小说漫画与短剧视频的 AI 优化会读取同一章节/工作区全部已保存产物，并按依赖顺序直接把当前及已有下游文字产物保存为新版本；图片和视频仍由用户主动重新生成。
@@ -24,11 +24,11 @@
 
 ## 下载
 
-在 [GitHub Releases](https://github.com/whhhh1500/image-client/releases) 下载对应平台安装包：
+在 [GitHub Releases](https://github.com/whhhh1500/image-client/releases) 下载对应平台的便携发布文件：
 
-- Windows：NSIS 安装程序
-- macOS：Apple Silicon 与 Intel DMG
-- Linux：AppImage 与 DEB
+- Windows x64：`Image-Client_版本_x64_portable.exe`，无需安装。
+- macOS Apple Silicon：`Image-Client_版本_aarch64.app.tar.gz`，解压后打开 `.app`。
+- Linux x64：`Image-Client_版本_amd64.AppImage`。
 
 当前发布包未进行商业代码签名，操作系统首次打开时可能显示安全提示。请只从本仓库 Releases 下载并核对发布来源。
 
@@ -51,7 +51,7 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml
 pnpm release:build
 ```
 
-`pnpm release:build` 会先校验三处版本号和自定义图标，再执行前后端测试并生成当前系统的原生安装包。更完整的平台依赖、产物位置和发版流程见 [docs/BUILDING.md](docs/BUILDING.md)。
+`pnpm release:build` 会先校验三处版本号和自定义图标，再执行前后端测试并生成当前系统的一个便携发布文件。更完整的平台依赖、产物位置和发版流程见 [docs/BUILDING.md](docs/BUILDING.md)。
 
 ## 本地接口
 

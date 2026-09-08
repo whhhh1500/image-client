@@ -3,12 +3,101 @@ import { runVideo, saveMediaAsset, type AssetRef, type RunNodeRequest } from "./
 import { concatMp4 } from "./media";
 import { useLibraryStore, type LibAsset } from "../store/useLibraryStore";
 import { useProjectStore } from "../store/useProjectStore";
-import { productionManifestMismatch, type VideoParams } from "../store/useVideoStore";
+import { productionManifestMismatch, type VideoLocalImageReference, type VideoParams } from "../store/useVideoStore";
 import { persistAssets, persistTask } from "./dbWrite";
 import { logEvent } from "./logger";
 import { createId } from "./id";
 import { createHistoryProvenance, snapshotAsset, type HistoryProvenance, type SourceMaterialSnapshot } from "./provenance";
 import { isPublicHttpsUrl } from "./video/referenceUrl";
+import { catalogMetadata } from "./assetCatalog";
+
+function importedSourceMaterials(params: VideoParams, shotId?: string) {
+  return (params.importedSources ?? [])
+    .filter((record) => !shotId || !record.targetShotId || record.targetShotId === shotId)
+    .flatMap((record) => record.sourceMaterials);
+}
+
+function importedParentIds(params: VideoParams, shotId?: string) {
+  return (params.importedSources ?? [])
+    .filter((record) => !shotId || !record.targetShotId || record.targetShotId === shotId)
+    .flatMap((record) => record.assetIds);
+}
+
+type NativeLocalImage = Pick<VideoLocalImageReference, "assetId" | "sourceUri">;
+type HistoryLocalImage = VideoLocalImageReference;
+
+function localImageIdentity(reference: VideoLocalImageReference): NativeLocalImage {
+  if (!reference.assetId && !reference.sourceUri) throw new Error("本地图片参考缺少受控资产身份");
+  return {
+    ...(reference.assetId ? { assetId: reference.assetId } : {}),
+    ...(reference.sourceUri ? { sourceUri: reference.sourceUri } : {}),
+  };
+}
+
+function historyLocalImage(reference: VideoLocalImageReference): HistoryLocalImage {
+  return { ...localImageIdentity(reference), path: reference.path, label: reference.label };
+}
+
+function localImageMaterials(shotNo: number, references: VideoLocalImageReference[]): SourceMaterialSnapshot[] {
+  return references.map((reference, index) => ({
+    kind: "image" as const,
+    label: `第 ${shotNo} 镜本地参考图 ${index + 1} · ${reference.label}`,
+    ...(reference.assetId ? { assetId: reference.assetId } : {}),
+    ...(reference.sourceUri ? { source: reference.sourceUri } : {}),
+    path: reference.path,
+  }));
+}
+
+function validateLocalImages(
+  references: VideoLocalImageReference[],
+  projectId: string,
+  assets: LibAsset[],
+) {
+  const seen = new Set<string>();
+  for (const reference of references) {
+    const identity = localImageIdentity(reference);
+    const key = identity.assetId ? `asset:${identity.assetId}` : `comic:${identity.sourceUri}`;
+    if (seen.has(key)) throw new Error(`本地图片参考重复：${reference.label}`);
+    seen.add(key);
+    if (identity.assetId) {
+      const asset = assets.find((item) => item.asset.id === identity.assetId);
+      if (!asset || asset.projectId !== projectId || asset.asset.kind !== "image") {
+        throw new Error(`本地图片参考不属于当前项目或不是图片资产：${reference.label}`);
+      }
+    }
+    if (identity.sourceUri && !identity.sourceUri.startsWith("comic-md://")) {
+      throw new Error(`本地图片参考来源身份无效：${reference.label}`);
+    }
+  }
+}
+
+function validateShotReferences(
+  shotNo: number,
+  mode: "text" | "first_frame" | "reference",
+  imageCount: number,
+  localImageCount: number,
+  videoCount: number,
+) {
+  if (mode === "text" && imageCount + localImageCount + videoCount > 0) {
+    throw new Error(`第 ${shotNo} 镜为 text 模式，不能携带逐镜参考素材`);
+  }
+  if (mode === "first_frame" && (imageCount + localImageCount !== 1 || videoCount > 0)) {
+    throw new Error(`第 ${shotNo} 镜的 first_frame 模式需要且只能使用 1 张图片`);
+  }
+  if (mode === "reference" && imageCount + localImageCount + videoCount === 0) {
+    throw new Error(`第 ${shotNo} 镜的 reference 模式缺少参考素材`);
+  }
+}
+
+function uniqueMaterials<T>(materials: T[]): T[] {
+  const seen = new Set<string>();
+  return materials.filter((material) => {
+    const key = JSON.stringify(material);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 
 function orderedForConcat(assets: LibAsset[]): LibAsset[] {
   return [...assets].sort((a, b) => {
@@ -29,6 +118,7 @@ export async function generateVideo(
   if (manifestIssue) throw new Error(`已审查生产条件失效：${manifestIssue}`);
   const store = useLibraryStore.getState();
   const projectId = useProjectStore.getState().activeId ?? undefined;
+  if (!projectId) throw new Error("请先选择当前项目，再生成视频");
   const taskId = createId("task");
   const shotGroupId = createId("video_shots");
   const nodeId = "gen_video_shots";
@@ -40,10 +130,17 @@ export async function generateVideo(
   const videos = [...new Set((params.videos ?? []).map((url) => url.trim()).filter(Boolean))];
   const audios = [...new Set((params.audios ?? []).map((url) => url.trim()).filter(Boolean))];
   if (audios.length) throw new Error("当前视频工作区暂不处理声音或音频参考");
+  const mode = params.mode ?? (images.length ? "first_frame" : "text");
   const perShotUrls = shots.flatMap((shot) => [...(shot.referenceImages ?? []), ...(shot.referenceVideos ?? [])]);
   const invalidUrl = [...images, ...videos, ...perShotUrls].find((url) => !isPublicHttpsUrl(url));
   if (invalidUrl) throw new Error(`视频参考素材必须是无凭据的公网 HTTPS URL，不能使用本机或内网地址：${invalidUrl}`);
-  const mode = params.mode ?? (images.length ? "first_frame" : "text");
+  for (const shot of shots) {
+    const shotLocalImages = shot.referenceLocalImages ?? [];
+    const shotImages = shot.referenceImages?.length || shotLocalImages.length ? [...new Set(shot.referenceImages ?? [])] : images;
+    const shotVideos = shot.referenceVideos?.length ? [...new Set(shot.referenceVideos)] : videos;
+    validateLocalImages(shotLocalImages, projectId, store.assets);
+    validateShotReferences(shot.shotNo, shot.referenceStrategy ?? mode, shotImages.length, shotLocalImages.length, shotVideos.length);
+  }
   const label = `视频镜头 × ${shots.length}`;
   const defaultMaterials: SourceMaterialSnapshot[] = [];
   const storyboardSource = params.storyboardSourceAssetId
@@ -52,9 +149,20 @@ export async function generateVideo(
   if (storyboardSource) defaultMaterials.push(snapshotAsset(storyboardSource, undefined, "视频分镜来源"));
   images.forEach((path, index) => defaultMaterials.push({ kind: "file", label: `视频参考图 ${index + 1}`, path }));
   videos.forEach((path, index) => defaultMaterials.push({ kind: "file", label: `视频参考视频 ${index + 1}`, path }));
+  const persistedShots = shots.map(({ referenceLocalImages, ...shot }) => ({
+    ...shot,
+    ...(referenceLocalImages?.length ? { referenceLocalImages: referenceLocalImages.map(historyLocalImage) } : {}),
+  }));
+  const workflowId = typeof storyboardSource?.params?.videoWorkflowId === "string" && storyboardSource.params.videoWorkflowId.trim()
+    ? storyboardSource.params.videoWorkflowId
+    : undefined;
+  const outputCatalog = params.productionManifest
+    ? catalogMetadata("short_drama", "workspace", { type: "short_drama_workflow", id: workflowId ?? params.productionManifest.storyboardAssetId })
+    : catalogMetadata("video_generation", "provider", { type: "video_shots", id: shotGroupId });
   const commonParams = {
-    ...(params as unknown as Record<string, unknown>),
-    shots,
+    ...params,
+    ...outputCatalog,
+    shots: persistedShots,
     shotGroupId,
     shotCount: shots.length,
   };
@@ -65,8 +173,8 @@ export async function generateVideo(
       generationInput: provenanceInput.generationInput ?? shots.map((shot) => shot.prompt).join("\n\n---\n\n"),
       systemInstruction: provenanceInput.systemInstruction,
       contextSnapshot: provenanceInput.contextSnapshot,
-      sourceMaterials: [...defaultMaterials, ...(provenanceInput.sourceMaterials ?? [])],
-      parentAssetIds: [...new Set([...(storyboardSource ? [storyboardSource.asset.id] : []), ...(provenanceInput.parentAssetIds ?? [])])],
+      sourceMaterials: uniqueMaterials([...defaultMaterials, ...shots.flatMap((shot) => localImageMaterials(shot.shotNo, shot.referenceLocalImages ?? [])), ...importedSourceMaterials(params), ...(provenanceInput.sourceMaterials ?? [])]),
+      parentAssetIds: [...new Set([...(storyboardSource ? [storyboardSource.asset.id] : []), ...shots.flatMap((shot) => (shot.referenceLocalImages ?? []).flatMap((reference) => reference.assetId ? [reference.assetId] : [])), ...importedParentIds(params), ...(provenanceInput.parentAssetIds ?? [])])],
       revision: provenanceInput.revision ?? { type: "generated" },
     }),
   };
@@ -79,18 +187,11 @@ export async function generateVideo(
   try {
     for (let index = 0; index < shots.length; index += 1) {
       const shot = shots[index];
-      const shotImages = shot.referenceImages?.length ? [...new Set(shot.referenceImages)] : images;
+      const shotLocalImages = shot.referenceLocalImages ?? [];
+      const shotImages = shot.referenceImages?.length || shotLocalImages.length ? [...new Set(shot.referenceImages ?? [])] : images;
       const shotVideos = shot.referenceVideos?.length ? [...new Set(shot.referenceVideos)] : videos;
       const shotMode = shot.referenceStrategy ?? mode;
-      if (shotMode === "text" && shotImages.length + shotVideos.length > 0 && (shot.referenceImages?.length || shot.referenceVideos?.length)) {
-        throw new Error(`第 ${shot.shotNo} 镜为 text 模式，不能携带逐镜参考素材`);
-      }
-      if (shotMode === "first_frame" && (shotImages.length !== 1 || shotVideos.length > 0)) {
-        throw new Error(`第 ${shot.shotNo} 镜的 first_frame 模式需要且只能使用 1 张图片`);
-      }
-      if (shotMode === "reference" && shotImages.length + shotVideos.length === 0) {
-        throw new Error(`第 ${shot.shotNo} 镜的 reference 模式缺少参考素材`);
-      }
+      validateShotReferences(shot.shotNo, shotMode, shotImages.length, shotLocalImages.length, shotVideos.length);
       const config = {
         prompt: shot.prompt,
         duration_s: shot.durationS,
@@ -99,8 +200,10 @@ export async function generateVideo(
         resolution: params.resolution,
         mode: shotMode,
         images: shotMode === "text" ? [] : shotImages,
+        local_images: shotMode === "text" ? [] : shotLocalImages.map(localImageIdentity),
         videos: shotMode === "text" ? [] : shotVideos,
         audios: [],
+        project_id: projectId,
       };
       const req: RunNodeRequest = { nodeType: "textToVideo", category: "video", config, inputAssets: [] };
       logEvent("info", "generation.video.shot_start", { taskId, shotGroupId, shotNo: shot.shotNo, shotCount: shots.length, durationS: shot.durationS, model: params.model });
@@ -112,6 +215,7 @@ export async function generateVideo(
         const providerTaskId = asset.id.startsWith("zzone:") ? asset.id.slice("zzone:".length) : undefined;
         const shotReferenceMaterials: SourceMaterialSnapshot[] = [
           ...shotImages.map((path, referenceIndex) => ({ kind: "file" as const, label: `第 ${shot.shotNo} 镜参考图 ${referenceIndex + 1}`, path })),
+          ...localImageMaterials(shot.shotNo, shotLocalImages),
           ...shotVideos.map((path, referenceIndex) => ({ kind: "file" as const, label: `第 ${shot.shotNo} 镜参考视频 ${referenceIndex + 1}`, path })),
         ];
         const shotParams = {
@@ -124,14 +228,15 @@ export async function generateVideo(
           referenceStrategy: shotMode,
           referenceAssetIds: shot.referenceAssetIds ?? [],
           referenceImages: shotImages,
+          ...(shotLocalImages.length ? { referenceLocalImages: shotLocalImages.map(historyLocalImage) } : {}),
           referenceVideos: shotVideos,
           providerTaskId,
           shotOutputIndex: outputIndex + 1,
           provenance: createHistoryProvenance({
             originalInput: provenanceInput.originalInput ?? shots.map((item) => item.prompt).join("\n\n---\n\n"),
             generationInput: shot.prompt,
-            sourceMaterials: [...(shot.referenceImages?.length || shot.referenceVideos?.length ? shotReferenceMaterials : defaultMaterials), ...(provenanceInput.sourceMaterials ?? [])],
-            parentAssetIds: [...new Set([...(storyboardSource ? [storyboardSource.asset.id] : []), ...(provenanceInput.parentAssetIds ?? [])])],
+            sourceMaterials: uniqueMaterials([...(shot.referenceImages?.length || shot.referenceVideos?.length || shotLocalImages.length ? shotReferenceMaterials : defaultMaterials), ...importedSourceMaterials(params, shot.id), ...(provenanceInput.sourceMaterials ?? [])]),
+            parentAssetIds: [...new Set([...(storyboardSource ? [storyboardSource.asset.id] : []), ...shotLocalImages.flatMap((reference) => reference.assetId ? [reference.assetId] : []), ...importedParentIds(params, shot.id), ...(provenanceInput.parentAssetIds ?? [])])],
             revision: provenanceInput.revision ?? { type: "generated" },
           }),
         };

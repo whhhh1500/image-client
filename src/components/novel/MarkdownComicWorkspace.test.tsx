@@ -3,12 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { MdWorkspace } from "../../lib/comic/markdownApi";
-const api = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), create: vi.fn(), source: vi.fn(), workspace: vi.fn(), save: vi.fn(), generate: vi.fn(), render: vi.fn(), history: vi.fn(), export: vi.fn(), optimize: vi.fn(), options: vi.fn(), sync: vi.fn(), visualSave: vi.fn(), visualExtract: vi.fn() }));
+const api = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), workspace: vi.fn(), save: vi.fn(), generate: vi.fn(), render: vi.fn(), history: vi.fn(), export: vi.fn(), optimize: vi.fn(), options: vi.fn(), sync: vi.fn(), visualSave: vi.fn(), visualExtract: vi.fn() }));
+const manager = vi.hoisted(() => ({ props: null as unknown }));
 vi.mock("../../store/useProjectStore", () => ({ useProjectStore: (selector: (state: { activeId: string }) => unknown) => selector({ activeId: "p" }) }));
-vi.mock("../../lib/novel/api", () => ({ novelWorkList: api.list, novelWorkGet: api.get, novelWorkCreate: api.create, novelChapterRevisionCreate: api.source, newNovelIdempotencyKey: () => "unique" }));
+vi.mock("../../lib/novel/api", () => ({ novelWorkList: api.list, novelWorkGet: api.get }));
 vi.mock("@tauri-apps/api/core", () => ({ convertFileSrc: (path: string) => path }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: vi.fn(), revealItemInDir: vi.fn() }));
 vi.mock("../../lib/comic/markdownApi", async (original) => ({ ...await original<typeof import("../../lib/comic/markdownApi")>(), comicMdWorkspaceGet: api.workspace, comicMdDocumentSave: api.save, comicMdGenerate: api.generate, comicMdRender: api.render, comicMdDocumentHistory: api.history, comicMdExport: api.export, comicMdOptimize: api.optimize, comicMdRenderOptionsSave: api.options, comicMdSync: api.sync, comicMdWorkVisualSave: api.visualSave, comicMdWorkVisualExtract: api.visualExtract }));
+vi.mock("./NovelAssetManager", () => ({ default: (props: { open: boolean; mode: string }) => { manager.props = props; return props.open ? <div role="dialog" aria-label="共享小说原文管理器">{props.mode}</div> : null; } }));
 import MarkdownComicWorkspace from "./MarkdownComicWorkspace";
 import { useLibraryStore } from "../../store/useLibraryStore";
 let data: MdWorkspace;
@@ -18,7 +20,7 @@ beforeEach(() => {
   data = { sourceRevisionId: "r1", sourceContent: "原著正文", documents: [], jobs: [], images: [], textReady: false, imageReady: false };
   api.list.mockResolvedValue([{ id: "w", projectId: "p", title: "测试小说", status: "active" }]);
   api.get.mockResolvedValue({ chapters: [{ id: "c1", chapterNo: 1, title: "第一章" }, { id: "c2", chapterNo: 2, title: "第二章" }] });
-  api.workspace.mockImplementation(async () => structuredClone(data)); api.source.mockResolvedValue({ chapterId: "c1", id: "r2" });
+  api.workspace.mockImplementation(async () => structuredClone(data));
   api.save.mockImplementation(async (input) => {
     const doc = { id: "d", kind: input.kind, pageNo: input.pageNo ?? null, markdown: input.markdown, optimizationInstruction: input.optimizationInstruction ?? "", revision: (input.expectedRevision ?? 0) + 1, stale: false, issues: [], updatedAt: 1 };
     data.documents = [...data.documents.filter((item) => !(item.kind === doc.kind && item.pageNo === doc.pageNo)), doc]; return doc;
@@ -34,7 +36,7 @@ beforeEach(() => {
   api.visualExtract.mockResolvedValue({ constitutionMarkdown: "## 总体风格\n黑白水墨", profileRevision: 1, referenceAssetIds: ["style-image"] });
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
-const open = async () => { render(<MarkdownComicWorkspace />); await screen.findByRole("button", { name: "保存正文" }); };
+  const open = async () => { render(<MarkdownComicWorkspace />); await screen.findByLabelText("小说原文预览"); };
 describe("Markdown comic workflow", () => {
   it("submits the visible linked-update plan, reacts immediately to drafts, and never starts images", async () => {
     data.documents = [{ id: "s", kind: "settings", pageNo: null, markdown: "设定", revision: 2, stale: true, staleReasons: ["正文人物外貌发生变化"], issues: [], updatedAt: 1 }];
@@ -85,17 +87,19 @@ describe("Markdown comic workflow", () => {
     expect(api.optimize).not.toHaveBeenCalled();
     expect(await screen.findByText(/服务器中的作品视觉设定已有新版本/)).toBeTruthy();
   });
-  it("navigates an affected chapter by ID and preserves the original chapter draft", async () => {
+  it("navigates an affected chapter by ID and preserves its independent comic draft", async () => {
     data.affectedChapters = [{ chapterId: "c2", chapterNo: 9, title: "远方来信", documentCount: 3, reason: "人物锚点变化" }];
+    data.documents = [{ id: "settings", kind: "settings", pageNo: null, markdown: "原作品设定", revision: 1, stale: false, issues: [], updatedAt: 1 }];
     api.get.mockResolvedValue({ chapters: [{ id: "c1", chapterNo: 1, title: "第一章" }, { id: "c2", chapterNo: 9, title: "远方来信" }] });
     api.workspace.mockImplementation(async ({ chapterId }) => ({ ...structuredClone(data), sourceContent: chapterId === "c2" ? "第九章正文" : "原著正文" }));
-    await open(); fireEvent.change(screen.getByLabelText("章节正文"), { target: { value: "第一章未保存草稿" } });
+    await open(); fireEvent.click(screen.getByRole("button", { name: "2. 作品设定" })); fireEvent.change(screen.getByLabelText("作品设定 Markdown"), { target: { value: "第一章未保存的漫画改编稿" } });
     fireEvent.click(screen.getByRole("button", { name: "前往第9章处理" }));
-    await waitFor(() => expect((screen.getByLabelText("章节正文") as HTMLTextAreaElement).value).toBe("第九章正文"));
+    await waitFor(() => expect((screen.getByLabelText("小说原文预览") as HTMLTextAreaElement).value).toBe("第九章正文"));
     expect((screen.getByLabelText("选择章节") as HTMLSelectElement).value).toBe("c2");
     expect(api.workspace).toHaveBeenLastCalledWith({ projectId: "p", novelWorkId: "w", chapterId: "c2" });
     fireEvent.change(screen.getByLabelText("选择章节"), { target: { value: "c1" } });
-    await waitFor(() => expect((screen.getByLabelText("章节正文") as HTMLTextAreaElement).value).toBe("第一章未保存草稿"));
+    await screen.findByLabelText("小说原文预览"); fireEvent.click(screen.getByRole("button", { name: "2. 作品设定" }));
+    expect((screen.getByLabelText("作品设定 Markdown") as HTMLTextAreaElement).value).toBe("第一章未保存的漫画改编稿");
   });
   it("blocks missing-page drafts and active jobs before linked updates", async () => {
     let poll!: () => void;
@@ -314,46 +318,33 @@ describe("Markdown comic workflow", () => {
     }
     expect(api.options).not.toHaveBeenCalled();
   });
-  it("saves source without triggering models or images", async () => {
-    await open(); fireEvent.change(screen.getByLabelText("章节正文"), { target: { value: "新的正文" } }); fireEvent.click(screen.getByRole("button", { name: "保存正文" }));
-    await waitFor(() => expect(api.source).toHaveBeenCalledWith(expect.objectContaining({ projectId: "p", novelWorkId: "w", chapterId: "c1", content: "新的正文" })));
-    expect(api.generate).not.toHaveBeenCalled(); expect(api.render).not.toHaveBeenCalled();
+  it("uses the shared manager in select mode and enters the explicitly selected new chapter", async () => {
+    await open(); fireEvent.click(screen.getByRole("button", { name: "选择 / 新增章节" }));
+    await screen.findByRole("dialog", { name: "共享小说原文管理器" });
+    const props = manager.props as { mode: string; initialSelection?: { projectId: string; novelWorkId: string; novelChapterId: string }; onSelect: (selection: { projectId: string; novelWorkId: string; workTitle: string; novelChapterId: string; novelChapterRevisionId: string; revisionNo: number; chapterNo: number; title: string; content: string }) => void };
+    expect(props.mode).toBe("select");
+    expect(props.initialSelection).toEqual({ projectId: "p", novelWorkId: "w", novelChapterId: "c1" });
+    act(() => props.onSelect({ projectId: "p", novelWorkId: "w", workTitle: "测试小说", novelChapterId: "c2", novelChapterRevisionId: "r2", revisionNo: 1, chapterNo: 2, title: "第二章", content: "第二章原文" }));
+    await waitFor(() => expect((screen.getByLabelText("选择章节") as HTMLSelectElement).value).toBe("c2"));
+    await waitFor(() => expect((screen.getByLabelText("小说原文预览") as HTMLTextAreaElement).value).toBe("原著正文"));
+    expect(api.workspace).toHaveBeenLastCalledWith({ projectId: "p", novelWorkId: "w", chapterId: "c2" });
   });
-  it("refreshes a saved chapter name in the editor and chapter list, including after switching away", async () => {
-    const chapters = [{ id: "c1", chapterNo: 1, title: "第一章" }, { id: "c2", chapterNo: 2, title: "第二章" }];
-    api.get.mockImplementation(async () => ({ chapters: structuredClone(chapters) }));
-    api.source.mockImplementation(async (input) => { chapters[0].title = input.title; data.sourceContent = input.content; return { chapterId: "c1", id: "r2" }; });
-    await open(); fireEvent.change(screen.getByLabelText("章节名称"), { target: { value: "雨夜来信" } });
-    fireEvent.click(screen.getByRole("button", { name: "保存正文" }));
-    await waitFor(() => expect((screen.getByLabelText("章节名称") as HTMLInputElement).value).toBe("雨夜来信"));
-    await screen.findByRole("option", { name: "第1章 · 雨夜来信" });
-    fireEvent.change(screen.getByLabelText("选择章节"), { target: { value: "c2" } }); await screen.findByRole("button", { name: "保存正文" });
-    fireEvent.change(screen.getByLabelText("选择章节"), { target: { value: "c1" } }); await screen.findByRole("button", { name: "保存正文" });
-    expect((screen.getByLabelText("章节名称") as HTMLInputElement).value).toBe("雨夜来信");
-  });
-  it("keeps title and source typed while the previous rename save is pending", async () => {
-    let finish!: () => void;
-    const chapters = [{ id: "c1", chapterNo: 1, title: "第一章" }, { id: "c2", chapterNo: 2, title: "第二章" }];
-    api.get.mockImplementation(async () => ({ chapters: structuredClone(chapters) }));
-    api.source.mockImplementation((input) => new Promise((resolve) => { finish = () => { chapters[0].title = input.title; data.sourceContent = input.content; resolve({ chapterId: "c1", id: "r2" }); }; }));
-    await open(); fireEvent.change(screen.getByLabelText("章节名称"), { target: { value: "已提交的名字" } });
-    fireEvent.click(screen.getByRole("button", { name: "保存正文" }));
-    fireEvent.change(screen.getByLabelText("章节名称"), { target: { value: "还在写的新名字" } });
-    fireEvent.change(screen.getByLabelText("章节正文"), { target: { value: "还在写的新正文" } });
-    await act(async () => finish());
-    await screen.findByRole("option", { name: "第1章 · 已提交的名字" });
-    expect((screen.getByLabelText("章节名称") as HTMLInputElement).value).toBe("还在写的新名字");
-    expect((screen.getByLabelText("章节正文") as HTMLTextAreaElement).value).toBe("还在写的新正文");
-    fireEvent.change(screen.getByLabelText("选择章节"), { target: { value: "c2" } }); await screen.findByRole("button", { name: "保存正文" });
-    fireEvent.change(screen.getByLabelText("选择章节"), { target: { value: "c1" } }); await screen.findByRole("button", { name: "保存正文" });
-    expect((screen.getByLabelText("章节名称") as HTMLInputElement).value).toBe("还在写的新名字");
-    expect((screen.getByLabelText("章节正文") as HTMLTextAreaElement).value).toBe("还在写的新正文");
-  });
-  it("does not create revisions for unchanged source or Markdown", async () => {
-    data.documents = [{ id: "s", kind: "settings", pageNo: null, markdown: "原设定", revision: 1, stale: false, issues: [], updatedAt: 1 }];
-    await open(); const sourceSave = screen.getByRole("button", { name: "保存正文" }) as HTMLButtonElement;
-    expect(sourceSave.disabled).toBe(true); fireEvent.click(sourceSave); expect(api.source).not.toHaveBeenCalled();
+  it("refreshes a changed source into the comic stale workflow without overwriting saved comic documents", async () => {
+    data.documents = [{ id: "settings", kind: "settings", pageNo: null, markdown: "保留的漫画作品设定", revision: 2, stale: false, issues: [], updatedAt: 1 }];
+    await open();
+    const beforeRefresh = api.workspace.mock.calls.length;
+    data = { ...data, sourceRevisionId: "r2", sourceContent: "更新后的小说原文", documents: [{ ...data.documents[0], stale: true, staleReasons: ["小说原文有新修订"] }] };
+    const props = manager.props as { onChanged: (change: { projectId: string; novelWorkId: string; novelChapterId: string; novelChapterRevisionId: string }) => void };
+    act(() => props.onChanged({ projectId: "p", novelWorkId: "w", novelChapterId: "c1", novelChapterRevisionId: "r2" }));
+    await waitFor(() => expect(api.workspace.mock.calls.length).toBeGreaterThan(beforeRefresh));
+    await waitFor(() => expect((screen.getByLabelText("小说原文预览") as HTMLTextAreaElement).value).toBe("更新后的小说原文"));
     fireEvent.click(screen.getByRole("button", { name: "2. 作品设定" }));
+    expect((screen.getByLabelText("作品设定 Markdown") as HTMLTextAreaElement).value).toBe("保留的漫画作品设定");
+    expect(api.save).not.toHaveBeenCalled(); expect(api.generate).not.toHaveBeenCalled(); expect(api.render).not.toHaveBeenCalled();
+  });
+  it("does not create a comic revision for unchanged Markdown", async () => {
+    data.documents = [{ id: "s", kind: "settings", pageNo: null, markdown: "原设定", revision: 1, stale: false, issues: [], updatedAt: 1 }];
+    await open(); fireEvent.click(screen.getByRole("button", { name: "2. 作品设定" }));
     const mdSave = screen.getByRole("button", { name: "保存文字" }) as HTMLButtonElement;
     expect(mdSave.disabled).toBe(true); fireEvent.click(mdSave); expect(api.save).not.toHaveBeenCalled();
     fireEvent.change(screen.getByLabelText("作品设定 Markdown"), { target: { value: "临时修改" } });
@@ -417,8 +408,8 @@ describe("Markdown comic workflow", () => {
   it("retains dirty text and its old revision on chapter navigation", async () => {
     data.documents = [{ id: "s", kind: "settings", pageNo: null, markdown: "原设定", revision: 1, stale: false, issues: [], updatedAt: 1 }];
     await open(); fireEvent.click(screen.getByRole("button", { name: "2. 作品设定" })); fireEvent.change(screen.getByLabelText("作品设定 Markdown"), { target: { value: "未保存的独立草稿" } });
-    fireEvent.change(screen.getByLabelText("选择章节"), { target: { value: "c2" } }); await screen.findByRole("button", { name: "保存正文" }); data.documents[0].revision = 2;
-    fireEvent.change(screen.getByLabelText("选择章节"), { target: { value: "c1" } }); await screen.findByRole("button", { name: "保存正文" }); fireEvent.click(screen.getByRole("button", { name: "2. 作品设定" }));
+    fireEvent.change(screen.getByLabelText("选择章节"), { target: { value: "c2" } }); await screen.findByLabelText("小说原文预览"); data.documents[0].revision = 2;
+    fireEvent.change(screen.getByLabelText("选择章节"), { target: { value: "c1" } }); await screen.findByLabelText("小说原文预览"); fireEvent.click(screen.getByRole("button", { name: "2. 作品设定" }));
     expect((screen.getByLabelText("作品设定 Markdown") as HTMLTextAreaElement).value).toBe("未保存的独立草稿"); fireEvent.click(screen.getByRole("button", { name: "保存文字" }));
     await waitFor(() => expect(api.save).toHaveBeenCalledWith(expect.objectContaining({ markdown: "未保存的独立草稿", expectedRevision: 1 })));
   });
@@ -434,7 +425,7 @@ describe("Markdown comic workflow", () => {
     let resolveOld!: (workspace: MdWorkspace) => void;
     api.workspace.mockImplementation(({ chapterId }) => chapterId === "c1" ? new Promise<MdWorkspace>((resolve) => { resolveOld = resolve; }) : Promise.resolve({ ...data, sourceContent: "第二章内容" }));
     render(<MarkdownComicWorkspace />); await screen.findByLabelText("选择章节"); await waitFor(() => expect(api.workspace).toHaveBeenCalled()); fireEvent.change(screen.getByLabelText("选择章节"), { target: { value: "c2" } });
-    await screen.findByRole("button", { name: "保存正文" }); resolveOld({ ...data, sourceContent: "第一章迟到结果" }); await waitFor(() => expect((screen.getByLabelText("章节正文") as HTMLTextAreaElement).value).toBe("第二章内容"));
+    await screen.findByLabelText("小说原文预览"); resolveOld({ ...data, sourceContent: "第一章迟到结果" }); await waitFor(() => expect((screen.getByLabelText("小说原文预览") as HTMLTextAreaElement).value).toBe("第二章内容"));
   });
   it("polls persisted jobs without overwriting dirty Markdown and blocks duplicate requests", async () => {
     let poll!: () => void;
@@ -478,6 +469,6 @@ describe("Markdown comic workflow", () => {
     expect(history.open).toBe(false);
     expect((screen.getByLabelText("生成原始 Markdown") as HTMLTextAreaElement).value).toBe("完整剧本原始文字");
     expect(screen.queryByText("从小说到漫画，先把故事写好")).toBeNull();
-    expect(screen.getByText("先写剧本和分镜，准备好后再画图。文字可独立复制使用。")).toBeTruthy();
+    expect(screen.getByText("小说原文资产由统一管理器维护；本页保存的是独立的漫画改编稿、分镜和图片。管理原文不会自动覆盖这些成果。")).toBeTruthy();
   });
 });

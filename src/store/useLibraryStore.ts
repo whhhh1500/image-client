@@ -35,6 +35,7 @@ interface LibraryState {
   assets: LibAsset[];
   tasks: TaskRecord[];
   addAssets: (assets: AssetRef[], source: string, meta?: AssetMeta) => void;
+  addLibraryAssets: (assets: LibAsset[]) => void;
   addTask: (t: TaskRecord) => void;
   updateTask: (id: string, patch: Partial<TaskRecord>) => void;
   updateAsset: (id: string, patch: Partial<LibAsset>) => void;
@@ -59,6 +60,10 @@ export const useLibraryStore = create<LibraryState>((set) => ({
         ...s.assets,
       ],
     })),
+  addLibraryAssets: (assets) => set((state) => {
+    const ids = new Set(assets.map((asset) => asset.asset.id));
+    return { assets: [...assets, ...state.assets.filter((asset) => !ids.has(asset.asset.id))] };
+  }),
   addTask: (t) => set((s) => ({ tasks: [t, ...s.tasks] })),
   updateTask: (id, patch) =>
     set((s) => ({

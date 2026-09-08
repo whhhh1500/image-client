@@ -17,6 +17,7 @@ import {
   type PromptlibKind,
 } from "../lib/promptlib";
 import { usePromptlibStore } from "../store/usePromptlibStore";
+import type { LibAsset } from "../store/useLibraryStore";
 
 const inputCls =
   "w-full rounded-lg border border-slate-600 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400/40";
@@ -26,6 +27,7 @@ export interface PromptLibraryPick {
   entry: PromptlibEntry;
   asReference?: boolean;
   referencePath?: string;
+  referenceAsset?: LibAsset;
 }
 
 export default function PromptLibrary({
@@ -154,8 +156,8 @@ export default function PromptLibrary({
     setBusy("reference");
     setError(null);
     try {
-      const path = await importCaseImage(selected);
-      onPick({ prompt: currentPrompt(), entry: selected, asReference: true, referencePath: path });
+      const asset = await importCaseImage(selected);
+      onPick({ prompt: currentPrompt(), entry: selected, asReference: true, referencePath: asset.asset.path, referenceAsset: asset });
       onClose();
     } catch (e) {
       setError(String(e));

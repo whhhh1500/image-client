@@ -1,7 +1,10 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { cachePromptlibImage, importRefImage, listCachedPromptlibImages } from "./ipc";
+import { cachePromptlibImage, listCachedPromptlibImages } from "./ipc";
 import { logEvent } from "./logger";
 import { caseImageUrl, type PromptlibEntry } from "./promptlib";
+import { importExternalAssets } from "./externalAssetImport";
+import { useProjectStore } from "../store/useProjectStore";
+import type { LibAsset } from "../store/useLibraryStore";
 
 const memoryCache = new Map<string, string>();
 const inflight = new Map<string, Promise<string>>();
@@ -82,17 +85,26 @@ export async function cachedCaseImageSrc(image: string): Promise<string> {
   }
 }
 
-/** Copy the cached original into the local reference-image folder. */
-export async function importCaseImage(entry: PromptlibEntry): Promise<string> {
+/** Import the cached original as a project-scoped, searchable reference asset. */
+export async function importCaseImage(entry: PromptlibEntry): Promise<LibAsset> {
   const started = performance.now();
   logEvent("info", "promptlib.case_image.start", { id: entry.id, image: entry.image });
   const cachedPath = await cachedCaseImagePath(entry.image);
-  const copied = await importRefImage(cachedPath);
+  const projectId = useProjectStore.getState().activeId;
+  if (!projectId) throw new Error("当前没有可用项目，不能导入案例图");
+  const [imported] = await importExternalAssets({
+    projectId,
+    importEntry: "prompt_library_reference",
+    files: [{ path: cachedPath }],
+    params: { promptLibraryEntryId: entry.id, promptLibraryCaseImage: true },
+  });
+  if (!imported) throw new Error("案例图导入未返回资产");
   logEvent("info", "promptlib.case_image.end", {
     id: entry.id,
     status: "success",
     durationMs: performance.now() - started,
     cached: true,
+    assetId: imported.asset.id,
   });
-  return copied;
+  return imported;
 }

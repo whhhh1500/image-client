@@ -9,6 +9,10 @@ export interface SourceMaterialSnapshot {
   assetId?: string;
   source?: string;
   path?: string;
+  /** Public media-hosting URL explicitly published for a provider reference. */
+  publishedUrl?: string;
+  /** SHA-256 of the local bytes that were uploaded to the media host. */
+  sha256?: string;
   text?: string;
   model?: string;
 }
@@ -85,6 +89,8 @@ function parseSourceMaterials(value: unknown): SourceMaterialSnapshot[] {
       assetId: nonEmptyString(raw.assetId),
       source: nonEmptyString(raw.source),
       path: nonEmptyString(raw.path),
+      publishedUrl: nonEmptyString(raw.publishedUrl),
+      sha256: nonEmptyString(raw.sha256),
       text: nonEmptyString(raw.text),
       model: nonEmptyString(raw.model),
     }];
@@ -98,6 +104,8 @@ function dedupeSourceMaterials(materials: SourceMaterialSnapshot[]): SourceMater
       ? `asset:${material.assetId}`
       : material.path
         ? `path:${material.path}`
+        : material.publishedUrl
+          ? `published:${material.publishedUrl}`
         : `content:${material.kind}:${material.label}:${material.text ?? ""}`;
     if (seen.has(key)) return false;
     seen.add(key);

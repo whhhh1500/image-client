@@ -2,6 +2,7 @@ import type { LibAsset } from "../../store/useLibraryStore";
 import type { VideoParams } from "../../store/useVideoStore";
 import type { StoryboardShot } from "./storyboard";
 import { storyboardShotsToGenerationItems } from "./storyboard";
+import { isPublicHttpsUrl } from "./referenceUrl";
 
 export interface VideoHandoffApproval {
   anchorAssetId?: string;
@@ -18,12 +19,18 @@ export function buildReviewedVideoHandoff(
   approval: VideoHandoffApproval,
 ): Partial<VideoParams> {
   const generationItems = storyboardShotsToGenerationItems(shots).map((item) => {
-    const references = item.referenceAssetIds.map((id) => assets.find((asset) => asset.asset.id === id)).filter((asset): asset is LibAsset => Boolean(asset));
+    const references = item.referenceAssetIds
+      .map((id) => assets.find((asset) => asset.asset.id === id && asset.projectId === source.projectId))
+      .filter((asset): asset is LibAsset => Boolean(asset));
+    const images = references.filter((asset) => asset.asset.kind === "image");
+    const videos = references.filter((asset) => asset.asset.kind === "video");
     return {
       ...item,
       id: `shot-${item.shotNo}`,
-      referenceImages: references.filter((asset) => asset.asset.kind === "image").map((asset) => asset.asset.path),
-      referenceVideos: references.filter((asset) => asset.asset.kind === "video").map((asset) => asset.asset.path),
+      referenceAssetIds: item.referenceAssetIds,
+      referenceImages: images.filter((asset) => isPublicHttpsUrl(asset.asset.path)).map((asset) => asset.asset.path),
+      referenceLocalImages: images.filter((asset) => !isPublicHttpsUrl(asset.asset.path)).map((asset) => ({ assetId: asset.asset.id, path: asset.asset.path, label: asset.source })),
+      referenceVideos: videos.filter((asset) => isPublicHttpsUrl(asset.asset.path)).map((asset) => asset.asset.path),
     };
   });
   return {
@@ -44,7 +51,7 @@ export function buildReviewedVideoHandoff(
       approvedAspectRatio: approval.approvedAspectRatio,
       approvedResolution: approval.approvedResolution,
       approvedAt: Date.now(),
-      shots: generationItems.map((shot) => ({ shotNo: shot.shotNo, prompt: shot.prompt, durationS: shot.durationS, referenceStrategy: shot.referenceStrategy, referenceAssetIds: shot.referenceAssetIds, referenceImages: shot.referenceImages, referenceVideos: shot.referenceVideos })),
+      shots: generationItems.map((shot) => ({ shotNo: shot.shotNo, prompt: shot.prompt, durationS: shot.durationS, referenceStrategy: shot.referenceStrategy, referenceAssetIds: shot.referenceAssetIds, referenceImages: shot.referenceImages, referenceVideos: shot.referenceVideos, referenceLocalImages: shot.referenceLocalImages })),
     },
   };
 }

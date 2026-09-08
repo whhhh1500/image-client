@@ -1,6 +1,6 @@
 [package]
 name = "image-client"
-version = "0.2.2"
+version = "0.2.3"
 description = "Image-Client: cloud AI + local ffmpeg media editing client"
 authors = ["you"]
 edition = "2021"

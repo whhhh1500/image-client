@@ -1,5 +1,5 @@
 import { confirmAction } from "./lib/confirm";
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { BookOpen, Clapperboard, FolderCog, Image as ImageIcon, Images, Plus, RefreshCw, Settings, Trash2 } from "lucide-react";
 import StatusBar from "./components/StatusBar";
 import AppDocsDialog, { type AppDocsView } from "./components/AppDocsDialog";
@@ -24,12 +24,13 @@ import { useProjectStore } from "./store/useProjectStore";
 import { usePromptlibStore } from "./store/usePromptlibStore";
 import { useGenerationStore } from "./store/useGenerationStore";
 import { useVideoStore } from "./store/useVideoStore";
-import type { VideoParams } from "./store/useVideoStore";
 import { applyProjectProfile } from "./lib/projectProfile";
 import { logEvent } from "./lib/logger";
 import { listen } from "@tauri-apps/api/event";
 import type { StoryboardShot } from "./lib/video/storyboard";
 import { buildReviewedVideoHandoff } from "./lib/video/handoff";
+import type { ImportEntry } from "./lib/assetImport";
+import { queueGenerationAssetImport, useGenerationImportQueue } from "./store/useGenerationImportQueue";
 
 type Mode = "image" | "video";
 type Tab = "generate" | "comic" | "pipeline" | "assets";
@@ -54,19 +55,9 @@ function App() {
   const [docsView, setDocsView] = useState<AppDocsView | null>(null);
   const [historyRefreshing, setHistoryRefreshing] = useState(false);
   const [historyRefreshNotice, setHistoryRefreshNotice] = useState<string | null>(null);
-  const libraryAssets = useLibraryStore((s) => s.assets);
   const projects = useProjectStore((s) => s.projects);
   const activeProjectId = useProjectStore((s) => s.activeId);
   const activeProject = projects.find((p) => p.id === activeProjectId) ?? null;
-  const assetCount = useMemo(() => {
-    const defaultProjectId = projects[0]?.id;
-    const allowedAssetKinds = mode === "image" ? ["text", "image"] : ["text", "video"];
-    return libraryAssets.filter((asset) => {
-      const belongsToActiveProject = asset.projectId === activeProjectId
-        || (!asset.projectId && activeProjectId === defaultProjectId);
-      return belongsToActiveProject && allowedAssetKinds.includes(asset.asset.kind);
-    }).length;
-  }, [activeProjectId, libraryAssets, mode, projects]);
 
   useEffect(() => {
     let cancelled = false;
@@ -136,23 +127,10 @@ function App() {
     }
   };
 
-  const openAsset = (asset: LibAsset) => {
-    if (asset.asset.kind === "video") {
-      setMode("video");
-      useVideoStore.getState().load((asset.params ?? {}) as Partial<VideoParams>);
-    } else if (asset.asset.kind === "image") {
-      setMode("image");
-      useGenerationStore.getState().load({ ...(asset.params ?? {}), ...(asset.model ? { model: asset.model } : {}) } as Partial<import("./store/useGenerationStore").GenParams>);
-    } else {
-      return;
-    }
-    setTab("generate");
-  };
-
-  const useReference = (asset: LibAsset) => {
-    if (asset.asset.kind !== "image") return;
-    setMode("image");
-    useGenerationStore.getState().set({ referencePath: asset.asset.path });
+  const queueAssetImport = (entries: ImportEntry[], target: "image" | "video", action: "prompt" | "merge_prompt" | "reference") => {
+    if (!activeProjectId || !entries.length) return;
+    queueGenerationAssetImport({ projectId: activeProjectId, entries, target, action });
+    setMode(target);
     setTab("generate");
   };
 
@@ -165,7 +143,7 @@ function App() {
   };
 
   const clearProjectScopedGenerationState = () => {
-    useGenerationStore.getState().set({ prompt: "", referencePath: "" });
+    useGenerationStore.getState().set({ prompt: "", referencePath: "", references: [], importedSources: [] });
     useVideoStore.getState().set({
       shots: [{ id: "shot-1", shotNo: 1, prompt: "", durationS: 5 }],
       images: [],
@@ -173,9 +151,11 @@ function App() {
       audios: [],
       storyboardSourceAssetId: undefined,
       productionManifest: undefined,
+      importedSources: [],
       // With no retained references, reset newer stores to the backwards-compatible text mode.
       mode: "text",
     });
+    useGenerationImportQueue.getState().discard();
   };
 
   const switchProject = async (id: string) => {
@@ -238,7 +218,7 @@ function App() {
             短剧 Agent
           </button>
           <button onClick={() => setTab("assets")} className={`flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-medium transition ${tab === "assets" ? "bg-slate-700 text-white" : "text-slate-400 hover:text-white"}`}>
-            <Images size={13} /> 资产库{assetCount > 0 ? <span className="rounded bg-slate-900/40 px-1 text-[9px]">{assetCount}</span> : null}
+            <Images size={13} /> 资产库
           </button>
         </nav>
 
@@ -266,7 +246,7 @@ function App() {
             {tab === "generate" && (mode === "video" ? <VideoPanel /> : <GeneratePanel llmModel={cfgStatus?.llmModel} />)}
             {tab === "comic" && <NovelComicPage />}
             {tab === "pipeline" && <VideoMarkdownWorkspace llmModel={cfgStatus?.llmModel} onEditPrompt={(id) => { setPromptAgent(id); setPromptMgrOpen(true); }} onSendToVideo={sendStoryboardToVideo} />}
-            {tab === "assets" && <AssetsPage mode={mode} onUseReference={useReference} onOpenAsset={openAsset} />}
+            {tab === "assets" && <AssetsPage onQueueImport={queueAssetImport} />}
           </Suspense>
         </div>
       </div>

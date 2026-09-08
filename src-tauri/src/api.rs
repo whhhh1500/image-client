@@ -1092,6 +1092,9 @@ async fn video(
             optional_text(Some(value), field, 4_096)?;
         }
     }
+    video::validate_public_https_urls(&body.images, "images").map_err(err)?;
+    video::validate_public_https_urls(&body.videos, "videos").map_err(err)?;
+    video::validate_public_https_urls(&body.audios, "audios").map_err(err)?;
     optional_text(body.project_id.as_deref(), "projectId", 200)?;
     if body
         .duration_s

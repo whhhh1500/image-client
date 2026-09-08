@@ -1,19 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { Check, Clapperboard, FileInput, Loader2, Plus, Send, Trash2, X } from "lucide-react";
-import { productionManifestMismatch, useVideoStore, type VideoGenerationItem, type VideoParams } from "../store/useVideoStore";
+import { Check, Clapperboard, FileInput, Loader2, Plus, Send, Trash2, Upload, X } from "lucide-react";
+import { productionManifestMismatch, useVideoStore, type VideoGenerationItem, type VideoLocalImageReference, type VideoParams } from "../store/useVideoStore";
 import { useLibraryStore, type LibAsset } from "../store/useLibraryStore";
 import { useProjectStore } from "../store/useProjectStore";
 import { concatVideoAssets, generateVideo } from "../lib/generateVideo";
 import {
   listVideoModels,
   listVideoModelCapabilities,
+  assetPublishMedia,
+  mediaHostingGet,
+  type MediaHostingStatus,
   type VideoGenerationMode,
   type VideoModelCapability,
 } from "../lib/ipc";
 import { ContextMenu, menuIcons } from "../components/ContextMenu";
-import AssetPicker from "../components/AssetPicker";
+import AssetImportPicker from "../components/AssetImportPicker";
+import MediaHostingDialog from "../components/MediaHostingDialog";
 import AssetDetailModal from "../components/AssetDetailModal";
 import { getDocumentMeta } from "../lib/documents";
 import WorkflowGuide from "../components/WorkflowGuide";
@@ -21,6 +26,21 @@ import { logEvent } from "../lib/logger";
 import { snapshotAsset } from "../lib/provenance";
 import { parseStoryboardShots, storyboardShotsToGenerationItems, type StoryboardShot } from "../lib/video/storyboard";
 import { isPublicHttpsUrl } from "../lib/video/referenceUrl";
+import { importExternalAssets } from "../lib/externalAssetImport";
+import { comicMdCatalogList } from "../lib/comic/markdownApi";
+import { useGenerationImportQueue } from "../store/useGenerationImportQueue";
+import {
+  createImportRecord,
+  importEntryAssetId,
+  importEntryKind,
+  importEntryLabel,
+  importEntryPublishedUrl,
+  importEntryPrompt,
+  libraryImportEntry,
+  mergeImportedPrompts,
+  replaceImportedPrompt,
+  type ImportEntry,
+} from "../lib/assetImport";
 
 const inputCls =
   "w-full rounded-lg border border-slate-600 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-fuchsia-400 focus:ring-1 focus:ring-fuchsia-400/40";
@@ -100,14 +120,15 @@ export function resolveImportedStoryboardShots(
     return {
       ...item,
       id: `shot-${item.shotNo}`,
-      referenceImages: references.filter((asset) => asset.asset.kind === "image").map((asset) => asset.asset.path),
+      referenceImages: references.filter((asset) => asset.asset.kind === "image" && isPublicHttpsUrl(asset.asset.path)).map((asset) => asset.asset.path),
+      referenceLocalImages: references.filter((asset) => asset.asset.kind === "image" && !isPublicHttpsUrl(asset.asset.path)).map((asset) => ({ assetId: asset.asset.id, path: asset.asset.path, label: asset.source })),
       referenceVideos: references.filter((asset) => asset.asset.kind === "video").map((asset) => asset.asset.path),
     };
   });
 }
 
 export function shotReferenceSummary(shot: VideoGenerationItem): string {
-  const imageCount = shot.referenceImages?.length ?? 0;
+  const imageCount = (shot.referenceImages?.length ?? 0) + (shot.referenceLocalImages?.length ?? 0);
   const videoCount = shot.referenceVideos?.length ?? 0;
   if (!imageCount && !videoCount) return "逐镜参考 0 项";
   return `逐镜参考 ${imageCount + videoCount} 项（图片 ${imageCount} · 视频 ${videoCount}）`;
@@ -178,6 +199,7 @@ export default function VideoPanel() {
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [phase, setPhase] = useState<WorkflowPhase>("idle");
   const [selectedVideoIds, setSelectedVideoIds] = useState<string[]>([]);
   const [joining, setJoining] = useState(false);
@@ -187,6 +209,13 @@ export default function VideoPanel() {
   const [videoGuideAsset, setVideoGuideAsset] = useState<LibAsset | null>(null);
   const [textSource, setTextSource] = useState<LibAsset | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerPreset, setPickerPreset] = useState<{ entries: ImportEntry[]; action: "prompt" | "merge_prompt" | "reference" } | null>(null);
+  const [importShotId, setImportShotId] = useState<string | null>(null);
+  const [canonicalComicEntries, setCanonicalComicEntries] = useState<ImportEntry[]>([]);
+  const [hostingDialogOpen, setHostingDialogOpen] = useState(false);
+  const [hostingStatus, setHostingStatus] = useState<MediaHostingStatus | null>(null);
+  const publishedMedia = useRef(new Map<string, { url: string; sha256?: string }>());
+  const pickerSession = useRef(0);
   const processingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const provider = useProjectStore();
@@ -194,6 +223,11 @@ export default function VideoPanel() {
   const activeId = provider.activeId;
   const belongs = (projectId?: string) => projectId === activeId || (!projectId && activeId === defaultId);
   const allAssets = useLibraryStore((state) => state.assets);
+  const pendingImport = useGenerationImportQueue((state) => state.pending);
+  const importEntries = useMemo(() => [
+    ...allAssets.filter((asset) => belongs(asset.projectId)).map((asset) => ({ entryType: "library_asset" as const, asset })),
+    ...canonicalComicEntries,
+  ], [allAssets, canonicalComicEntries, activeId, defaultId]);
   // 视频工作区仅展示 video 资产；图片只可经“创作参考”显式导入，不会混入视频历史。
   const videos = allAssets.filter((item) => item.asset.kind === "video" && belongs(item.projectId));
 
@@ -217,6 +251,38 @@ export default function VideoPanel() {
     // 初始化只需运行一次；vid 是 zustand store 的合成对象。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    const projectId = activeId ?? defaultId;
+    if (!projectId) { setCanonicalComicEntries([]); return; }
+    let cancelled = false;
+    void comicMdCatalogList({ projectId }).then((items) => {
+      if (cancelled || (useProjectStore.getState().activeId ?? useProjectStore.getState().projects[0]?.id) !== projectId) return;
+      setCanonicalComicEntries(items.map((item) => ({ entryType: "canonical_comic" as const, readonly: true as const, ...item })));
+    }).catch((cause) => logEvent("warn", "asset_import.comic_catalog_failed", { projectId, error: String(cause) }));
+    return () => { cancelled = true; };
+  }, [activeId, defaultId]);
+
+  useEffect(() => {
+    if (!pendingImport || pendingImport.target !== "video") return;
+    const projectId = useProjectStore.getState().activeId ?? useProjectStore.getState().projects[0]?.id;
+    if (!projectId || pendingImport.projectId !== projectId) {
+      useGenerationImportQueue.getState().clear(pendingImport.requestId);
+      return;
+    }
+    setPickerPreset({ entries: pendingImport.entries, action: pendingImport.action });
+    setPickerOpen(true);
+    useGenerationImportQueue.getState().clear(pendingImport.requestId);
+  }, [pendingImport?.requestId]);
+
+  useEffect(() => {
+    if (!pickerOpen) return;
+    let cancelled = false;
+    void mediaHostingGet().then((status) => !cancelled && setHostingStatus(status)).catch((cause) => {
+      if (!cancelled) logEvent("warn", "media_hosting.status_failed", { error: String(cause) });
+    });
+    return () => { cancelled = true; };
+  }, [pickerOpen]);
 
   const knownCapability = useMemo(
     () => capabilities.find((item) => item.id === vid.model),
@@ -243,16 +309,18 @@ export default function VideoPanel() {
       if (unresolvedReferences.length) return `第 ${shot.shotNo} 镜包含不可用的参考资产：${unresolvedReferences.join("、")}。参考资产必须是当前项目的图像或视频资源。`;
       const shotDurations = durationOptionsFor(capability, shotMode);
       if (!shotDurations.includes(shot.durationS)) return `${capability.label} 在 ${shotMode} 模式下不支持第 ${shot.shotNo} 镜的 ${shot.durationS} 秒时长。`;
-      const shotImages = shot.referenceImages?.length ? shot.referenceImages : images;
+      const localImages = shot.referenceLocalImages ?? [];
+      const shotImages = (shot.referenceImages?.length || localImages.length) ? shot.referenceImages ?? [] : images;
       const shotVideos = shot.referenceVideos?.length ? shot.referenceVideos : vid.videos;
       const shotMaterials = [...shotImages, ...shotVideos];
       if (shotMaterials.some((value) => !isPublicHttpsUrl(value))) return `第 ${shot.shotNo} 镜的参考素材必须是无凭据的公网 HTTPS URL，不能使用本机或内网地址。`;
-      if (shotImages.length > capability.maxImages || shotVideos.length > capability.maxVideos) return `第 ${shot.shotNo} 镜的参考素材超过当前模型上限。`;
-      if (capability.maxTotalReferences && shotMaterials.length > capability.maxTotalReferences) return `第 ${shot.shotNo} 镜的参考素材总数超过当前模型上限（${shotMaterials.length}/${capability.maxTotalReferences}）。`;
-      if (shotMode === "text" && (shot.referenceImages?.length || shot.referenceVideos?.length)) return `第 ${shot.shotNo} 镜为文生模式，不能携带逐镜参考素材。`;
-      if (shotMode === "first_frame" && (shotImages.length !== 1 || shotVideos.length)) return `第 ${shot.shotNo} 镜的首帧模式需要且只能提供 1 张图片。`;
-      if (shotMode === "reference" && !shotMaterials.length) return `第 ${shot.shotNo} 镜的多素材参考模式缺少参考素材。`;
-      if (shotMode === "reference" && capability.referenceImageCount && shotImages.length !== capability.referenceImageCount) return `第 ${shot.shotNo} 镜必须恰好提供 ${capability.referenceImageCount} 张参考图片。`;
+      const imageCount = shotImages.length + localImages.length;
+      if (imageCount > capability.maxImages || shotVideos.length > capability.maxVideos) return `第 ${shot.shotNo} 镜的参考素材超过当前模型上限。`;
+      if (capability.maxTotalReferences && imageCount + shotVideos.length > capability.maxTotalReferences) return `第 ${shot.shotNo} 镜的参考素材总数超过当前模型上限（${imageCount + shotVideos.length}/${capability.maxTotalReferences}）。`;
+      if (shotMode === "text" && (shot.referenceImages?.length || shot.referenceVideos?.length || localImages.length)) return `第 ${shot.shotNo} 镜为文生模式，不能携带逐镜参考素材。`;
+      if (shotMode === "first_frame" && (imageCount !== 1 || shotVideos.length)) return `第 ${shot.shotNo} 镜的首帧模式需要且只能提供 1 张图片。`;
+      if (shotMode === "reference" && !imageCount && !shotVideos.length) return `第 ${shot.shotNo} 镜的多素材参考模式缺少参考素材。`;
+      if (shotMode === "reference" && capability.referenceImageCount && imageCount !== capability.referenceImageCount) return `第 ${shot.shotNo} 镜必须恰好提供 ${capability.referenceImageCount} 张参考图片。`;
     }
     const materialGroups: Array<[string, string[], number]> = [
       ["图片", images, capability.maxImages],
@@ -266,9 +334,10 @@ export default function VideoPanel() {
     if (!capability.resolutions.includes(vid.resolution)) return `当前模型不支持 ${vid.resolution}。`;
     if (!capability.aspectRatios.includes(vid.aspectRatio)) return `当前模型不支持 ${vid.aspectRatio} 画幅。`;
     if (vid.mode === "text" && hasMaterials) return "文生模式不能携带参考素材；请切换为首帧或多素材参考模式。";
-    if (vid.mode === "first_frame" && images.length !== 1) return "首帧驱动模式需要且只能提供 1 张图片 URL。";
-    if (vid.mode === "reference" && !hasMaterials) return "多素材参考模式至少需要一条图片或视频 URL。";
-    if (vid.mode === "reference" && capability.referenceImageCount && images.length !== capability.referenceImageCount) {
+    const hasExplicitShotReferences = shots.some((shot) => (shot.referenceImages?.length ?? 0) + (shot.referenceVideos?.length ?? 0) + (shot.referenceLocalImages?.length ?? 0) > 0);
+    if (vid.mode === "first_frame" && !hasExplicitShotReferences && images.length !== 1) return "首帧驱动模式需要且只能提供 1 张图片 URL。";
+    if (vid.mode === "reference" && !hasMaterials && !shots.some((shot) => (shot.referenceImages?.length ?? 0) + (shot.referenceVideos?.length ?? 0) + (shot.referenceLocalImages?.length ?? 0) > 0)) return "多素材参考模式至少需要一条图片或视频参考。";
+    if (vid.mode === "reference" && !hasExplicitShotReferences && capability.referenceImageCount && images.length !== capability.referenceImageCount) {
       return `当前模型的多素材参考模式必须恰好提供 ${capability.referenceImageCount} 张图片。`;
     }
     if (vid.videos.length && vid.model === "drama-video-v2" && !images.length) {
@@ -319,6 +388,237 @@ export default function VideoPanel() {
     setTextSource(null);
   };
 
+  const importTarget = shots.find((shot) => shot.id === importShotId) ?? shots[0];
+  const applyImportedVideoAssets = async ({ action, referenceMode, localImageDelivery = "direct", entries }: { action: "prompt" | "merge_prompt" | "reference"; referenceMode: "replace" | "append"; localImageDelivery?: "direct" | "hosting"; entries: ImportEntry[] }) => {
+    const sessionAtStart = pickerSession.current;
+    if (vid.productionManifest) throw new Error("已加载审查生产清单；请先明确解除审查清单，才可导入普通视频素材。");
+    if (!importTarget) throw new Error("没有可接收导入内容的视频镜头。");
+    if (action !== "reference") {
+      const usable = entries.filter((entry) => Boolean(importEntryPrompt(entry)));
+      if (!usable.length) throw new Error("所选内容没有可见正文或已保存提示词，不能形成视频 Prompt。");
+      const excluded = entries.filter((entry) => !importEntryPrompt(entry));
+      const prompt = action === "prompt" ? replaceImportedPrompt(usable) : mergeImportedPrompts(importTarget.prompt, usable);
+      if (!prompt) throw new Error("所选内容不能形成视频 Prompt。");
+      const singleLibrarySource = action === "prompt" && usable.length === 1 && usable[0].entryType === "library_asset" ? usable[0].asset : undefined;
+      const storyboard = singleLibrarySource ? parseStoryboardShots(prompt) : [];
+      if (storyboard.length) {
+        updateShots(resolveImportedStoryboardShots(storyboard, allAssets, belongs));
+        const record = { ...createImportRecord("prompt", usable, "导入视频分镜"), targetShotId: importTarget.id };
+        vid.set({ storyboardSourceAssetId: singleLibrarySource!.asset.id, importedSources: [...(vid.importedSources ?? []).filter((item) => item.targetShotId !== importTarget.id), record] });
+        return;
+      }
+      updateShots(shots.map((shot) => shot.id === importTarget.id ? { ...shot, prompt } : shot));
+      const record = { ...createImportRecord(action, usable, action === "prompt" ? "导入视频提示词" : "合并视频提示词"), targetShotId: importTarget.id };
+      vid.set({ importedSources: action === "prompt"
+        ? [...(vid.importedSources ?? []).filter((item) => item.targetShotId !== importTarget.id || item.action === "reference"), record]
+        : [...(vid.importedSources ?? []), record] });
+      if (excluded.length) setError(`已排除 ${excluded.length} 项没有可见正文/已保存提示词的资源：${excluded.map((entry) => entry.entryType === "library_asset" ? entry.asset.source : entry.title).join("、")}`);
+      return;
+    }
+
+    const media = entries.map((entry) => ({
+      entry,
+      kind: importEntryKind(entry),
+      path: entry.entryType === "library_asset" ? entry.asset.asset.path : entry.path,
+      publishedUrl: importEntryPublishedUrl(entry),
+      source: entry.entryType === "library_asset" ? { assetId: entry.asset.asset.id } : { sourceUri: entry.sourceUri },
+    }));
+    if (media.some((item) => item.kind === "text" || (!item.path && !item.publishedUrl))) throw new Error("所选参考中包含没有媒体文件的资料，未应用选择。");
+    const selectedImages = media.filter((item) => item.kind === "image");
+    const selectedVideos = media.filter((item) => item.kind === "video");
+    const existingImages = referenceMode === "append" ? importTarget.referenceImages ?? [] : [];
+    const existingVideos = referenceMode === "append" ? importTarget.referenceVideos ?? [] : [];
+    const existingLocalImages = referenceMode === "append" ? importTarget.referenceLocalImages ?? [] : [];
+    const projectId = activeId ?? defaultId;
+    if (!projectId) throw new Error("请先选择项目，再上传本地参考媒体。");
+    const projectIdForEntry = (entry: ImportEntry) => entry.entryType === "library_asset" ? entry.asset.projectId : entry.projectId;
+    if (media.some((item) => projectIdForEntry(item.entry) !== projectId)) throw new Error("项目已切换，旧项目的导入选择已清除。请在当前项目重新选择。");
+    const sourceKey = (entry: ImportEntry) => entry.entryType === "library_asset" ? `asset:${entry.asset.asset.id}` : `comic:${entry.sourceUri}`;
+    const cacheKey = (endpoint: string, entry: ImportEntry) => `${endpoint}:${projectIdForEntry(entry)}:${sourceKey(entry)}`;
+    let cacheEndpoint = hostingStatus?.endpoint ?? "";
+    const cachedUrl = (item: typeof media[number]) => publishedMedia.current.get(cacheKey(cacheEndpoint, item.entry))?.url;
+    const referenceUrl = (item: typeof media[number]) => item.publishedUrl ?? (item.path && isPublicHttpsUrl(item.path) ? item.path : undefined) ?? cachedUrl(item);
+    const localImageReference = (item: typeof media[number]): VideoLocalImageReference => ({
+      ...(item.entry.entryType === "library_asset" ? { assetId: item.entry.asset.asset.id } : { sourceUri: item.entry.sourceUri }),
+      path: item.path!,
+      label: importEntryLabel(item.entry),
+    });
+    const isLocalImage = (item: typeof media[number]) => item.kind === "image" && !item.publishedUrl && !(item.path && isPublicHttpsUrl(item.path));
+    const selectedDirectLocalImages = localImageDelivery === "direct"
+      ? selectedImages.filter(isLocalImage).map(localImageReference)
+      : [];
+    const selectedDirectKeys = new Set(selectedDirectLocalImages.map((item) => item.assetId ? `asset:${item.assetId}` : `comic:${item.sourceUri}`));
+    const selectedUrlImages = selectedImages.filter((item) => !selectedDirectKeys.has(sourceKey(item.entry)));
+    const candidateImageCount = new Set([...existingImages, ...selectedUrlImages.map((item) => referenceUrl(item) ?? `host:${sourceKey(item.entry)}`), ...existingLocalImages.map((item) => `local:${item.assetId ?? item.sourceUri}`), ...selectedDirectLocalImages.map((item) => `local:${item.assetId ?? item.sourceUri}`)]).size;
+    const candidateVideoCount = new Set([...existingVideos, ...selectedVideos.map((item) => referenceUrl(item) ?? `local:${item.entry.entryType === "library_asset" ? item.entry.asset.asset.id : item.entry.sourceUri}`)]).size;
+    if (candidateImageCount > capability.maxImages || candidateVideoCount > capability.maxVideos) throw new Error(`${capability.label} 的参考槽位不足：图片 ${candidateImageCount}/${capability.maxImages}，视频 ${candidateVideoCount}/${capability.maxVideos}。未应用选择。`);
+    if (capability.maxTotalReferences && candidateImageCount + candidateVideoCount > capability.maxTotalReferences) throw new Error(`${capability.label} 的参考素材总槽位为 ${capability.maxTotalReferences}，未应用选择。`);
+    const desiredStrategy = candidateImageCount === 1 && candidateVideoCount === 0 && capability.modes.includes("first_frame")
+      ? "first_frame" as const
+      : "reference" as const;
+    if (!capability.modes.includes(desiredStrategy)) throw new Error(`${capability.label} 不支持当前参考素材组合。`);
+    if (desiredStrategy === "reference" && capability.referenceImageCount && candidateImageCount !== capability.referenceImageCount) throw new Error(`${capability.label} 的多素材参考必须恰好有 ${capability.referenceImageCount} 张图片，未应用选择。`);
+    if (vid.model === "drama-video-v2" && candidateVideoCount && !candidateImageCount) throw new Error("Drama Video 使用视频参考时必须同时选择至少一张公网图片，未应用选择。");
+    const shotFingerprint = (shot: VideoGenerationItem | undefined) => shot ? JSON.stringify({
+      id: shot.id,
+      prompt: shot.prompt,
+      durationS: shot.durationS,
+      referenceStrategy: shot.referenceStrategy ?? null,
+      referenceAssetIds: shot.referenceAssetIds ?? [],
+      referenceImages: shot.referenceImages ?? [],
+      referenceVideos: shot.referenceVideos ?? [],
+      referenceLocalImages: shot.referenceLocalImages ?? [],
+    }) : null;
+    const targetFingerprint = shotFingerprint(importTarget);
+    const manifestFingerprint = JSON.stringify(vid.productionManifest ?? null);
+    const requestFingerprint = JSON.stringify({ model: vid.model, mode: vid.mode, resolution: vid.resolution, aspectRatio: vid.aspectRatio });
+    const importStillCurrent = () => {
+      const current = useVideoStore.getState();
+      const currentProjectId = useProjectStore.getState().activeId ?? useProjectStore.getState().projects[0]?.id;
+      return currentProjectId === projectId
+        && pickerSession.current === sessionAtStart
+        && JSON.stringify(current.productionManifest ?? null) === manifestFingerprint
+        && JSON.stringify({ model: current.model, mode: current.mode, resolution: current.resolution, aspectRatio: current.aspectRatio }) === requestFingerprint
+        && shotFingerprint(current.shots.find((shot) => shot.id === importTarget.id)) === targetFingerprint;
+    };
+    const unpublished = [...selectedUrlImages, ...selectedVideos].filter((item) => !referenceUrl(item));
+    if (unpublished.length) {
+      const hosting = await mediaHostingGet();
+      if (!hosting.configured) { setHostingDialogOpen(true); throw new Error("请先配置媒体托管服务，再上传并引用本地媒体。"); }
+      if (hostingStatus && hosting.endpoint !== hostingStatus.endpoint) {
+        setHostingStatus(hosting);
+        throw new Error("媒体托管服务已变更，已刷新发送目标。请确认后再次点击“上传并引用”。");
+      }
+      cacheEndpoint = hosting.endpoint;
+      setHostingStatus(hosting);
+      if (!importStillCurrent()) throw new Error("当前项目、审查清单或目标镜头已变化，未开始上传。请重新选择后应用。");
+      const published = await assetPublishMedia({ projectId, expectedEndpoint: hosting.endpoint, sources: unpublished.map((item) => item.source) });
+      const failed = published.results.filter((item) => item.error || !item.url);
+      for (const result of published.results) {
+        if (!result.url) continue;
+        const key = `${hosting.endpoint}:${projectId}:${result.key}`;
+        publishedMedia.current.set(key, { url: result.url, sha256: result.sha256 });
+      }
+      if (!importStillCurrent()) {
+        throw new Error("上传已完成，但当前项目、审查清单或目标镜头已变化，结果没有回填。请重新选择后应用。");
+      }
+      const labels = new Map(media.map((item) => [sourceKey(item.entry), importEntryLabel(item.entry)]));
+      if (failed.length) throw new Error(`已上传 ${published.results.length - failed.length} 项；${failed.map((item) => `${labels.get(item.key) ?? "参考媒体"}: ${item.error ?? "未返回 URL"}`).join("；")}。再次点击“上传并引用”只会重试失败项。`);
+    }
+    const resolvedImages = [...new Set([...existingImages, ...selectedUrlImages.map(referenceUrl).filter((value): value is string => Boolean(value))])];
+    const resolvedVideos = [...new Set([...existingVideos, ...selectedVideos.map(referenceUrl).filter((value): value is string => Boolean(value))])];
+    const resolvedLocalImages = [...existingLocalImages, ...selectedDirectLocalImages].filter((item, index, values) => values.findIndex((candidate) => candidate.assetId === item.assetId && candidate.sourceUri === item.sourceUri) === index);
+    if (resolvedImages.length + resolvedLocalImages.length !== candidateImageCount || resolvedVideos.length !== candidateVideoCount) throw new Error("媒体托管未返回有效 HTTPS 地址，未应用选择。");
+    if ([...resolvedImages, ...resolvedVideos].some((value) => !isPublicHttpsUrl(value))) throw new Error("媒体托管返回的参考地址不是无凭据的公网 HTTPS URL，未应用选择。");
+    const selectedIds = media.flatMap((item) => importEntryAssetId(item.entry) ?? []);
+    const hostedKeys = new Set([...selectedUrlImages, ...selectedVideos].map((item) => sourceKey(item.entry)));
+    const hostedEntries = entries.map((entry) => {
+      if (!hostedKeys.has(sourceKey(entry))) return entry;
+      const key = cacheKey(cacheEndpoint, entry);
+      const cached = publishedMedia.current.get(key);
+      return cached ? { ...entry, publishedUrl: cached.url, sha256: cached.sha256 } as ImportEntry : entry;
+    });
+    const record = { ...createImportRecord("reference", hostedEntries, "视频实际模型参考"), targetShotId: importTarget.id };
+    const currentState = useVideoStore.getState();
+    currentState.set({ shots: currentState.shots.map((shot) => shot.id !== importTarget.id ? shot : {
+      ...shot,
+      referenceStrategy: desiredStrategy,
+      referenceImages: resolvedImages,
+      referenceVideos: resolvedVideos,
+      referenceLocalImages: resolvedLocalImages,
+      referenceAssetIds: [...new Set([...(referenceMode === "append" ? shot.referenceAssetIds ?? [] : []), ...selectedIds])],
+    }),
+      mode: desiredStrategy,
+      importedSources: [...(referenceMode === "append" ? currentState.importedSources ?? [] : (currentState.importedSources ?? []).filter((item) => item.targetShotId !== importTarget.id || item.action !== "reference")), record],
+    });
+    setError(null);
+  };
+
+  const importExternalMedia = async () => {
+    const projectId = activeId ?? defaultId;
+    if (!projectId) throw new Error("请先选择项目，再将外部素材导入资产库。");
+    const chosen = await openDialog({ multiple: true, filters: [{ name: "图片或视频", extensions: ["png", "jpg", "jpeg", "webp", "mp4", "mov", "webm"] }] });
+    const paths = Array.isArray(chosen) ? chosen : chosen ? [chosen] : [];
+    if (!paths.length) return;
+    const imported = await importExternalAssets({
+      projectId,
+      importEntry: "video_reference",
+      files: paths.map((path) => ({ path })),
+      params: { referenceRole: "video_generation" },
+    });
+    if ((useProjectStore.getState().activeId ?? useProjectStore.getState().projects[0]?.id) !== projectId) return;
+    setPickerPreset({ entries: imported.map(libraryImportEntry), action: "reference" });
+    setPickerOpen(true);
+    setNotice(`已将 ${imported.length} 个外部素材保存到资产库；请确认它们作为本地图片或托管 URL 参考的发送方式。`);
+  };
+
+  const removeLocalImageReference = (shotId: string, local: NonNullable<VideoGenerationItem["referenceLocalImages"]>[number]) => {
+    const current = useVideoStore.getState();
+    const sameLocal = (material: { assetId?: string; source?: string; path?: string }) => {
+      // Imported identities are authoritative.  Falling back to a path is
+      // only for legacy snapshots with neither identity, because two catalog
+      // assets are allowed to point at the same local file.
+      if (local.assetId) return material.assetId === local.assetId;
+      if (local.sourceUri) return material.source === local.sourceUri;
+      return !material.assetId && !material.source && material.path === local.path;
+    };
+    const importedSources = (current.importedSources ?? []).flatMap((record) => {
+      if (record.targetShotId !== shotId || record.action !== "reference") return [record];
+      const sourceMaterials = record.sourceMaterials.filter((material) => !sameLocal(material) || Boolean(material.publishedUrl));
+      return sourceMaterials.length ? [{
+        ...record,
+        sourceMaterials,
+        // A reference record's ids mirror its remaining material.  This keeps
+        // the hosted half of an image when its direct-local half is removed.
+        assetIds: [...new Set(sourceMaterials.flatMap((material) => material.assetId ? [material.assetId] : []))],
+      }] : [];
+    });
+    const target = current.shots.find((shot) => shot.id === shotId);
+    const remainingLocalAssetIds = new Set((target?.referenceLocalImages ?? [])
+      .filter((item) => item.assetId !== local.assetId || item.sourceUri !== local.sourceUri)
+      .flatMap((item) => item.assetId ? [item.assetId] : []));
+    const retainedAssetIds = new Set([...remainingLocalAssetIds, ...importedSources
+      .filter((record) => record.targetShotId === shotId && record.action === "reference")
+      .flatMap((record) => record.sourceMaterials.flatMap((material) => material.assetId ? [material.assetId] : []))]);
+    current.set({
+      shots: current.shots.map((shot) => shot.id === shotId ? {
+        ...shot,
+        referenceLocalImages: (shot.referenceLocalImages ?? []).filter((item) => item.assetId !== local.assetId || item.sourceUri !== local.sourceUri),
+        referenceAssetIds: local.assetId && !retainedAssetIds.has(local.assetId)
+          ? (shot.referenceAssetIds ?? []).filter((id) => id !== local.assetId)
+          : shot.referenceAssetIds,
+      } : shot),
+      importedSources,
+    });
+  };
+
+  const removeHostedImageReference = (shotId: string, url: string) => {
+    const current = useVideoStore.getState();
+    const removedAssetIds = new Set((current.importedSources ?? []).filter((record) => record.targetShotId === shotId && record.action === "reference").flatMap((record) => record.sourceMaterials.filter((material) => material.publishedUrl === url || material.path === url).flatMap((material) => material.assetId ? [material.assetId] : [])));
+    const importedSources = (current.importedSources ?? []).flatMap((record) => {
+      if (record.targetShotId !== shotId || record.action !== "reference") return [record];
+      const sourceMaterials = record.sourceMaterials.filter((material) => material.publishedUrl !== url && material.path !== url);
+      return sourceMaterials.length ? [{
+        ...record,
+        sourceMaterials,
+        assetIds: [...new Set(sourceMaterials.flatMap((material) => material.assetId ? [material.assetId] : []))],
+      }] : [];
+    });
+    const target = current.shots.find((shot) => shot.id === shotId);
+    const localAssetIds = new Set((target?.referenceLocalImages ?? []).flatMap((item) => item.assetId ? [item.assetId] : []));
+    const retainedAssetIds = new Set([...localAssetIds, ...importedSources
+      .filter((record) => record.targetShotId === shotId && record.action === "reference")
+      .flatMap((record) => record.sourceMaterials.flatMap((material) => material.assetId ? [material.assetId] : []))]);
+    current.set({
+      shots: current.shots.map((shot) => shot.id === shotId ? {
+        ...shot,
+        referenceImages: (shot.referenceImages ?? []).filter((item) => item !== url),
+        referenceAssetIds: (shot.referenceAssetIds ?? []).filter((id) => !removedAssetIds.has(id) || retainedAssetIds.has(id)),
+      } : shot),
+      importedSources,
+    });
+  };
+
   const run = async () => {
     if (validationError || busy) return;
     setBusy(true);
@@ -328,15 +628,15 @@ export default function VideoPanel() {
     try {
       const sourceMaterials = [
         ...(textSource ? [snapshotAsset(textSource, getDocumentMeta(textSource)?.text, "剧本/分镜原始资料")] : []),
-        ...(guideAsset ? [snapshotAsset(guideAsset, undefined, "本地图片创作参考（不上传）")] : []),
-        ...(videoGuideAsset ? [snapshotAsset(videoGuideAsset, undefined, "本地视频作品参考（不上传）")] : []),
+        ...(guideAsset ? [snapshotAsset(guideAsset, undefined, "本地图片创作参考（不作为实际模型参考）")] : []),
+        ...(videoGuideAsset ? [snapshotAsset(videoGuideAsset, undefined, "本地视频作品参考（不作为实际模型参考）")] : []),
       ];
       const combinedPrompt = shots.map((shot) => shot.prompt).join("\n\n---\n\n");
       const generatedAssets = await generateVideo(vid, {
         originalInput: combinedPrompt,
         generationInput: combinedPrompt,
         sourceMaterials,
-        parentAssetIds: [textSource?.asset.id, guideAsset?.asset.id, videoGuideAsset?.asset.id].filter((id): id is string => Boolean(id)),
+        parentAssetIds: [...new Set([textSource?.asset.id, guideAsset?.asset.id, videoGuideAsset?.asset.id].filter((id): id is string => Boolean(id)))],
       });
       setSelectedVideoIds(generatedAssets.map((asset) => asset.id));
       setPhase("completed");
@@ -388,6 +688,7 @@ export default function VideoPanel() {
   const preview = previewItem?.asset;
   const visibleImages = vid.mode !== "text" && capability.maxImages > 0;
   const visibleVideos = vid.mode === "reference" && capability.maxVideos > 0;
+  const hasShotReferences = shots.some((shot) => (shot.referenceImages?.length ?? 0) + (shot.referenceVideos?.length ?? 0) + (shot.referenceLocalImages?.length ?? 0) > 0);
   const hasFirstFrameShot = shots.some((shot) => (shot.referenceStrategy ?? vid.mode) === "first_frame");
 
   return (
@@ -441,25 +742,29 @@ export default function VideoPanel() {
                       <div className="flex items-center gap-2"><select aria-label={`第 ${shot.shotNo} 镜时长`} value={shot.durationS} onChange={(event) => updateShots(shots.map((item, itemIndex) => itemIndex === index ? { ...item, durationS: Number(event.target.value) } : item))} className="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] text-slate-200">{shotDurations.map((duration) => <option key={duration} value={duration}>{duration} 秒</option>)}</select><button type="button" disabled={shots.length === 1} onClick={() => updateShots(shots.filter((_, itemIndex) => itemIndex !== index))} className="rounded p-1 text-slate-500 hover:text-rose-300 disabled:opacity-30" title="删除镜头"><Trash2 size={12} /></button></div>
                     </div>
                     <textarea className={`${inputCls} h-20 resize-y leading-snug`} value={shot.prompt} placeholder="这一镜的完整视频 Prompt…" onChange={(event) => updateShots(shots.map((item, itemIndex) => itemIndex === index ? { ...item, prompt: event.target.value } : item))} />
+                    {((shot.referenceLocalImages?.length ?? 0) > 0 || (shot.referenceImages?.length ?? 0) > 0) && <div className="mt-2 space-y-1" aria-label={`第 ${shot.shotNo} 镜图片参考`}>
+                      {(shot.referenceLocalImages ?? []).map((local) => <div key={local.assetId ?? local.sourceUri} className="flex items-center gap-2 rounded border border-cyan-300/10 bg-cyan-300/[0.03] p-1.5"><img src={convertFileSrc(local.path)} alt={local.label} className="h-8 w-8 rounded object-cover" /><span className="min-w-0 flex-1 truncate text-[10px] text-cyan-100">本地图片 · {local.label}<span className="ml-1 text-slate-500">随生成请求发送</span></span><button type="button" onClick={() => removeLocalImageReference(shot.id, local)} className="rounded p-1 text-slate-500 hover:text-rose-300" aria-label={`移除本地图片 ${local.label}`}><X size={11} /></button></div>)}
+                      {(shot.referenceImages ?? []).map((url) => <div key={url} className="flex items-center gap-2 rounded border border-white/5 p-1.5"><span className="h-8 w-8 rounded bg-slate-800 text-center leading-8 text-[9px] text-slate-500">URL</span><span className="min-w-0 flex-1 truncate text-[10px] text-slate-400">托管图片 URL · {url}</span><button type="button" onClick={() => removeHostedImageReference(shot.id, url)} className="rounded p-1 text-slate-500 hover:text-rose-300" aria-label={`移除托管图片 ${url}`}><X size={11} /></button></div>)}
+                    </div>}
                   </div>
                 );
               })}
             </div>
             <div className="mt-2 flex items-center justify-between gap-2">
               <button type="button" onClick={() => updateShots([...shots, { id: `shot-${Date.now()}`, shotNo: shots.length + 1, prompt: "", durationS: durationOptions[0] ?? capability.minDurationS }])} className="flex items-center gap-1 rounded-lg border border-fuchsia-300/15 px-2.5 py-1.5 text-[10px] text-fuchsia-100 hover:bg-fuchsia-300/5"><Plus size={11} /> 新增镜头</button>
-              <button type="button" onClick={() => setPickerOpen(true)} className="flex items-center gap-1 text-[10px] text-cyan-200/75 hover:text-white"><FileInput size={11} /> 导入创作参考</button>
+              <div className="flex items-center gap-2"><select value={importTarget?.id ?? ""} onChange={(event) => setImportShotId(event.target.value)} aria-label="导入目标镜头" className="rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-[10px] text-slate-300">{shots.map((shot) => <option key={shot.id} value={shot.id}>导入到第 {shot.shotNo} 镜</option>)}</select><button type="button" onClick={() => setPickerOpen(true)} className="flex items-center gap-1 text-[10px] text-cyan-200/75 hover:text-white"><FileInput size={11} /> 从资产库导入</button><button type="button" onClick={() => void importExternalMedia().catch((cause) => setError(String(cause)))} className="flex items-center gap-1 text-[10px] text-cyan-200/75 hover:text-white"><Upload size={11} /> 上传到资产库</button></div>
             </div>
             {guideAsset && (
               <div className="mt-2 flex items-center gap-2 rounded-xl border border-cyan-300/10 bg-cyan-300/[0.035] p-2">
                 <button type="button" onClick={() => setPlaying(guideAsset)} title="查看本地创作参考" className="shrink-0"><img src={convertFileSrc(guideAsset.asset.path)} alt={guideAsset.source} className="h-12 w-12 rounded-lg object-cover" /></button>
-                <div className="min-w-0 flex-1"><div className="truncate text-[10px] text-cyan-100">本地创作参考：{guideAsset.source}</div><div className="mt-0.5 text-[9px] leading-snug text-slate-500">已提取画面描述帮助撰写提示词；本地图片不会上传，也不会伪装成 URL。</div></div>
+                <div className="min-w-0 flex-1"><div className="truncate text-[10px] text-cyan-100">本地创作参考：{guideAsset.source}</div><div className="mt-0.5 text-[9px] leading-snug text-slate-500">已提取画面描述帮助撰写提示词；当前视频服务仅支持公网 HTTPS 参考地址。</div></div>
                 <button type="button" onClick={() => setGuideAsset(null)} className="rounded p-1 text-slate-500 hover:text-rose-300"><X size={12} /></button>
               </div>
             )}
             {videoGuideAsset && (
               <div className="mt-2 flex items-center gap-2 rounded-xl border border-fuchsia-300/10 bg-fuchsia-300/[0.035] p-2">
                 <button type="button" onClick={() => setPlaying(videoGuideAsset)} title="查看本地视频作品参考" className="shrink-0"><video src={convertFileSrc(videoGuideAsset.asset.path)} muted className="h-12 w-20 rounded-lg object-cover" /></button>
-                <div className="min-w-0 flex-1"><div className="truncate text-[10px] text-fuchsia-100">本地视频作品参考：{videoGuideAsset.source}</div><div className="mt-0.5 text-[9px] leading-snug text-slate-500">已导入创作链和溯源；zzone 只接受公网 HTTPS 视频 URL，因此本地文件不会伪装成 Provider 素材。</div></div>
+                <div className="min-w-0 flex-1"><div className="truncate text-[10px] text-fuchsia-100">本地视频作品参考：{videoGuideAsset.source}</div><div className="mt-0.5 text-[9px] leading-snug text-slate-500">已导入创作链和溯源；当前视频服务仅支持公网 HTTPS 参考地址。</div></div>
                 <button type="button" onClick={() => setVideoGuideAsset(null)} className="rounded p-1 text-slate-500 hover:text-rose-300"><X size={12} /></button>
               </div>
             )}
@@ -467,12 +772,13 @@ export default function VideoPanel() {
 
           {vid.mode === "text" ? (
             <div className="rounded-xl border border-slate-700 bg-slate-950/30 px-3 py-2 text-[10px] leading-relaxed text-slate-500">
-              文生视频不携带参考素材。{hasMaterials ? "已填写的素材 URL 会保留在表单中；切换到参考模式后才可提交。" : "可从项目中导入本地图片，仅用于提示词创作参考。"}
+              文生视频不携带参考素材。{hasMaterials ? "已填写的素材 URL 会保留在表单中；切换到参考模式后才可提交。" : "可从项目中导入本地图片；它会随生成请求发送给视频服务，或按选择经托管转为 URL。"}
             </div>
           ) : (
             <div className="space-y-3 rounded-xl border border-slate-800 bg-slate-950/25 p-3">
-              <div className="text-[11px] font-medium text-slate-200">公网参考素材</div>
-              {visibleImages && <UrlListField label={vid.mode === "first_frame" ? "首帧图片 URL" : "参考图片 URL"} values={images} max={vid.mode === "first_frame" ? 1 : capability.maxImages} onChange={(values) => setMaterials("images", values)} hint={vid.mode === "first_frame" ? "必须恰好 1 张" : capability.referenceImageCount ? `必须恰好 ${capability.referenceImageCount} 张` : "每行一条"} />}
+              <div className="text-[11px] font-medium text-slate-200">公共托管图片（未单独设置参考的镜头使用）</div>
+              {hasShotReferences && <p className="text-[10px] text-slate-500">已设置逐镜参考的镜头使用上方素材。</p>}
+              {visibleImages && <UrlListField label="公共托管图片 URL" values={images} max={vid.mode === "first_frame" ? 1 : capability.maxImages} onChange={(values) => setMaterials("images", values)} hint={vid.mode === "first_frame" ? "首帧最终本地图片 + URL 合计必须恰好 1 张" : capability.referenceImageCount ? `未单独设置参考的镜头必须恰好 ${capability.referenceImageCount} 张` : "每行一条"} />}
               {visibleVideos && <UrlListField label="参考视频 URL" values={vid.videos} max={capability.maxVideos} onChange={(values) => setMaterials("videos", values)} hint="每行一条" />}
               {capability.maxReferenceDurationS && vid.mode === "reference" && <p className="text-[10px] text-amber-200/80">参考图模式最长 {capability.maxReferenceDurationS} 秒。</p>}
             </div>
@@ -497,6 +803,7 @@ export default function VideoPanel() {
           {vid.productionManifest && <div className="rounded-xl border border-cyan-300/15 bg-cyan-300/[0.05] px-3 py-2 text-xs text-cyan-100"><div className="font-medium">已加载审查通过的生产清单</div><div className="mt-1 text-[10px] text-cyan-100/70">模型 {vid.productionManifest.approvedModel} · 画幅 {vid.productionManifest.approvedAspectRatio} · 分辨率 {vid.productionManifest.approvedResolution} · 分镜 {vid.productionManifest.storyboardAssetId}</div><button type="button" className="mt-2 text-[10px] text-amber-200 hover:text-amber-100" onClick={() => vid.set({ productionManifest: undefined })}>解除审查清单，转为普通未审查视频任务</button></div>}
 
           {error && <div className="rounded-lg border border-rose-300/15 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">{error}</div>}
+          {notice && <div role="status" className="rounded-lg border border-cyan-300/15 bg-cyan-300/[0.06] px-3 py-2 text-xs text-cyan-100">{notice}</div>}
           {validationError && <div className="rounded-lg border border-amber-300/15 bg-amber-300/[0.06] px-3 py-2 text-xs text-amber-100">{validationError}</div>}
 
           <button type="button" onClick={() => void run()} disabled={Boolean(validationError) || busy} className="flex w-full items-center justify-center gap-2 rounded-lg bg-fuchsia-500 px-3 py-2.5 text-sm font-medium text-white transition hover:bg-fuchsia-400 disabled:cursor-not-allowed disabled:opacity-50">
@@ -549,43 +856,8 @@ export default function VideoPanel() {
       ]} />}
 
       <AssetDetailModal asset={playing} onClose={() => setPlaying(null)} onLoadAsset={playing?.asset.kind === "video" ? reuseHistory : undefined} />
-      <AssetPicker open={pickerOpen} onClose={() => setPickerOpen(false)} kinds={["text", "image", "video"]} strictProject title="导入当前项目的剧本、分镜、图片或视频资源" onPick={(asset) => {
-        if (asset.asset.kind === "text") {
-          const text = getDocumentMeta(asset)?.text || String(asset.params?.text ?? asset.source);
-          const storyboard = parseStoryboardShots(text);
-          const imported = storyboard.length
-            ? resolveImportedStoryboardShots(storyboard, allAssets, belongs)
-            : [{ id: `shot-${Date.now()}`, shotNo: 1, prompt: text, durationS: durationOptions[0] ?? capability.minDurationS }];
-          updateShots(imported);
-          if (storyboard.length) vid.set({ storyboardSourceAssetId: asset.asset.id });
-          setTextSource(asset);
-        } else if (asset.asset.kind === "image") {
-          const sourcePrompt = typeof asset.params?.prompt === "string"
-            ? asset.params.prompt
-            : typeof (asset.params?.params as Record<string, unknown> | undefined)?.prompt === "string"
-              ? String((asset.params?.params as Record<string, unknown>).prompt)
-              : asset.source;
-          const next = [...shots];
-          next[0] = { ...next[0], prompt: [next[0]?.prompt.trim(), `本地图片创作参考：${sourcePrompt}`].filter(Boolean).join("\n\n") };
-          updateShots(next);
-          setGuideAsset(asset);
-        } else if (asset.asset.kind === "video") {
-          const first = shots[0];
-          if (isPublicHttpsUrl(asset.asset.path) && capability.modes.includes("reference") && capability.maxVideos > 0) {
-            const referenceVideos = [...new Set([...(first.referenceVideos ?? []), asset.asset.path])].slice(0, capability.maxVideos);
-            const referenceAssetIds = [...new Set([...(first.referenceAssetIds ?? []), asset.asset.id])];
-            updateShots([{ ...first, referenceStrategy: "reference", referenceVideos, referenceAssetIds }, ...shots.slice(1)]);
-            vid.set({ mode: "reference" });
-            setError(null);
-          } else {
-            const next = [...shots];
-            next[0] = { ...next[0], prompt: [next[0]?.prompt.trim(), `本地视频作品创作参考：${asset.source}。只参考其已知资源信息，不声称文本模型看过视频画面。`].filter(Boolean).join("\n\n") };
-            updateShots(next);
-            setVideoGuideAsset(asset);
-            setError(capability.maxVideos > 0 ? "本地视频已作为创作参考导入；zzone 的参考视频参数只接受公网 HTTPS URL。" : `${capability.label} 不支持参考视频；已仅作为创作参考导入。`);
-          }
-        }
-      }} />
+      <AssetImportPicker open={pickerOpen} onClose={() => { pickerSession.current += 1; setPickerOpen(false); setPickerPreset(null); }} kinds={["text", "image", "video"]} actions={["prompt", "merge_prompt", "reference"]} strictProject title="导入当前项目的提示词或实际模型参考" onApply={applyImportedVideoAssets} entries={importEntries} initialEntries={pickerPreset?.entries} initialAction={pickerPreset?.action} onConfigureMediaHosting={() => setHostingDialogOpen(true)} mediaHosting={hostingStatus ? { configured: hostingStatus.configured, endpoint: hostingStatus.endpoint } : null} />
+      <MediaHostingDialog open={hostingDialogOpen} onClose={() => setHostingDialogOpen(false)} onSaved={setHostingStatus} />
     </div>
   );
 }

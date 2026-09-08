@@ -170,15 +170,23 @@ async function verifyChapterRenameUi(otherChapterId) {
     localStorage.setItem(${JSON.stringify(`comic-md:chapter:${scope.projectId}:${scope.novelWorkId}`)}, JSON.stringify(${JSON.stringify(scope.chapterId)}));
     [...document.querySelectorAll('button')].find(b => b.textContent.trim() === '小说漫画').click();
   })()`);
-  await eventually(() => evaluate(`Boolean(document.querySelector('input[aria-label="章节名称"]'))`), 'chapter title input');
+  await eventually(() => evaluate(`Boolean(document.querySelector('textarea[aria-label="小说原文预览"]'))`), 'read-only novel source preview');
+  await evaluate(`(() => {
+    const button = [...document.querySelectorAll('section[aria-label="小说原文资产"] button')].find(b => b.textContent.trim() === '管理小说原文');
+    if (!button) throw new Error('Missing shared source manager entry');
+    button.click();
+  })()`);
+  await eventually(() => evaluate(`Boolean(document.querySelector('[role="dialog"]'))`), 'shared source manager opens');
+  await evaluate(`([...document.querySelectorAll('button')].find(b => b.textContent.trim() === '编辑并保存新修订')).click()`);
+  await eventually(() => evaluate(`Boolean(document.querySelector('input[aria-label="章节名称"]'))`), 'shared manager chapter title input');
   await evaluate(`(() => {
     const input = document.querySelector('input[aria-label="章节名称"]');
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(desiredTitle)});
     input.dispatchEvent(new Event('input', {bubbles:true}));
   })()`);
-  await eventually(() => evaluate(`document.querySelector('input[aria-label="章节名称"]')?.value === ${JSON.stringify(desiredTitle)}`), 'typed title in actual React form');
-  await evaluate(`([...document.querySelectorAll('button')].find(b => b.textContent.trim() === '保存正文')).click()`);
-  await eventually(() => evaluate(`document.querySelector('section[aria-label="正文"]')?.innerText.includes('正文已保存')`), 'actual save source button completes');
+  await eventually(() => evaluate(`document.querySelector('input[aria-label="章节名称"]')?.value === ${JSON.stringify(desiredTitle)}`), 'typed title in shared manager form');
+  await evaluate(`([...document.querySelectorAll('button')].find(b => b.textContent.trim() === '保存新修订')).click()`);
+  await eventually(() => evaluate(`!document.querySelector('input[aria-label="章节名称"]') && document.querySelector('textarea[aria-label="小说原文预览"]')?.value`), 'source manager save returns to comic preview');
   const dropdownTitle = await evaluate(`document.querySelector('select[aria-label="选择章节"]')?.selectedOptions[0]?.textContent`);
   const readOnlyDb = new DatabaseSync(confined(path.join(auditRoot, 'data', 'image-client.db')), { readOnly: true });
   let databaseTitle;
@@ -187,15 +195,14 @@ async function verifyChapterRenameUi(otherChapterId) {
   await evaluate(`(() => { const select = document.querySelector('select[aria-label="选择章节"]'); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(select, ${JSON.stringify(otherChapterId)}); select.dispatchEvent(new Event('change', {bubbles:true})); })()`);
   await eventually(() => evaluate(`document.querySelector('select[aria-label="选择章节"]')?.value === ${JSON.stringify(otherChapterId)}`), 'switch to other chapter');
   await evaluate(`(() => { const select = document.querySelector('select[aria-label="选择章节"]'); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(select, ${JSON.stringify(scope.chapterId)}); select.dispatchEvent(new Event('change', {bubbles:true})); })()`);
-  await eventually(() => evaluate(`document.querySelector('select[aria-label="选择章节"]')?.value === ${JSON.stringify(scope.chapterId)} && Boolean(document.querySelector('input[aria-label="章节名称"]'))`), 'switch back to renamed chapter');
-  const returnedTitle = await evaluate(`document.querySelector('input[aria-label="章节名称"]')?.value`);
-  const observation = { desiredTitle, dropdownTitle, databaseTitle, returnedTitle };
+  await eventually(() => evaluate(`document.querySelector('select[aria-label="选择章节"]')?.value === ${JSON.stringify(scope.chapterId)} && Boolean(document.querySelector('textarea[aria-label="小说原文预览"]'))`), 'switch back to renamed chapter');
+  const returnedSource = await evaluate(`document.querySelector('textarea[aria-label="小说原文预览"]')?.value`);
+  const observation = { desiredTitle, dropdownTitle, databaseTitle, returnedSource };
   report.chapterRenameObservation = observation;
   assert.equal(databaseTitle, desiredTitle, JSON.stringify(observation));
   assert(dropdownTitle?.includes(desiredTitle), JSON.stringify(observation));
-  assert.equal(returnedTitle, desiredTitle, JSON.stringify(observation));
-  check('actual DOM chapter rename saves metadata, refreshes dropdown and survives chapter switching', observation);
-  await verifyDisabledSave('保存正文');
+  assert.equal(returnedSource, (await workspace()).sourceContent, JSON.stringify(observation));
+  check('shared source manager saves chapter metadata, refreshes dropdown and preserves the read-only comic source through chapter switching', observation);
 }
 function readRevisionSnapshot() {
   const db = new DatabaseSync(confined(path.join(auditRoot, 'data', 'image-client.db')), { readOnly: true });

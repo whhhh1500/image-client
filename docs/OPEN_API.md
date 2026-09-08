@@ -48,7 +48,7 @@
 `POST /api/v1/media/videos/generations` 使用模型能力化参数：
 
 - `mode`：`text`、`first_frame` 或 `reference`。
-- `images`、`videos`、`audios`：无凭据的公网 HTTPS URL 数组；本机、内网、链路本地和保留 IP 会被拒绝。
+- `images`、`videos`、`audios`：无凭据的公网 HTTPS URL 数组；本机、内网、链路本地和保留 IP 会被拒绝。桌面内部调用还可单独传入同项目的本地**图片身份**，native 只在请求期间将其解析为临时 data URL；本地视频和音频不属于该路径。
 - `durationS`、`resolution`、`aspectRatio`：必须符合所选模型能力。
 - 首帧模式由参考图决定画面几何，Provider 请求不会额外提交可能冲突的 `aspect_ratio`。
 - Drama Video V2 / Fast 的参考素材总数最多为 12 项；各类型上限仍需同时满足。

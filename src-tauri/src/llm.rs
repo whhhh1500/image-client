@@ -360,7 +360,11 @@ fn client_for_endpoint(url: &str) -> Result<reqwest::Client, String> {
                     .is_ok_and(|address| address.is_loopback())
         });
     let builder = reqwest::Client::builder();
-    let builder = if is_loopback { builder.no_proxy() } else { builder };
+    let builder = if is_loopback {
+        builder.no_proxy()
+    } else {
+        builder
+    };
     builder
         .build()
         .map_err(|error| format!("初始化文本接口客户端失败: {error}"))

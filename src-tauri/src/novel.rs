@@ -3674,11 +3674,14 @@ fn production_schedule(
             Ok(_) => {}
             Err(error) if error == "PRODUCTION_ATTEMPT_SUPERSEDED" => {}
             Err(error) => {
-                crate::logging::error("novel.production.background_failed", json!({
-                    "jobId": job.id,
-                    "attemptNo": job.attempt_no,
-                    "error": safe_error(&error),
-                }));
+                crate::logging::error(
+                    "novel.production.background_failed",
+                    json!({
+                        "jobId": job.id,
+                        "attemptNo": job.attempt_no,
+                        "error": safe_error(&error),
+                    }),
+                );
                 let _ = db::with_connection(&state, |conn| {
                     production_record_background_failure(conn, &job, &error)
                 });
@@ -8621,10 +8624,17 @@ mod tests {
         db::with_connection(&state, |conn| {
             let work = create_work(conn, "rename-project", "rename-work");
             let mut input = NovelChapterRevisionCreateInput {
-                project_id: "rename-project".into(), novel_work_id: work.id.clone(),
-                chapter_id: None, volume_id: None, sequence_no: Some(1), chapter_no: Some(1),
-                title: Some("原章节名".into()), content: "原正文".into(),
-                parent_context_revision_id: None, asset_id: None, source_kind: None,
+                project_id: "rename-project".into(),
+                novel_work_id: work.id.clone(),
+                chapter_id: None,
+                volume_id: None,
+                sequence_no: Some(1),
+                chapter_no: Some(1),
+                title: Some("原章节名".into()),
+                content: "原正文".into(),
+                parent_context_revision_id: None,
+                asset_id: None,
+                source_kind: None,
                 idempotency_key: "rename-source-1".into(),
             };
             let first = novel_chapter_revision_create_inner(conn, input.clone())?;
@@ -8635,15 +8645,24 @@ mod tests {
             let second = novel_chapter_revision_create_inner(conn, input.clone())?;
             let chapter = chapter_in_work(conn, &first.chapter_id, &work.id)?;
             assert_eq!(chapter.title.as_deref(), Some("新章节名"));
-            assert_eq!(chapter.latest_revision_id.as_deref(), Some(second.id.as_str()));
+            assert_eq!(
+                chapter.latest_revision_id.as_deref(),
+                Some(second.id.as_str())
+            );
             let replay = novel_chapter_revision_create_inner(conn, input.clone())?;
             assert_eq!(replay.id, second.id);
             input.title = None;
             input.idempotency_key = "rename-source-3".into();
             novel_chapter_revision_create_inner(conn, input)?;
-            assert_eq!(chapter_in_work(conn, &first.chapter_id, &work.id)?.title.as_deref(), Some("新章节名"));
+            assert_eq!(
+                chapter_in_work(conn, &first.chapter_id, &work.id)?
+                    .title
+                    .as_deref(),
+                Some("新章节名")
+            );
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
         drop(state);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -8654,27 +8673,47 @@ mod tests {
         db::with_connection(&state, |conn| {
             let work = create_work(conn, "rename-project", "rename-invalid-work");
             let mut input = NovelChapterRevisionCreateInput {
-                project_id: "rename-project".into(), novel_work_id: work.id.clone(),
-                chapter_id: None, volume_id: None, sequence_no: Some(1), chapter_no: Some(1),
-                title: Some("原章节名".into()), content: "原正文".into(),
-                parent_context_revision_id: None, asset_id: None, source_kind: None,
+                project_id: "rename-project".into(),
+                novel_work_id: work.id.clone(),
+                chapter_id: None,
+                volume_id: None,
+                sequence_no: Some(1),
+                chapter_no: Some(1),
+                title: Some("原章节名".into()),
+                content: "原正文".into(),
+                parent_context_revision_id: None,
+                asset_id: None,
+                source_kind: None,
                 idempotency_key: "rename-invalid-source".into(),
             };
             let first = novel_chapter_revision_create_inner(conn, input.clone())?;
             input.chapter_id = Some(first.chapter_id.clone());
             input.content = "不应写入的正文".into();
-            for (index, title) in ["   ".to_owned(), "x".repeat(MAX_TITLE_BYTES + 1)].into_iter().enumerate() {
+            for (index, title) in ["   ".to_owned(), "x".repeat(MAX_TITLE_BYTES + 1)]
+                .into_iter()
+                .enumerate()
+            {
                 input.title = Some(title);
                 input.idempotency_key = format!("rename-invalid-{index}");
                 assert!(novel_chapter_revision_create_inner(conn, input.clone()).is_err());
                 let chapter = chapter_in_work(conn, &first.chapter_id, &work.id)?;
                 assert_eq!(chapter.title.as_deref(), Some("原章节名"));
-                assert_eq!(chapter.latest_revision_id.as_deref(), Some(first.id.as_str()));
-                let count: i64 = conn.query_row("SELECT COUNT(*) FROM novel_chapter_revisions WHERE novel_chapter_id=?", params![first.chapter_id], |row| row.get(0)).map_err(|error| error.to_string())?;
+                assert_eq!(
+                    chapter.latest_revision_id.as_deref(),
+                    Some(first.id.as_str())
+                );
+                let count: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM novel_chapter_revisions WHERE novel_chapter_id=?",
+                        params![first.chapter_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| error.to_string())?;
                 assert_eq!(count, 1);
             }
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
         drop(state);
         std::fs::remove_dir_all(dir).unwrap();
     }

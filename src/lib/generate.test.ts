@@ -103,6 +103,15 @@ describe("generateImage asset persistence", () => {
     expect(request.config).not.toHaveProperty("references");
   });
 
+  it("restores imported source lineage from persisted task params without a panel-provided provenance argument", async () => {
+    const generated = { id: "asset_retry", kind: "image" as const, path: "C:/retry.png" };
+    vi.mocked(runNode).mockResolvedValue({ assets: [generated] });
+    await generateImage({ ...params, importedSources: [{ action: "merge_prompt", assetIds: ["source-a"], sourceMaterials: [{ kind: "text", label: "导入正文", source: "asset:source-a", text: "正文" }] }] });
+    expect(persistAssets).toHaveBeenCalledWith([generated], "文生图", expect.objectContaining({
+      params: expect.objectContaining({ provenance: expect.objectContaining({ parentAssetIds: expect.arrayContaining(["source-a"]), sourceMaterials: expect.arrayContaining([expect.objectContaining({ label: "导入正文" })]) }) }),
+    }));
+  });
+
   it("rejects empty, preexisting, and duplicate provider asset IDs before any asset write", async () => {
     const existing = { asset: { id: "asset_old", kind: "image" as const, path: "C:/old.png" }, source: "历史", createdAt: 1 };
     useLibraryStore.setState({ assets: [existing] });

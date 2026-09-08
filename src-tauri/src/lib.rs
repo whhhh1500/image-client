@@ -11,13 +11,16 @@ mod comic_visual_render;
 mod commands;
 mod config;
 mod db;
+mod external_asset_import;
 mod gateway;
 #[cfg(feature = "real-e2e-harness")]
 mod harness_transport;
 mod history;
-mod llm;
 mod legacy_comic_retirement;
+mod llm;
+mod local_video_images;
 mod logging;
+mod media_hosting;
 mod model;
 mod novel;
 mod novel_adaptation;
@@ -182,8 +185,12 @@ pub fn run() {
                 cfg: cfg.clone(),
                 registry: registry.clone(),
             });
-            let retired = legacy_comic_retirement::retire_pending(&database).map_err(std::io::Error::other)?;
-            logging::info("legacy_comic.retired", serde_json::json!({"interruptedRecords": retired}));
+            let retired = legacy_comic_retirement::retire_pending(&database)
+                .map_err(std::io::Error::other)?;
+            logging::info(
+                "legacy_comic.retired",
+                serde_json::json!({"interruptedRecords": retired}),
+            );
             comic_markdown::recover_interrupted(&database).map_err(std::io::Error::other)?;
             app.manage(database);
             app.manage(history_sync.clone());
@@ -193,10 +200,8 @@ pub fn run() {
                 return Ok(());
             }
             for window_config in &isolated_windows {
-                let webview_data_directory = isolated_webview_data_directory(
-                    &paths::data_dir(),
-                    &window_config.label,
-                )?;
+                let webview_data_directory =
+                    isolated_webview_data_directory(&paths::data_dir(), &window_config.label)?;
                 WebviewWindowBuilder::from_config(app.handle(), window_config)?
                     .data_directory(webview_data_directory)
                     .build()?;
@@ -221,6 +226,7 @@ pub fn run() {
             commands::logs_dir,
             commands::client_logs,
             commands::import_ref_image,
+            external_asset_import::asset_import_files,
             commands::config_status,
             commands::save_config,
             commands::list_providers,
@@ -246,7 +252,11 @@ pub fn run() {
             history::acknowledge_history_revision,
             db::db_execute,
             db::db_select,
+            media_hosting::media_hosting_get,
+            media_hosting::media_hosting_save,
+            media_hosting::asset_publish_media,
             comic_markdown::comic_md_workspace_get,
+            comic_markdown::comic_md_catalog_list,
             comic_markdown::comic_md_work_visual_get,
             comic_markdown::comic_md_work_visual_save,
             comic_markdown::comic_md_work_visual_extract,
@@ -267,7 +277,6 @@ pub fn run() {
             novel::novel_volume_create,
             novel::novel_chapter_revision_create,
             novel::novel_snapshot,
-
         ]);
     let app = match builder.build(context) {
         Ok(app) => app,

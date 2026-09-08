@@ -31,6 +31,8 @@ export interface NovelChapterRevision {
   revisionNo: number;
   content: string;
   contentHash?: string;
+  /** Original project asset when this revision was imported from one; absent for pasted text. */
+  assetId?: string | null;
   createdAt?: number;
 }
 

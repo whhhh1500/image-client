@@ -1,4 +1,4 @@
-import { Component, lazy, Suspense, useState, type ReactNode } from "react";
+import { Component, lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { FileInput, Image as ImageIcon, Library, Loader2, Sparkles, Upload, Wand2, X } from "lucide-react";
@@ -7,20 +7,29 @@ import { useProjectStore } from "../store/useProjectStore";
 import { useGenerationStore, type GenParams } from "../store/useGenerationStore";
 import { usePromptlibStore } from "../store/usePromptlibStore";
 import { generateImage } from "../lib/generate";
-import { importRefImage } from "../lib/ipc";
 import { IMAGE_MODELS } from "../lib/models";
 import { ContextMenu } from "../components/ContextMenu";
 import HistoryImageCard from "../components/HistoryImageCard";
-import AssetPicker from "../components/AssetPicker";
+import AssetImportPicker from "../components/AssetImportPicker";
 import type { PromptLibraryPick } from "../components/PromptLibrary";
 import OptimizePromptDialog from "../components/OptimizePromptDialog";
 import { logEvent } from "../lib/logger";
 import AssetDetailModal from "../components/AssetDetailModal";
 import WorkflowGuide from "../components/WorkflowGuide";
-import { getDocumentMeta } from "../lib/documents";
-import { snapshotAsset, type SourceMaterialSnapshot } from "../lib/provenance";
+import type { SourceMaterialSnapshot } from "../lib/provenance";
 import { imageHistoryMenu } from "../lib/historyMenu";
 import { isCompressedAsset } from "../lib/imageCompress";
+import { importExternalAssets } from "../lib/externalAssetImport";
+import { useGenerationImportQueue } from "../store/useGenerationImportQueue";
+import { comicMdCatalogList } from "../lib/comic/markdownApi";
+import {
+  createImportRecord,
+  libraryImportEntry,
+  importEntryPrompt,
+  mergeImportedPrompts,
+  replaceImportedPrompt,
+  type ImportEntry,
+} from "../lib/assetImport";
 
 const PromptLibraryView = lazy(() => import("../components/PromptLibrary"));
 
@@ -101,21 +110,40 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
   const [menu, setMenu] = useState<{ x: number; y: number; asset: LibAsset } | null>(null);
   const [previewAsset, setPreviewAsset] = useState<LibAsset | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [promptSource, setPromptSource] = useState<LibAsset | null>(null);
-  const [referenceSource, setReferenceSource] = useState<LibAsset | null>(null);
+  const [pickerPreset, setPickerPreset] = useState<{ entries: ImportEntry[]; action: "prompt" | "merge_prompt" | "reference" } | null>(null);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [libraryLoaded, setLibraryLoaded] = useState(false);
   const [optimizeOpen, setOptimizeOpen] = useState(false);
   const [promptlibId, setPromptlibId] = useState<string | null>(null);
   const [promptlibEntry, setPromptlibEntry] = useState<PromptLibraryPick["entry"] | null>(null);
+  const [canonicalComicEntries, setCanonicalComicEntries] = useState<ImportEntry[]>([]);
+  const pendingImport = useGenerationImportQueue((state) => state.pending);
   const provider = useProjectStore();
   const defaultId = provider.projects[0]?.id;
   const activeId = provider.activeId;
   const belongs = (pid?: string) => pid === activeId || (!pid && activeId === defaultId);
   const allAssets = useLibraryStore((s) => s.assets);
   const assets = allAssets.filter((a) => belongs(a.projectId) && a.asset.kind === "image");
+  const importEntries = useMemo(() => [
+    ...allAssets.filter((asset) => belongs(asset.projectId)).map(libraryImportEntry),
+    ...canonicalComicEntries,
+  ], [allAssets, canonicalComicEntries, activeId, defaultId]);
 
-  const isImg2Img = gen.referencePath.trim().length > 0;
+  useEffect(() => {
+    const projectId = activeId ?? defaultId;
+    if (!projectId) { setCanonicalComicEntries([]); return; }
+    let cancelled = false;
+    void comicMdCatalogList({ projectId }).then((items) => {
+      if (cancelled || (useProjectStore.getState().activeId ?? useProjectStore.getState().projects[0]?.id) !== projectId) return;
+      setCanonicalComicEntries(items.map((item) => ({ entryType: "canonical_comic" as const, readonly: true as const, ...item })));
+    }).catch((cause) => logEvent("warn", "asset_import.comic_catalog_failed", { projectId, error: String(cause) }));
+    return () => { cancelled = true; };
+  }, [activeId, defaultId]);
+
+  const activeReferences = gen.references?.length
+    ? gen.references
+    : gen.referencePath.trim() ? [{ path: gen.referencePath.trim(), role: "base_image" as const, sortOrder: 0 }] : [];
+  const isImg2Img = activeReferences.length > 0;
   const originals = assets.filter((item) => !isCompressedAsset(item));
   const previewItem = isImg2Img
     ? originals.find((a) => a.source === "图生图")
@@ -123,19 +151,92 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
 
   const canRun = gen.prompt.trim().length > 0 && !busy;
 
-  const pickReference = async () => {
-    try {
-      const p = await openDialog({ multiple: false, filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg", "webp"] }] });
-      if (typeof p === "string") {
-        const copied = await importRefImage(p);
-        gen.set({ referencePath: copied });
-        setReferenceSource(null);
-      }
-    } catch (error) {
-      setError(String(error));
-      logEvent("warn", "image.reference_pick_failed", { error: String(error) });
-    }
+  const removeReferenceAt = (index: number) => {
+    const removed = activeReferences[index];
+    if (!removed) return;
+    const next = activeReferences.filter((_, itemIndex) => itemIndex !== index).map((item, sortOrder) => ({ ...item, sortOrder }));
+    const removedAssetId = allAssets.find((asset) => asset.asset.path === removed.path)?.asset.id;
+    const importedSources = (gen.importedSources ?? []).flatMap((record) => {
+      if (record.action !== "reference") return [record];
+      const sourceMaterials = record.sourceMaterials.filter((material) => material.path !== removed.path);
+      const assetIds = removedAssetId ? record.assetIds.filter((id) => id !== removedAssetId) : record.assetIds;
+      return sourceMaterials.length || assetIds.length ? [{ ...record, sourceMaterials, assetIds }] : [];
+    });
+    gen.set({ references: next, referencePath: next[0]?.path ?? "", importedSources });
   };
+
+  const applyReferenceEntries = (entries: readonly ImportEntry[], mode: "replace" | "append" = "replace") => {
+    if (entries.some((entry) => (entry.entryType === "library_asset" ? entry.asset.asset.kind : entry.kind) !== "image")) {
+      throw new Error("生图参考资源只能选择图片；视频请在视频生成页导入。");
+    }
+    const usable = entries.flatMap((entry) => {
+      const path = entry.entryType === "library_asset" ? entry.asset.asset.path : entry.path;
+      return path ? [{ entry, path }] : [];
+    });
+    if (!usable.length) throw new Error("所选参考资源没有可用的受控图片路径。");
+    const record = createImportRecord("reference", usable.map((item) => item.entry), "生图参考资源");
+    const existing = mode === "append" ? activeReferences : [];
+    gen.set({
+      references: [...existing.map((item) => ({ ...item })), ...usable.map((item) => ({ path: item.path, role: "base_image" as const, weight: 1 }))].map((item, index) => ({ ...item, sortOrder: index })),
+      // Preserve the legacy field for existing consumers; references[] remains authoritative.
+      referencePath: (existing[0] ?? usable[0]).path,
+      importedSources: [...(mode === "append" ? gen.importedSources ?? [] : (gen.importedSources ?? []).filter((item) => item.action !== "reference")), record],
+    });
+  };
+
+  const applyImport = ({ action, referenceMode, entries }: { action: "prompt" | "merge_prompt" | "reference"; referenceMode: "replace" | "append"; entries: ImportEntry[] }) => {
+    if (action === "reference") {
+      applyReferenceEntries(entries, referenceMode);
+      return;
+    }
+    const usable = entries.filter((entry) => Boolean(importEntryPrompt(entry)));
+    if (!usable.length) throw new Error("所选资产没有已保存的可用生成提示词；请改选实际生成资料或正文版本。");
+    const excluded = entries.filter((entry) => !importEntryPrompt(entry));
+    const prompt = action === "prompt" ? replaceImportedPrompt(usable) : mergeImportedPrompts(gen.prompt, usable);
+    if (!prompt) throw new Error("所选资产没有已保存的可用生成提示词；请改选实际生成资料或正文版本。");
+    const record = createImportRecord(action, usable, action === "prompt" ? "导入提示词" : "合并提示词");
+    gen.set({
+      prompt,
+      importedSources: action === "prompt"
+        ? [...(gen.importedSources ?? []).filter((item) => item.action === "reference"), record]
+        : [...(gen.importedSources ?? []), record],
+    });
+    if (excluded.length) setError(`已排除 ${excluded.length} 项没有可见正文/已保存提示词的资源：${excluded.map((entry) => entry.entryType === "library_asset" ? entry.asset.source : entry.title).join("、")}`);
+    clearPromptLibrarySelection();
+  };
+
+  const importExternalReferences = async () => {
+    const projectId = activeId ?? defaultId;
+    if (!projectId) throw new Error("请先选择项目，再将外部图片导入资产库。");
+    const chosen = await openDialog({ multiple: true, filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg", "webp"] }] });
+    const paths = Array.isArray(chosen) ? chosen : chosen ? [chosen] : [];
+    if (!paths.length) return;
+    const imported = await importExternalAssets({
+      projectId,
+      importEntry: "image_reference",
+      files: paths.map((path) => ({ path })),
+      params: { referenceRole: "image_generation" },
+    });
+    // Do not apply an imported item to a page whose active project changed while awaiting native I/O.
+    if ((useProjectStore.getState().activeId ?? useProjectStore.getState().projects[0]?.id) !== projectId) return;
+    applyReferenceEntries(imported.map(libraryImportEntry));
+  };
+
+  useEffect(() => {
+    if (!pendingImport || pendingImport.target !== "image") return;
+    const currentProjectId = useProjectStore.getState().activeId ?? useProjectStore.getState().projects[0]?.id;
+    // An Assets page request never crosses project boundaries. It opens the
+    // normal picker with a preselection; cancel keeps the form unchanged.
+    if (!currentProjectId || pendingImport.projectId !== currentProjectId) {
+      useGenerationImportQueue.getState().clear(pendingImport.requestId);
+      return;
+    }
+    setPickerPreset({ entries: pendingImport.entries, action: pendingImport.action });
+    setPickerOpen(true);
+    useGenerationImportQueue.getState().clear(pendingImport.requestId);
+    // This is an event queue; requestId makes each explicit AssetsPage action run once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingImport?.requestId]);
 
   const run = async () => {
     if (!canRun) return;
@@ -144,8 +245,7 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
     try {
       const template = promptlibId ? promptlibEntry : undefined;
       const sources: SourceMaterialSnapshot[] = [
-        ...(promptSource ? [snapshotAsset(promptSource, getDocumentMeta(promptSource)?.text, "提示词来源") ] : []),
-        ...(referenceSource ? [snapshotAsset(referenceSource, undefined, "参考图来源")] : []),
+        ...(gen.importedSources ?? []).flatMap((item) => item.sourceMaterials),
         ...(template ? [{
           kind: "context" as const,
           label: `提示词模板 · ${template.title}`,
@@ -156,15 +256,17 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
       await generateImage({
         prompt: gen.prompt,
         referencePath: gen.referencePath,
+        references: gen.references,
         size: gen.size,
         quality: gen.quality,
         background: gen.background,
         model: gen.model,
+        importedSources: gen.importedSources,
       }, {
         originalInput: gen.prompt,
         generationInput: gen.prompt,
         sourceMaterials: sources.length ? sources : undefined,
-        parentAssetIds: [promptSource?.asset.id, referenceSource?.asset.id].filter((id): id is string => !!id),
+        parentAssetIds: [...new Set((gen.importedSources ?? []).flatMap((item) => item.assetIds))],
       });
     } catch (e) {
       setError(String(e));
@@ -214,13 +316,13 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
               className={`${inputCls} h-24 resize-y leading-snug`}
               value={gen.prompt}
               placeholder="描述你想生成的画面…"
-              onChange={(e) => { gen.set({ prompt: e.target.value }); setPromptSource(null); }}
+              onChange={(e) => gen.set({ prompt: e.target.value })}
             />
           </Field>
           <div className="mt-1 flex flex-wrap gap-2">
             <button type="button" onClick={() => { setLibraryLoaded(true); setLibraryOpen(true); }} className="flex items-center gap-1 text-[10px] text-indigo-300 hover:text-white"><Library size={11} /> 模板库</button>
             <button type="button" onClick={() => setOptimizeOpen(true)} disabled={!gen.prompt.trim()} className="flex items-center gap-1 text-[10px] text-fuchsia-300 hover:text-white disabled:opacity-40"><Sparkles size={11} /> AI 优化成中文</button>
-            <button type="button" onClick={() => setPickerOpen(true)} className="flex items-center gap-1 text-[10px] text-cyan-200/75 hover:text-white"><FileInput size={11} /> 从项目历史导入</button>
+            <button type="button" onClick={() => setPickerOpen(true)} className="flex items-center gap-1 text-[10px] text-cyan-200/75 hover:text-white"><FileInput size={11} /> 从资产库导入</button>
           </div>
           {promptlibId && (
             <div className="mt-1 text-[10px] text-slate-500">当前模板：{promptlibEntry?.title ?? promptlibId}</div>
@@ -228,33 +330,46 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
         </div>
 
         <Field label="参考图（可选）" hint={`${isImg2Img ? "已在" : "加图即图生图"}`}>
-          {gen.referencePath ? (
+          {activeReferences.length ? (
+            <>
             <div className="relative overflow-hidden rounded-lg border border-slate-700 bg-slate-800">
-              <img src={convertFileSrc(gen.referencePath)} alt="ref" className="h-40 w-full object-contain" />
+              <img src={convertFileSrc(activeReferences[0].path)} alt="ref" className="h-40 w-full object-contain" />
               <div className="flex items-center justify-between gap-2 bg-slate-900/80 px-2 py-1.5">
                 <span className="truncate text-[10px] text-slate-400">
-                  {gen.referencePath.split(/[\\/]/).pop()}
+                  {activeReferences.length} 项参考资源 · {activeReferences[0].path.split(/[\\/]/).pop()}
                 </span>
                 <div className="flex gap-1">
-                  <button type="button" onClick={pickReference} className="rounded px-2 py-1 text-[10px] text-indigo-300 hover:bg-slate-800">
-                    更换
+                  <button type="button" onClick={() => setPickerOpen(true)} className="rounded px-2 py-1 text-[10px] text-indigo-300 hover:bg-slate-800">
+                    更换/追加
                   </button>
-                  <button type="button" onClick={() => { gen.set({ referencePath: "" }); setReferenceSource(null); }} className="rounded px-1 py-1 text-slate-500 hover:text-rose-300">
+                  <button type="button" onClick={() => void importExternalReferences().catch((cause) => setError(String(cause)))} className="rounded px-2 py-1 text-[10px] text-cyan-200 hover:bg-slate-800">
+                    上传并入库
+                  </button>
+                  <button type="button" onClick={() => gen.set({ referencePath: "", references: [], importedSources: (gen.importedSources ?? []).filter((item) => item.action !== "reference") })} className="rounded px-1 py-1 text-slate-500 hover:text-rose-300">
                     <X size={13} />
                   </button>
                 </div>
               </div>
             </div>
+            <div aria-label="已选参考图" className="mt-2 flex max-h-24 flex-wrap gap-1 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950/40 p-1.5">
+              {activeReferences.map((reference, index) => <div key={`${reference.path}:${index}`} className="group relative h-14 w-14 overflow-hidden rounded border border-slate-700 bg-slate-900">
+                <img src={convertFileSrc(reference.path)} alt={`参考图 ${index + 1}`} className="h-full w-full object-cover" />
+                <button type="button" aria-label={`移除参考图 ${index + 1}`} onClick={() => removeReferenceAt(index)} className="absolute right-0 top-0 hidden h-5 w-5 items-center justify-center bg-slate-950/85 text-[12px] text-rose-200 group-hover:flex focus:flex">×</button>
+                <span className="absolute bottom-0 left-0 bg-slate-950/75 px-1 text-[9px] text-slate-300">{index + 1}</span>
+              </div>)}
+            </div>
+            </>
           ) : (
             <button
               type="button"
-              onClick={pickReference}
+              onClick={() => void importExternalReferences().catch((cause) => setError(String(cause)))}
               className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-slate-600 bg-slate-800/40 px-3 py-3 text-xs text-slate-300 transition hover:border-slate-400 hover:text-white"
             >
               <Upload size={13} />
-              上传参考图
+              上传并入库参考图
             </button>
           )}
+          <button type="button" onClick={() => setPickerOpen(true)} className="mt-2 flex items-center gap-1 text-[10px] text-cyan-200/75 hover:text-white"><FileInput size={11} /> 从已有资产选择或合并参考</button>
         </Field>
 
         <Field label="尺寸 / 比例">
@@ -340,31 +455,26 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
           items={imageHistoryMenu({
             asset: menu.asset,
             onPreview: setPreviewAsset,
-            onReference: (asset) => { gen.set({ referencePath: asset.asset.path }); setReferenceSource(asset); },
+            onReference: (asset) => applyReferenceEntries([libraryImportEntry(asset)]),
           })}
         />
       )}
       <AssetDetailModal
         asset={previewAsset}
         onClose={() => setPreviewAsset(null)}
-        onLoadAsset={(asset) => { gen.load({ ...(asset.params ?? {}), ...(asset.model ? { model: asset.model } : {}) } as Partial<GenParams>); setPromptSource(asset); clearPromptLibrarySelection(); }}
-        onUseReference={(asset) => { gen.set({ referencePath: asset.asset.path }); setReferenceSource(asset); }}
+        onLoadAsset={(asset) => { gen.load({ ...(asset.params ?? {}), ...(asset.model ? { model: asset.model } : {}) } as Partial<GenParams>); clearPromptLibrarySelection(); }}
+        onUseReference={(asset) => applyReferenceEntries([libraryImportEntry(asset)])}
       />
 
-      <AssetPicker
+      <AssetImportPicker
         open={pickerOpen}
-        onClose={() => setPickerOpen(false)}
+        onClose={() => { setPickerOpen(false); setPickerPreset(null); }}
         kinds={["text", "image"]}
-        onPick={(a) => {
-          if (a.asset.kind === "text") {
-            gen.set({ prompt: getDocumentMeta(a)?.text || String(a.params?.text ?? a.source) });
-            setPromptSource(a);
-            clearPromptLibrarySelection();
-          } else {
-            gen.set({ referencePath: a.asset.path });
-            setReferenceSource(a);
-          }
-        }}
+        actions={["prompt", "merge_prompt", "reference"]}
+        onApply={applyImport}
+        entries={importEntries}
+        initialEntries={pickerPreset?.entries}
+        initialAction={pickerPreset?.action}
       />
 
       {(() => {
@@ -377,11 +487,16 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
                 onClose={() => setLibraryOpen(false)}
                 llmModel={llmModel}
                 onPick={(pick: PromptLibraryPick) => {
-                  gen.set({ prompt: pick.prompt, ...(pick.referencePath ? { referencePath: pick.referencePath } : {}) });
-                  setPromptSource(null);
+                  const importedSources = pick.referencePath && pick.referenceAsset
+                    ? [createImportRecord("reference", [libraryImportEntry(pick.referenceAsset)], "提示词模板参考图")]
+                    : [];
+                  gen.set({
+                    prompt: pick.prompt,
+                    ...(pick.referencePath ? { referencePath: pick.referencePath, references: [] } : {}),
+                    importedSources,
+                  });
                   setPromptlibId(pick.entry.id);
                   setPromptlibEntry(pick.entry);
-                  if (pick.referencePath) setReferenceSource(null);
                   logEvent("info", "promptlib.applied", { id: pick.entry.id, asReference: Boolean(pick.asReference) });
                 }}
               />

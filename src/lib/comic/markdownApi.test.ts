@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock("../logger", () => ({ loggedInvoke: invoke }));
-import { comicMdDocumentSave, comicMdGenerate, comicMdRender, comicMdOptimize, comicMdSync, comicMdRenderOptionsSave, comicMdDocumentHistory, comicMdExport, comicMdWorkspaceGet, comicMdWorkVisualExtract, comicMdWorkVisualImport, comicMdWorkVisualSave, mdStageBlock, type MdWorkspace } from "./markdownApi";
+import { comicMdCatalogList, comicMdDocumentSave, comicMdGenerate, comicMdRender, comicMdOptimize, comicMdSync, comicMdRenderOptionsSave, comicMdDocumentHistory, comicMdExport, comicMdWorkspaceGet, comicMdWorkVisualExtract, comicMdWorkVisualImport, comicMdWorkVisualSave, mdStageBlock, type MdWorkspace } from "./markdownApi";
 const scope = { projectId: "p", novelWorkId: "w", chapterId: "c" };
 describe("Markdown IPC", () => {
   beforeEach(() => invoke.mockReset());
@@ -24,6 +24,10 @@ describe("Markdown IPC", () => {
     await comicMdWorkspaceGet(scope); await comicMdDocumentHistory({ ...scope, documentId: "d" }); await comicMdExport({ ...scope, documentIds: ["d"] });
     expect(invoke.mock.calls.map((call) => call[0])).toEqual(["comic_md_workspace_get", "comic_md_document_history", "comic_md_export"]);
     expect(invoke.mock.calls.every((call) => call[1].input.chapterId === "c")).toBe(true);
+  });
+  it("lists canonical comic catalog records only with a project scope", async () => {
+    await comicMdCatalogList({ projectId: "p" });
+    expect(invoke).toHaveBeenCalledWith("comic_md_catalog_list", { input: { projectId: "p" } });
   });
   it("keeps work visual import, save and multimodal extraction at project plus novel-work scope", async () => {
     const work = { projectId: "p", novelWorkId: "w" };

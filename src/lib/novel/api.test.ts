@@ -17,8 +17,8 @@ describe("novel source API", () => {
   it("creates novels and saves exact source/title without invoking any production workflow", async () => {
     await novelWorkCreate({ projectId: "p", title: "新小说", idempotencyKey: "new-work" });
     const source = { projectId: "p", novelWorkId: "w", chapterId: "c", chapterNo: 1, title: "新章名", content: "正文\n保留换行", idempotencyKey: "source" };
-    invoke.mockResolvedValueOnce({ id: "r", chapterId: "c", novelWorkId: "w", revisionNo: 1, content: source.content });
-    await novelChapterRevisionCreate(source);
+    invoke.mockResolvedValueOnce({ id: "r", chapterId: "c", novelWorkId: "w", revisionNo: 1, content: source.content, assetId: "original-asset" });
+    await expect(novelChapterRevisionCreate(source)).resolves.toMatchObject({ id: "r", assetId: "original-asset" });
     expect(invoke.mock.calls).toEqual([
       ["novel_work_create", { input: { projectId: "p", title: "新小说", idempotencyKey: "new-work" } }],
       ["novel_chapter_revision_create", { input: source }],

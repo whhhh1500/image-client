@@ -81,12 +81,16 @@ describe("video product quality review", () => {
     expect(issues.join("\n")).toContain("文本锚点误当成媒体参考资产");
   });
 
-  it("requires provider-usable HTTPS media for per-shot reference modes", () => {
+  it("allows local image identities but requires strict public HTTPS for video references", () => {
     const shot = createEmptyStoryboardShot([]);
     shot.referenceStrategy = "first_frame";
     shot.referenceAssetIds = ["image-local"];
-    const issues = storyboardProductionIssues({ storyboardMarkdown: serializeStoryboard([shot]), anchorMarkdown: "style:main:v1 | 风格\nscene:main:v1 | 场景", availableAssets: [{ id: "image-local", kind: "image", path: "C:/local.png" }] });
-    expect(issues.join("\n")).toContain("不是公网 HTTPS");
+    const localImageIssues = storyboardProductionIssues({ storyboardMarkdown: serializeStoryboard([shot]), anchorMarkdown: "style:main:v1 | 风格\nscene:main:v1 | 场景", availableAssets: [{ id: "image-local", kind: "image", path: "C:/local.png" }] });
+    expect(localImageIssues.join("\n")).not.toContain("参考视频必须");
+    const localVideoIssues = storyboardProductionIssues({ storyboardMarkdown: serializeStoryboard([shot]), anchorMarkdown: "style:main:v1 | 风格\nscene:main:v1 | 场景", availableAssets: [{ id: "image-local", kind: "video", path: "C:/local.mp4" }] });
+    expect(localVideoIssues.join("\n")).toContain("参考视频必须是无凭据的公网 HTTPS URL");
+    const httpImageIssues = storyboardProductionIssues({ storyboardMarkdown: serializeStoryboard([shot]), anchorMarkdown: "style:main:v1 | 风格\nscene:main:v1 | 场景", availableAssets: [{ id: "image-local", kind: "image", path: "http://127.0.0.1/local.png" }] });
+    expect(httpImageIssues.join("\n")).toContain("图片 URL 必须是无凭据的公网 HTTPS URL");
   });
 
   it("recognizes state anchors and rejects pseudo-physics plus evidence-free QC", () => {

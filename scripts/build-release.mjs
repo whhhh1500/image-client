@@ -64,4 +64,21 @@ if (args.has("--check-only")) process.exit(0);
 
 runPnpm(["test"]);
 run("cargo", ["test", "--locked", "--manifest-path", "src-tauri/Cargo.toml"]);
-runPnpm(["tauri", "build", "--ci"]);
+
+const localPlatform = process.platform === "win32" && process.arch === "x64"
+  ? "windows-x64"
+  : process.platform === "darwin" && process.arch === "arm64"
+    ? "macos-arm64"
+    : process.platform === "linux" && process.arch === "x64"
+      ? "linux-x64"
+      : undefined;
+if (!localPlatform) {
+  throw new Error("release:build 仅支持 Windows x64、macOS Apple Silicon 或 Linux x64；其他架构当前不作为发布目标");
+}
+const bundleArgs = localPlatform === "windows-x64"
+  ? ["build", "--ci", "--no-bundle"]
+  : localPlatform === "macos-arm64"
+    ? ["build", "--ci", "--bundles", "app"]
+    : ["build", "--ci", "--bundles", "appimage"];
+runPnpm(["tauri", ...bundleArgs]);
+run(process.execPath, ["scripts/package-release.mjs", "--platform", localPlatform]);

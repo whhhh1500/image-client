@@ -7,12 +7,16 @@ export function useComicMdWorkspace(scope: MdScope) {
   const [error, setError] = useState("");
   const request = useRef(0);
   const active = useRef(true);
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (): Promise<boolean> => {
     const token = ++request.current;
     try {
       const next = await comicMdWorkspaceGet(scope);
       if (active.current && token === request.current) { setWorkspace(next); setError(""); }
-    } catch (cause) { if (active.current && token === request.current) setError(String(cause)); }
+      return true;
+    } catch (cause) {
+      if (active.current && token === request.current) setError(String(cause));
+      return false;
+    }
   }, [scope.projectId, scope.novelWorkId, scope.chapterId]);
   useEffect(() => {
     active.current = true;

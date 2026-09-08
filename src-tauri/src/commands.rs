@@ -1034,6 +1034,7 @@ pub fn list_video_model_capabilities() -> Vec<crate::video::VideoModelCapability
 #[tauri::command]
 pub async fn run_video(
     state: tauri::State<'_, AppState>,
+    db: tauri::State<'_, crate::db::DbState>,
     req: RunNodeRequest,
 ) -> Result<RunResult, String> {
     let cfg = state.cfg.read().unwrap().clone();
@@ -1041,6 +1042,16 @@ pub async fn run_video(
     let tag = run_tag(&req.config);
     let dir = base.join("视频").join(&tag);
 
+    let mut images = string_array(&req.config, "images");
+    let local_images = crate::local_video_images::sources_from_config(&req.config)?;
+    if !local_images.is_empty() {
+        let project_id = crate::util::get_str(&req.config, "project_id").unwrap_or_default();
+        images.extend(crate::local_video_images::resolve_local_video_images(
+            &db,
+            &project_id,
+            &local_images,
+        )?);
+    }
     let vr = crate::video::VideoGenRequest {
         model: crate::util::get_str(&req.config, "model")
             .unwrap_or_else(|| cfg.video_model.clone()),
@@ -1049,7 +1060,7 @@ pub async fn run_video(
         aspect_ratio: crate::util::get_str(&req.config, "aspect_ratio"),
         resolution: crate::util::get_str(&req.config, "resolution"),
         mode: crate::util::get_str(&req.config, "mode"),
-        images: string_array(&req.config, "images"),
+        images,
         videos: string_array(&req.config, "videos"),
         audios: string_array(&req.config, "audios"),
     };

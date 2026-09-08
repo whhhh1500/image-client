@@ -30,18 +30,19 @@ describe("App primary navigation", () => {
     expect(appSource).toContain("<AppDocsDialog");
   });
 
-  it("scopes the header asset count to the active project and active workspace", () => {
-    expect(appSource).toContain('const allowedAssetKinds = mode === "image" ? ["text", "image"] : ["text", "video"];');
-    expect(appSource).toContain("belongsToActiveProject && allowedAssetKinds.includes(asset.asset.kind)");
+  it("routes an asset-library import through the active-project picker queue", () => {
+    expect(appSource).toContain("queueGenerationAssetImport({ projectId: activeProjectId, entries, target, action });");
+    expect(appSource).toContain("setMode(target);");
+    expect(appSource).toContain('setTab("generate");');
+    expect(appSource).toContain("<AssetsPage onQueueImport={queueAssetImport} />");
   });
 
-  it("opens media in its matching workspace and clears video references on project changes", () => {
-    expect(appSource).toContain('if (asset.asset.kind === "video")');
-    expect(appSource).toContain('} else if (asset.asset.kind === "image")');
+  it("clears queued imports and generation references when projects change", () => {
     expect(appSource).toContain("images: []");
     expect(appSource).toContain("videos: []");
     expect(appSource).toContain("audios: []");
     expect(appSource).toContain('mode: "text"');
+    expect(appSource).toContain("useGenerationImportQueue.getState().discard();");
     expect(appSource).toContain("clearProjectScopedGenerationState();");
   });
 

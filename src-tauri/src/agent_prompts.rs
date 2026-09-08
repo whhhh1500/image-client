@@ -266,22 +266,57 @@ pub fn validate_agent_output(agent_id: &str, output: &str) -> Result<(), String>
 
 fn validate_storyboard_structure(text: &str) -> Result<(), String> {
     const FIELDS: [&str; 20] = [
-        "场次", "景别", "构图", "光线", "运镜", "画面动作", "情绪", "时长", "起始状态", "动作过程",
-        "结束状态", "承接镜头", "画风锚", "场景锚", "角色锚", "道具锚", "参考方式", "参考资产", "来源对白", "视频 Prompt",
+        "场次",
+        "景别",
+        "构图",
+        "光线",
+        "运镜",
+        "画面动作",
+        "情绪",
+        "时长",
+        "起始状态",
+        "动作过程",
+        "结束状态",
+        "承接镜头",
+        "画风锚",
+        "场景锚",
+        "角色锚",
+        "道具锚",
+        "参考方式",
+        "参考资产",
+        "来源对白",
+        "视频 Prompt",
     ];
     let lines: Vec<_> = text.lines().collect();
-    let starts: Vec<(usize, usize)> = lines.iter().enumerate().filter_map(|(index, line)| shot_number(line).map(|shot| (index, shot))).collect();
-    if starts.is_empty() || starts.iter().enumerate().any(|(index, (_, shot))| *shot != index + 1) {
+    let starts: Vec<(usize, usize)> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| shot_number(line).map(|shot| (index, shot)))
+        .collect();
+    if starts.is_empty()
+        || starts
+            .iter()
+            .enumerate()
+            .any(|(index, (_, shot))| *shot != index + 1)
+    {
         return Err("视频分镜镜号缺失或不连续".to_string());
     }
-    if lines.iter().enumerate().any(|(index, line)| line.trim_start().starts_with("## ") && !starts.iter().any(|(start, _)| *start == index)) {
+    if lines.iter().enumerate().any(|(index, line)| {
+        line.trim_start().starts_with("## ") && !starts.iter().any(|(start, _)| *start == index)
+    }) {
         return Err("视频分镜包含未知的二级标题".to_string());
     }
-    if lines[..starts[0].0].iter().any(|line| line.trim_start().starts_with("### ")) {
+    if lines[..starts[0].0]
+        .iter()
+        .any(|line| line.trim_start().starts_with("### "))
+    {
         return Err("视频分镜在第1镜之前包含镜头字段".to_string());
     }
     for (position, (start, shot)) in starts.iter().enumerate() {
-        let end = starts.get(position + 1).map(|entry| entry.0).unwrap_or(lines.len());
+        let end = starts
+            .get(position + 1)
+            .map(|entry| entry.0)
+            .unwrap_or(lines.len());
         let labels: Vec<_> = lines[*start + 1..end]
             .iter()
             .filter_map(|line| line.trim().strip_prefix("### ").map(str::trim))
@@ -310,7 +345,12 @@ fn shot_number(heading: &str) -> Option<usize> {
     digits.parse().ok()
 }
 
-fn field_span(lines: &[String], block_start: usize, block_end: usize, label: &str) -> Option<(usize, usize)> {
+fn field_span(
+    lines: &[String],
+    block_start: usize,
+    block_end: usize,
+    label: &str,
+) -> Option<(usize, usize)> {
     let heading = format!("### {label}");
     let field_heading = (block_start..block_end).find(|index| lines[*index].trim() == heading)?;
     let content_start = field_heading + 1;
@@ -346,7 +386,10 @@ fn is_anchor_id(value: &str) -> bool {
 /// image/video asset IDs and cannot select reference mode. Real media asset IDs are preserved.
 pub fn normalize_storyboard_reference_assets(markdown: &str) -> (String, Vec<usize>) {
     let normalized_newlines = markdown.replace("\r\n", "\n").replace('\r', "\n");
-    let mut lines: Vec<String> = normalized_newlines.split('\n').map(str::to_string).collect();
+    let mut lines: Vec<String> = normalized_newlines
+        .split('\n')
+        .map(str::to_string)
+        .collect();
     let shot_starts: Vec<(usize, usize)> = lines
         .iter()
         .enumerate()
@@ -354,11 +397,21 @@ pub fn normalize_storyboard_reference_assets(markdown: &str) -> (String, Vec<usi
         .collect();
     let mut corrected = Vec::new();
     for (position, (block_start, shot_no)) in shot_starts.iter().enumerate() {
-        let block_end = shot_starts.get(position + 1).map(|entry| entry.0).unwrap_or(lines.len());
-        let Some(strategy_span) = field_span(&lines, *block_start, block_end, "参考方式") else { continue };
-        let Some(assets_span) = field_span(&lines, *block_start, block_end, "参考资产") else { continue };
+        let block_end = shot_starts
+            .get(position + 1)
+            .map(|entry| entry.0)
+            .unwrap_or(lines.len());
+        let Some(strategy_span) = field_span(&lines, *block_start, block_end, "参考方式")
+        else {
+            continue;
+        };
+        let Some(assets_span) = field_span(&lines, *block_start, block_end, "参考资产") else {
+            continue;
+        };
         let strategy = field_text(&lines, strategy_span);
-        if strategy == "text" { continue; }
+        if strategy == "text" {
+            continue;
+        }
         let assets = field_text(&lines, assets_span);
         let values: Vec<&str> = assets
             .split(|character| matches!(character, ',' | '，' | '、'))

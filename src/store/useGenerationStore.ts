@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { AssetImportRecord } from "../lib/assetImport";
 
 export type ImageReferenceRole =
   | "character_identity"
@@ -23,6 +24,8 @@ export interface GenParams {
   referencePath: string;
   /** Optional multi-reference contract. A non-empty list is authoritative over referencePath. */
   references?: ImageGenerationReference[];
+  /** Explicit, ordered library inputs retained with the next generated asset. */
+  importedSources?: AssetImportRecord[];
   size: string;
   quality: string;
   background: string;
@@ -32,6 +35,8 @@ export interface GenParams {
 const DEFAULTS: GenParams = {
   prompt: "",
   referencePath: "",
+  references: [],
+  importedSources: [],
   size: "1024x1024 (1:1)",
   quality: "high",
   background: "auto",
@@ -47,6 +52,14 @@ interface GenerationState extends GenParams {
 export const useGenerationStore = create<GenerationState>((set) => ({
   ...DEFAULTS,
   set: (p) => set(p),
-  load: (p) => set((s) => ({ ...s, ...p })),
+  // Assets saved before multi-reference imports have no fields for them.  A
+  // history load must clear the current draft rather than inherit its inputs.
+  load: (p) => set((s) => ({
+    ...s,
+    ...p,
+    referencePath: p.referencePath ?? "",
+    references: p.references ?? [],
+    importedSources: p.importedSources ?? [],
+  })),
   reset: () => set(DEFAULTS),
 }));

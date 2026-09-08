@@ -7,6 +7,25 @@ import type { AssetRef } from "../types";
 import { logEvent } from "./logger";
 import { createId } from "./id";
 import { createHistoryProvenance, snapshotAsset, type HistoryProvenance } from "./provenance";
+import { catalogMetadata } from "./assetCatalog";
+
+function importedSourceMaterials(params: GenParams) {
+  return (params.importedSources ?? []).flatMap((record) => record.sourceMaterials);
+}
+
+function importedParentIds(params: GenParams) {
+  return (params.importedSources ?? []).flatMap((record) => record.assetIds);
+}
+
+function uniqueMaterials<T>(materials: T[]): T[] {
+  const seen = new Set<string>();
+  return materials.filter((material) => {
+    const key = JSON.stringify(material);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
 
 function sizeStr(size?: string) {
   if (!size) return "1024x1024";
@@ -76,15 +95,25 @@ export async function generateImage(
     generationInput: provenanceInput.generationInput ?? params.prompt,
     systemInstruction: provenanceInput.systemInstruction,
     contextSnapshot: provenanceInput.contextSnapshot,
-    sourceMaterials: [...defaultMaterials, ...(provenanceInput.sourceMaterials ?? [])],
+    sourceMaterials: uniqueMaterials([...defaultMaterials, ...importedSourceMaterials(params), ...(provenanceInput.sourceMaterials ?? [])]),
     parentAssetIds: [...new Set([
       ...resolvedReferences.flatMap(({ asset }) => asset ? [asset.asset.id] : []),
+      ...importedParentIds(params),
       ...(provenanceInput.parentAssetIds ?? []),
     ])],
     comicGeneration: provenanceInput.comicGeneration,
     revision: provenanceInput.revision ?? { type: "generated" },
   });
-  const taskParams = { ...(params as unknown as Record<string, unknown>), provenance };
+  // Output classification belongs to this generation attempt. Never inherit a
+  // selected input asset's catalog descriptor through a loaded form payload.
+  const outputCatalog = provenanceInput.comicGeneration
+    ? catalogMetadata("comic", "provider", { type: "comic_work", id: provenanceInput.comicGeneration.comicProjectId ?? provenanceInput.comicGeneration.comicRunId })
+    : catalogMetadata("image_generation", "provider", { type: "generation_batch", id: taskId });
+  const taskParams = {
+    ...(params as unknown as Record<string, unknown>),
+    ...outputCatalog,
+    provenance,
+  };
   const started = performance.now();
   logEvent("info", "generation.image.start", { taskId, nodeId, label, model: params.model, projectId, size: params.size, quality: params.quality, background: params.background, hasReference: isImg2Img, prompt: params.prompt });
 

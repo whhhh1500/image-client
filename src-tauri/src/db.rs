@@ -32,15 +32,15 @@ const MIGRATION_V19: &str = include_str!("../migrations/0019_comic_visual_export
 const MIGRATION_V20: &str = include_str!("../migrations/0020_production_comic_plan_intent.sql");
 const MIGRATION_V21: &str =
     include_str!("../migrations/0021_comic_planning_source_utf8_bounds.sql");
-const MIGRATION_V22: &str =
-    include_str!("../migrations/0022_adaptation_chapter_revisions.sql");
+const MIGRATION_V22: &str = include_str!("../migrations/0022_adaptation_chapter_revisions.sql");
 const MIGRATION_V23: &str = include_str!("../migrations/0023_comic_markdown.sql");
 const MIGRATION_V24: &str = include_str!("../migrations/0024_comic_markdown_optimization.sql");
 const MIGRATION_V25: &str =
     include_str!("../migrations/0025_comic_markdown_rerun_prompt_injection.sql");
 const MIGRATION_V26: &str =
     include_str!("../migrations/0026_comic_markdown_work_visual_profile.sql");
-const SCHEMA_VERSION: i64 = 26;
+const MIGRATION_V27: &str = include_str!("../migrations/0027_comic_markdown_effective_prompt.sql");
+const SCHEMA_VERSION: i64 = 27;
 const ALLOWED_TABLES: &[&str] = &["assets", "tasks", "settings", "workflows"];
 const MAX_QUERY_CHARS: usize = 8_192;
 const MAX_BIND_VALUES: usize = 128;
@@ -191,6 +191,9 @@ fn migrate(connection: &Connection) -> Result<(), String> {
     if current < 26 {
         run_migration(connection, MIGRATION_V26, 26, "v26")?;
     }
+    if current < 27 {
+        run_migration(connection, MIGRATION_V27, 27, "v27")?;
+    }
     Ok(())
 }
 
@@ -204,23 +207,34 @@ fn migrate_adaptation_chapter_revisions(connection: &Connection) -> Result<(), S
     let legacy_alter: bool = connection
         .pragma_query_value(None, "legacy_alter_table", |row| row.get(0))
         .map_err(|error| error.to_string())?;
-    connection.execute_batch("PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON;")
+    connection
+        .execute_batch("PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON;")
         .map_err(|error| error.to_string())?;
     let result = (|| -> Result<(), String> {
-        let tx = connection.unchecked_transaction().map_err(|error| error.to_string())?;
-        tx.execute_batch(MIGRATION_V22).map_err(|error| error.to_string())?;
-        let invalid: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_check)", [], |row| row.get(0),
-        ).map_err(|error| error.to_string())?;
+        let tx = connection
+            .unchecked_transaction()
+            .map_err(|error| error.to_string())?;
+        tx.execute_batch(MIGRATION_V22)
+            .map_err(|error| error.to_string())?;
+        let invalid: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_check)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
         if invalid {
             return Err("v22 foreign key validation failed".into());
         }
-        tx.pragma_update(None, "user_version", 22).map_err(|error| error.to_string())?;
+        tx.pragma_update(None, "user_version", 22)
+            .map_err(|error| error.to_string())?;
         tx.commit().map_err(|error| error.to_string())
     })();
     let restore_legacy = connection.pragma_update(None, "legacy_alter_table", legacy_alter);
     let restore_foreign_keys = connection.pragma_update(None, "foreign_keys", foreign_keys);
-    restore_legacy.and(restore_foreign_keys).map_err(|error| error.to_string())?;
+    restore_legacy
+        .and(restore_foreign_keys)
+        .map_err(|error| error.to_string())?;
     result.map_err(|error| format!("执行 v22 SQLite 迁移失败: {error}"))
 }
 
@@ -1639,24 +1653,71 @@ mod tests {
 
     #[test]
     fn v24_and_v25_back_up_v23_and_preserve_markdown_history_with_empty_new_metadata() {
-        let root=std::env::temp_dir().join(format!("comic-md-v24-migration-{}",uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();let path=root.join("test.db");
-        let connection=Connection::open(&path).unwrap();connection.execute_batch("PRAGMA foreign_keys=ON").unwrap();
-        for (sql,version,name) in [(MIGRATION_V1,1,"v1"),(MIGRATION_V2,2,"v2"),(MIGRATION_V3,3,"v3"),(MIGRATION_V4,4,"v4"),(MIGRATION_V5,5,"v5"),(MIGRATION_V6,6,"v6"),(MIGRATION_V7,7,"v7"),(MIGRATION_V8,8,"v8"),(MIGRATION_V9,9,"v9"),(MIGRATION_V10,10,"v10"),(MIGRATION_V11,11,"v11"),(MIGRATION_V12,12,"v12"),(MIGRATION_V13,13,"v13"),(MIGRATION_V14,14,"v14"),(MIGRATION_V15,15,"v15"),(MIGRATION_V16,16,"v16"),(MIGRATION_V17,17,"v17"),(MIGRATION_V18,18,"v18"),(MIGRATION_V19,19,"v19"),(MIGRATION_V20,20,"v20"),(MIGRATION_V21,21,"v21")] {run_migration(&connection,sql,version,name).unwrap();}
-        migrate_adaptation_chapter_revisions(&connection).unwrap();run_migration(&connection,MIGRATION_V23,23,"v23").unwrap();
-        connection.execute_batch(include_str!("../fixtures/legacy-comic-retirement.sql")).unwrap();
+        let root =
+            std::env::temp_dir().join(format!("comic-md-v24-migration-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("test.db");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        for (sql, version, name) in [
+            (MIGRATION_V1, 1, "v1"),
+            (MIGRATION_V2, 2, "v2"),
+            (MIGRATION_V3, 3, "v3"),
+            (MIGRATION_V4, 4, "v4"),
+            (MIGRATION_V5, 5, "v5"),
+            (MIGRATION_V6, 6, "v6"),
+            (MIGRATION_V7, 7, "v7"),
+            (MIGRATION_V8, 8, "v8"),
+            (MIGRATION_V9, 9, "v9"),
+            (MIGRATION_V10, 10, "v10"),
+            (MIGRATION_V11, 11, "v11"),
+            (MIGRATION_V12, 12, "v12"),
+            (MIGRATION_V13, 13, "v13"),
+            (MIGRATION_V14, 14, "v14"),
+            (MIGRATION_V15, 15, "v15"),
+            (MIGRATION_V16, 16, "v16"),
+            (MIGRATION_V17, 17, "v17"),
+            (MIGRATION_V18, 18, "v18"),
+            (MIGRATION_V19, 19, "v19"),
+            (MIGRATION_V20, 20, "v20"),
+            (MIGRATION_V21, 21, "v21"),
+        ] {
+            run_migration(&connection, sql, version, name).unwrap();
+        }
+        migrate_adaptation_chapter_revisions(&connection).unwrap();
+        run_migration(&connection, MIGRATION_V23, 23, "v23").unwrap();
+        connection
+            .execute_batch(include_str!("../fixtures/legacy-comic-retirement.sql"))
+            .unwrap();
         connection.execute_batch("INSERT INTO comic_md_documents(id,project_id,novel_work_id,chapter_id,kind,page_no,markdown,revision,dependencies,updated_at) VALUES('old-md','legacy-test-project','legacy-test-work','legacy-test-chapter','page_prompt',1,'旧版 Markdown 原文',1,'[]',1); INSERT INTO comic_md_revisions(document_id,revision,markdown,dependencies,created_at) VALUES('old-md',1,'旧版 Markdown 原文','[]',1); INSERT INTO comic_md_jobs(id,project_id,novel_work_id,chapter_id,kind,status,input_snapshot,completed_pages,total_pages,created_at) VALUES('old-md-job','legacy-test-project','legacy-test-work','legacy-test-chapter','images','succeeded','{}',1,1,1); INSERT INTO comic_md_images(id,job_id,document_id,document_revision,page_no,path,created_at) VALUES('old-image','old-md-job','old-md',1,1,'old.png',1);").unwrap();
         drop(connection);
-        let db=DbState::open(path.clone()).unwrap();
+        let db = DbState::open(path.clone()).unwrap();
         with_connection(&db,|c| {
-            assert_eq!(schema_version(c).unwrap(),26);
+            assert_eq!(schema_version(c).unwrap(), SCHEMA_VERSION);
             let metadata:(String,String,String,String,String)=c.query_row("SELECT d.markdown,d.optimization_instruction,r.optimization_instruction,i.prompt_injection,i.rerun_prompt_injection FROM comic_md_documents d JOIN comic_md_revisions r ON r.document_id=d.id JOIN comic_md_images i ON i.document_id=d.id WHERE d.id='old-md'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).unwrap();
             assert_eq!(metadata,("旧版 Markdown 原文".into(),String::new(),String::new(),String::new(),String::new()));
             let options:i64=c.query_row("SELECT count(*) FROM comic_md_render_options",[],|r|r.get(0)).unwrap();assert_eq!(options,0);
             let invalid:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM pragma_foreign_key_check)",[],|r|r.get(0)).unwrap();assert!(!invalid);Ok(())
         }).unwrap();
-        let backups=backup_files(&backup_directory(&path).unwrap(),backup_prefix(&path).unwrap()).unwrap();assert_eq!(backups.len(),1);validate_backup(&backups[0],23).unwrap();
-        let backup=Connection::open(&backups[0]).unwrap();let original:String=backup.query_row("SELECT markdown FROM comic_md_documents WHERE id='old-md'",[],|r|r.get(0)).unwrap();assert_eq!(original,"旧版 Markdown 原文");drop(backup);drop(db);std::fs::remove_dir_all(root).unwrap();
+        let backups = backup_files(
+            &backup_directory(&path).unwrap(),
+            backup_prefix(&path).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(backups.len(), 1);
+        validate_backup(&backups[0], 23).unwrap();
+        let backup = Connection::open(&backups[0]).unwrap();
+        let original: String = backup
+            .query_row(
+                "SELECT markdown FROM comic_md_documents WHERE id='old-md'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(original, "旧版 Markdown 原文");
+        drop(backup);
+        drop(db);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -1686,15 +1747,15 @@ mod tests {
 
         let db = DbState::open(path.clone()).unwrap();
         with_connection(&db, |connection| {
-            assert_eq!(schema_version(connection).unwrap(), 26);
-            let image: (String, String, String) = connection
+            assert_eq!(schema_version(connection).unwrap(), SCHEMA_VERSION);
+            let image: (String, String, String, Option<String>) = connection
                 .query_row(
-                    "SELECT path,prompt_injection,rerun_prompt_injection FROM comic_md_images WHERE id='old-image'",
+                    "SELECT path,prompt_injection,rerun_prompt_injection,effective_prompt FROM comic_md_images WHERE id='old-image'",
                     [],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 )
                 .unwrap();
-            assert_eq!(image, ("old.png".into(), "本章旧注入".into(), String::new()));
+            assert_eq!(image, ("old.png".into(), "本章旧注入".into(), String::new(), None));
             let profile_tables: i64 = connection
                 .query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('comic_md_work_visual_profiles','comic_md_work_visual_references')", [], |row| row.get(0))
                 .unwrap();
@@ -1756,18 +1817,48 @@ mod tests {
             CREATE TABLE migration_reference(scope TEXT REFERENCES comic_adaptation_chapters(id) ON DELETE RESTRICT);
             INSERT INTO migration_reference VALUES('old-scope');
         ").unwrap();
-        assert!(connection.execute("INSERT INTO comic_adaptation_chapters VALUES('new-scope','adapt','r2',1,2)", []).is_err());
+        assert!(connection
+            .execute(
+                "INSERT INTO comic_adaptation_chapters VALUES('new-scope','adapt','r2',1,2)",
+                []
+            )
+            .is_err());
         migrate(&connection).unwrap();
         assert_eq!(schema_version(&connection).unwrap(), SCHEMA_VERSION);
-        assert!(connection.pragma_query_value::<bool, _>(None, "foreign_keys", |row| row.get(0)).unwrap());
-        assert!(!connection.pragma_query_value::<bool, _>(None, "legacy_alter_table", |row| row.get(0)).unwrap());
+        assert!(connection
+            .pragma_query_value::<bool, _>(None, "foreign_keys", |row| row.get(0))
+            .unwrap());
+        assert!(!connection
+            .pragma_query_value::<bool, _>(None, "legacy_alter_table", |row| row.get(0))
+            .unwrap());
         let old: String = connection.query_row("SELECT chapter.novel_chapter_revision_id FROM migration_reference ref JOIN comic_adaptation_chapters chapter ON chapter.id=ref.scope", [], |row| row.get(0)).unwrap();
         assert_eq!(old, "r1");
-        connection.execute("INSERT INTO comic_adaptation_chapters VALUES('new-scope','adapt','r2',1,2)", []).unwrap();
-        assert!(connection.execute("INSERT INTO comic_adaptation_chapters VALUES('duplicate','adapt','r2',1,3)", []).is_err());
-        assert!(connection.execute("DELETE FROM comic_adaptation_chapters WHERE id='old-scope'", []).is_err());
-        assert!(connection.execute("INSERT INTO migration_reference VALUES('missing')", []).is_err());
-        let broken: i64 = connection.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| row.get(0)).unwrap();
+        connection
+            .execute(
+                "INSERT INTO comic_adaptation_chapters VALUES('new-scope','adapt','r2',1,2)",
+                [],
+            )
+            .unwrap();
+        assert!(connection
+            .execute(
+                "INSERT INTO comic_adaptation_chapters VALUES('duplicate','adapt','r2',1,3)",
+                []
+            )
+            .is_err());
+        assert!(connection
+            .execute(
+                "DELETE FROM comic_adaptation_chapters WHERE id='old-scope'",
+                []
+            )
+            .is_err());
+        assert!(connection
+            .execute("INSERT INTO migration_reference VALUES('missing')", [])
+            .is_err());
+        let broken: i64 = connection
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
         assert_eq!(broken, 0);
         migrate(&connection).unwrap();
     }
@@ -1775,16 +1866,34 @@ mod tests {
     #[test]
     fn v22_failure_rolls_back_schema_and_restores_foreign_keys() {
         let connection = Connection::open_in_memory().unwrap();
-        connection.execute_batch("PRAGMA foreign_keys=ON; PRAGMA user_version=21;
+        connection
+            .execute_batch(
+                "PRAGMA foreign_keys=ON; PRAGMA user_version=21;
             CREATE TABLE comic_adaptation_chapters(id TEXT PRIMARY KEY);
-            INSERT INTO comic_adaptation_chapters VALUES('preserved');").unwrap();
+            INSERT INTO comic_adaptation_chapters VALUES('preserved');",
+            )
+            .unwrap();
         assert!(migrate_adaptation_chapter_revisions(&connection).is_err());
         assert_eq!(schema_version(&connection).unwrap(), 21);
-        assert!(connection.pragma_query_value::<bool, _>(None, "foreign_keys", |row| row.get(0)).unwrap());
-        assert!(!connection.pragma_query_value::<bool, _>(None, "legacy_alter_table", |row| row.get(0)).unwrap());
-        let id: String = connection.query_row("SELECT id FROM comic_adaptation_chapters", [], |row| row.get(0)).unwrap();
+        assert!(connection
+            .pragma_query_value::<bool, _>(None, "foreign_keys", |row| row.get(0))
+            .unwrap());
+        assert!(!connection
+            .pragma_query_value::<bool, _>(None, "legacy_alter_table", |row| row.get(0))
+            .unwrap());
+        let id: String = connection
+            .query_row("SELECT id FROM comic_adaptation_chapters", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
         assert_eq!(id, "preserved");
-        let temporary: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE name='comic_adaptation_chapters_v22'", [], |row| row.get(0)).unwrap();
+        let temporary: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='comic_adaptation_chapters_v22'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert_eq!(temporary, 0);
     }
 

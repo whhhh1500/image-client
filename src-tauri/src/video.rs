@@ -2,6 +2,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use base64::Engine as _;
 use serde::Serialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -272,12 +273,61 @@ fn normalized_mode(req: &VideoGenRequest) -> &str {
         })
 }
 
-fn validate_urls(values: &[String], label: &str) -> Result<(), String> {
+pub fn validate_public_https_urls(values: &[String], label: &str) -> Result<(), String> {
     for value in values {
-        validate_public_https_url(value)
-            .map_err(|reason| format!("{label}必须是公网 HTTPS URL：{value}（{reason}）"))?;
+        validate_public_https_url(value).map_err(|_| format!("{label}必须是公网 HTTPS URL"))?;
     }
     Ok(())
+}
+
+fn validate_images(values: &[String]) -> Result<(), String> {
+    let mut total_bytes = 0_usize;
+    for value in values {
+        if value.starts_with("data:") {
+            let bytes = validate_local_image_data_url(value)?;
+            total_bytes = total_bytes
+                .checked_add(bytes)
+                .ok_or("本地图片数据总大小不能超过 50 MiB")?;
+            if total_bytes > crate::local_video_images::MAX_LOCAL_IMAGE_BYTES as usize {
+                return Err("本地图片数据总大小不能超过 50 MiB".into());
+            }
+        } else {
+            validate_public_https_url(value)
+                .map_err(|_| "参考图片必须是公网 HTTPS URL 或有效的本地图片数据".to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_local_image_data_url(value: &str) -> Result<usize, String> {
+    const PREFIXES: [(&str, &str); 3] = [
+        ("data:image/png;base64,", "png"),
+        ("data:image/jpeg;base64,", "jpg"),
+        ("data:image/webp;base64,", "webp"),
+    ];
+    let Some((prefix, expected_format)) = PREFIXES
+        .iter()
+        .find(|(prefix, _)| value.starts_with(*prefix))
+    else {
+        return Err("本地图片数据格式无效".into());
+    };
+    let encoded = &value[prefix.len()..];
+    let maximum_encoded = ((crate::local_video_images::MAX_LOCAL_IMAGE_BYTES as usize + 2) / 3) * 4;
+    if encoded.is_empty() || encoded.len() > maximum_encoded {
+        return Err("本地图片数据超过 50 MiB 大小限制".into());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|_| "本地图片数据格式无效")?;
+    if bytes.len() > crate::local_video_images::MAX_LOCAL_IMAGE_BYTES as usize {
+        return Err("本地图片数据超过 50 MiB 大小限制".into());
+    }
+    let (format, _) = crate::local_video_images::verified_format_and_mime(&bytes)
+        .map_err(|_| "本地图片数据格式无效")?;
+    if format != *expected_format {
+        return Err("本地图片数据格式无效".into());
+    }
+    Ok(bytes.len())
 }
 
 fn validate_public_https_url(value: &str) -> Result<(), &'static str> {
@@ -361,9 +411,9 @@ fn validate_and_plan(req: &VideoGenRequest) -> Result<u32, String> {
     if !cap.modes.contains(&mode) {
         return Err(format!("模型 {} 不支持生成模式 {mode}", req.model));
     }
-    validate_urls(&req.images, "参考图片")?;
-    validate_urls(&req.videos, "参考视频")?;
-    validate_urls(&req.audios, "参考音频")?;
+    validate_images(&req.images)?;
+    validate_public_https_urls(&req.videos, "参考视频")?;
+    validate_public_https_urls(&req.audios, "参考音频")?;
     if req.images.len() > cap.max_images
         || req.videos.len() > cap.max_videos
         || req.audios.len() > cap.max_audios
@@ -396,7 +446,7 @@ fn validate_and_plan(req: &VideoGenRequest) -> Result<u32, String> {
             return Err("首帧模式需要且只能提供 1 张参考图片".into())
         }
         "reference" if req.images.is_empty() && req.videos.is_empty() && req.audios.is_empty() => {
-            return Err("多素材参考模式至少需要一个参考素材 URL".into());
+            return Err("多素材参考模式至少需要一个参考素材".into());
         }
         _ => {}
     }
@@ -581,28 +631,15 @@ async fn create_task(
         json!({ "requestId": request_id, "segmentIndex": segment_index, "status": status.as_u16(), "durationMs": started.elapsed().as_millis() }),
     );
     if !status.is_success() {
-        return Err(format!(
-            "创建视频任务返回 {status}: {}",
-            text.chars().take(400).collect::<String>()
-        ));
+        return Err(format!("创建视频任务返回 {status}"));
     }
-    let j: Value = serde_json::from_str(&text).map_err(|e| {
-        format!(
-            "解析创建响应失败: {e}: {}",
-            text.chars().take(200).collect::<String>()
-        )
-    })?;
+    let j: Value = serde_json::from_str(&text).map_err(|_| "解析创建响应失败")?;
     let id = j
         .get("id")
         .or_else(|| j.get("task_id"))
         .or_else(|| j.get("taskId"))
         .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            format!(
-                "创建响应缺少任务 id: {}",
-                text.chars().take(200).collect::<String>()
-            )
-        })?;
+        .ok_or("创建响应缺少任务 id")?;
     if id.is_empty()
         || id.len() > 256
         || !id
@@ -669,18 +706,10 @@ async fn wait_task(
                 tokio::time::sleep(Duration::from_secs(delay)).await;
                 continue;
             }
-            return Err(format!(
-                "查询任务返回 {status}: {}",
-                text.chars().take(300).collect::<String>()
-            ));
+            return Err(format!("查询任务返回 {status}"));
         }
         transient_failures = 0;
-        let j: Value = serde_json::from_str(&text).map_err(|e| {
-            format!(
-                "解析任务状态失败: {e}: {}",
-                text.chars().take(200).collect::<String>()
-            )
-        })?;
+        let j: Value = serde_json::from_str(&text).map_err(|_| "解析任务状态失败")?;
         let st = j
             .get("status")
             .and_then(|v| v.as_str())
@@ -695,7 +724,7 @@ async fn wait_task(
             "failed" | "error" | "cancelled" | "expired" => {
                 let err = provider_error_message(&j)
                     .unwrap_or_else(|| "服务端未返回失败原因".to_string());
-                return Err(format!("视频任务失败（{st}）: {err}"));
+                return Err(format!("视频任务失败（{st}）: {}", redact_data_urls(&err)));
             }
             _ => {}
         }
@@ -721,6 +750,30 @@ fn provider_error_message(value: &Value) -> Option<String> {
         Value::Object(_) | Value::Array(_) => Some(candidate.to_string()),
         _ => None,
     })
+}
+
+fn redact_data_urls(value: &str) -> String {
+    let mut output = String::with_capacity(value.len().min(512));
+    let mut remaining = value;
+    while let Some(start) = remaining.find("data:image/") {
+        output.push_str(&remaining[..start]);
+        let payload = &remaining[start..];
+        let Some(marker) = payload.find(";base64,") else {
+            output.push_str(payload);
+            return output;
+        };
+        let encoded = &payload[marker + ";base64,".len()..];
+        let end = encoded
+            .find(|character: char| {
+                !character.is_ascii_alphanumeric()
+                    && !matches!(character, '+' | '/' | '=' | '-' | '_')
+            })
+            .unwrap_or(encoded.len());
+        output.push_str("[已隐藏本地图片数据]");
+        remaining = &encoded[end..];
+    }
+    output.push_str(remaining);
+    output
 }
 
 fn is_transient_poll_status(status: reqwest::StatusCode) -> bool {
@@ -770,7 +823,7 @@ async fn download_content(
         };
         let status = resp.status();
         if !status.is_success() {
-            let text = read_limited_text(resp, 1024 * 1024, "视频下载错误响应")
+            let _text = read_limited_text(resp, 1024 * 1024, "视频下载错误响应")
                 .await
                 .unwrap_or_default();
             if attempt < 3 && is_transient_poll_status(status) {
@@ -782,10 +835,7 @@ async fn download_content(
                 tokio::time::sleep(Duration::from_secs(delay)).await;
                 continue;
             }
-            return Err(format!(
-                "下载视频返回 {status}: {}",
-                text.chars().take(300).collect::<String>()
-            ));
+            return Err(format!("下载视频返回 {status}"));
         }
         if resp
             .content_length()
@@ -836,9 +886,17 @@ async fn read_limited_text(
 #[cfg(test)]
 mod tests {
     use super::{
-        is_transient_poll_status, model_capabilities, provider_asset_id, provider_error_message,
-        request_body, transient_poll_backoff_seconds, validate_and_plan, validate_single_duration,
-        VideoGenRequest,
+        create_task, is_transient_poll_status, model_capabilities, provider_asset_id,
+        provider_error_message, redact_data_urls, request_body, transient_poll_backoff_seconds,
+        validate_and_plan, validate_single_duration, VideoGenRequest,
+    };
+    use crate::config::ConfigState;
+    use axum::{extract::State, routing::post, Json, Router};
+    use base64::Engine as _;
+    use serde_json::{json, Value};
+    use std::{
+        future::IntoFuture,
+        sync::{Arc, Mutex},
     };
 
     fn request(model: &str, duration_s: u32) -> VideoGenRequest {
@@ -852,6 +910,36 @@ mod tests {
             images: vec![],
             videos: vec![],
             audios: vec![],
+        }
+    }
+
+    fn local_png_data_url() -> String {
+        let mut bytes = Vec::new();
+        image::RgbaImage::from_pixel(1, 1, image::Rgba([1, 2, 3, 255]))
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        )
+    }
+
+    fn loopback_config(endpoint: String) -> ConfigState {
+        ConfigState {
+            image_api_url: String::new(),
+            image_api_key: String::new(),
+            image_model: "image".into(),
+            video_api_url: endpoint,
+            video_api_key: "local-test-key".into(),
+            video_model: "grok-imagine-video".into(),
+            llm_api_url: String::new(),
+            llm_api_key: String::new(),
+            llm_model: "llm".into(),
+            output_dir: std::env::temp_dir().display().to_string(),
+            source: "test".into(),
         }
     }
 
@@ -889,6 +977,70 @@ mod tests {
         req.mode = Some("first_frame".into());
         req.images = vec![r"C:\images\ref.png".into()];
         assert!(validate_and_plan(&req).unwrap_err().contains("HTTPS URL"));
+    }
+
+    #[test]
+    fn accepts_verified_local_data_images_with_https_images_but_not_for_video_or_audio() {
+        let mut req = request("kling-video-v3", 5);
+        req.mode = Some("reference".into());
+        req.images = vec![
+            local_png_data_url(),
+            "https://cdn.example.com/reference.png".into(),
+        ];
+        assert_eq!(validate_and_plan(&req), Ok(5));
+        req.videos = vec![local_png_data_url()];
+        assert!(validate_and_plan(&req).unwrap_err().contains("公网 HTTPS"));
+    }
+
+    #[tokio::test]
+    async fn sends_local_image_data_url_in_the_native_json_request() {
+        #[derive(Clone)]
+        struct Capture(Arc<Mutex<Option<Value>>>);
+        async fn handler(State(capture): State<Capture>, Json(body): Json<Value>) -> Json<Value> {
+            *capture.0.lock().unwrap() = Some(body);
+            Json(json!({"id":"task_123"}))
+        }
+        let capture = Capture(Arc::new(Mutex::new(None)));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(
+            axum::serve(
+                listener,
+                Router::new()
+                    .route("/", post(handler))
+                    .with_state(capture.clone()),
+            )
+            .into_future(),
+        );
+        let mut req = request("grok-imagine-video", 1);
+        req.mode = Some("first_frame".into());
+        let data_url = local_png_data_url();
+        req.images = vec![data_url.clone()];
+        assert_eq!(validate_and_plan(&req), Ok(1));
+        let id = create_task(
+            &reqwest::Client::new(),
+            &loopback_config(endpoint),
+            &req,
+            1,
+            "request",
+            0,
+        )
+        .await
+        .unwrap();
+        assert_eq!(id, "task_123");
+        assert_eq!(
+            capture.0.lock().unwrap().as_ref().unwrap()["images"][0],
+            data_url
+        );
+        server.abort();
+    }
+
+    #[test]
+    fn redacts_local_data_urls_from_provider_failures() {
+        let secret_like_data = format!("provider echoed {}", local_png_data_url());
+        let redacted = redact_data_urls(&secret_like_data);
+        assert!(redacted.contains("[已隐藏本地图片数据]"));
+        assert!(!redacted.contains("base64,"));
     }
 
     #[test]

@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { AssetImportRecord } from "../lib/assetImport";
 
 export interface VideoGenerationItem {
   id: string;
@@ -11,6 +12,15 @@ export interface VideoGenerationItem {
   referenceAssetIds?: string[];
   referenceImages?: string[];
   referenceVideos?: string[];
+  /** A persisted local image identity. Its bytes are resolved only for the video request. */
+  referenceLocalImages?: VideoLocalImageReference[];
+}
+
+export interface VideoLocalImageReference {
+  assetId?: string;
+  sourceUri?: string;
+  path: string;
+  label: string;
 }
 
 export interface VideoProductionManifest {
@@ -20,7 +30,7 @@ export interface VideoProductionManifest {
   approvedModel: string;
   approvedAspectRatio: string;
   approvedResolution: string;
-  shots: Array<Pick<VideoGenerationItem, "shotNo" | "prompt" | "durationS" | "referenceStrategy" | "referenceAssetIds" | "referenceImages" | "referenceVideos">>;
+  shots: Array<Pick<VideoGenerationItem, "shotNo" | "prompt" | "durationS" | "referenceStrategy" | "referenceAssetIds" | "referenceImages" | "referenceVideos" | "referenceLocalImages">>;
   approvedAt: number;
 }
 
@@ -35,6 +45,8 @@ export interface VideoParams {
   audios: string[];
   storyboardSourceAssetId?: string;
   productionManifest?: VideoProductionManifest;
+  /** Explicit prompt/reference imports restored with the generated task params. */
+  importedSources?: AssetImportRecord[];
 }
 
 const DEFAULTS: VideoParams = {
@@ -46,10 +58,29 @@ const DEFAULTS: VideoParams = {
   images: [],
   videos: [],
   audios: [],
+  importedSources: [],
 };
 
 function strings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean) : [];
+}
+
+function localImages(value: unknown): VideoLocalImageReference[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const raw = item as Record<string, unknown>;
+    const path = typeof raw.path === "string" && raw.path.trim() ? raw.path.trim() : undefined;
+    const label = typeof raw.label === "string" && raw.label.trim() ? raw.label.trim() : undefined;
+    const assetId = typeof raw.assetId === "string" && raw.assetId.trim() ? raw.assetId.trim() : undefined;
+    const sourceUri = typeof raw.sourceUri === "string" && raw.sourceUri.trim() ? raw.sourceUri.trim() : undefined;
+    if (!path || !label || (!assetId && !sourceUri)) return [];
+    const key = assetId ? `asset:${assetId}` : `source:${sourceUri}`;
+    if (seen.has(key)) return [];
+    seen.add(key);
+    return [{ path, label, ...(assetId ? { assetId } : {}), ...(sourceUri ? { sourceUri } : {}) }];
+  });
 }
 
 function normalizeShots(value: unknown): VideoGenerationItem[] {
@@ -65,7 +96,8 @@ function normalizeShots(value: unknown): VideoGenerationItem[] {
     const referenceAssetIds = strings(raw.referenceAssetIds);
     const referenceImages = strings(raw.referenceImages);
     const referenceVideos = strings(raw.referenceVideos);
-    return [{ id: typeof raw.id === "string" && raw.id ? raw.id : `shot-${index + 1}`, shotNo: index + 1, prompt, durationS, ...(anchorIds.length ? { anchorIds } : {}), ...(continuityFrom !== undefined ? { continuityFrom } : {}), ...(referenceStrategy ? { referenceStrategy } : {}), ...(referenceAssetIds.length ? { referenceAssetIds } : {}), ...(referenceImages.length ? { referenceImages } : {}), ...(referenceVideos.length ? { referenceVideos } : {}) }];
+    const referenceLocalImages = localImages(raw.referenceLocalImages);
+    return [{ id: typeof raw.id === "string" && raw.id ? raw.id : `shot-${index + 1}`, shotNo: index + 1, prompt, durationS, ...(anchorIds.length ? { anchorIds } : {}), ...(continuityFrom !== undefined ? { continuityFrom } : {}), ...(referenceStrategy ? { referenceStrategy } : {}), ...(referenceAssetIds.length ? { referenceAssetIds } : {}), ...(referenceImages.length ? { referenceImages } : {}), ...(referenceVideos.length ? { referenceVideos } : {}), ...(referenceLocalImages.length ? { referenceLocalImages } : {}) }];
   });
   return shots.length ? shots : DEFAULTS.shots;
 }
@@ -82,6 +114,7 @@ export function normalizeVideoParams(params: Partial<VideoParams>): VideoParams 
     audios: strings(params.audios),
     storyboardSourceAssetId: typeof params.storyboardSourceAssetId === "string" && params.storyboardSourceAssetId ? params.storyboardSourceAssetId : undefined,
     productionManifest: params.productionManifest && typeof params.productionManifest === "object" ? params.productionManifest : undefined,
+    importedSources: Array.isArray(params.importedSources) ? params.importedSources as AssetImportRecord[] : [],
   };
 }
 
@@ -100,6 +133,8 @@ export function productionManifestMismatch(params: VideoParams): string | null {
     if ((shot.referenceStrategy ?? "text") !== (approved.referenceStrategy ?? "text")) return `第 ${approved.shotNo} 镜的参考方式已变化`;
     if ((shot.referenceAssetIds ?? []).join("\n") !== (approved.referenceAssetIds ?? []).join("\n")) return `第 ${approved.shotNo} 镜的参考资产已变化`;
     if ((shot.referenceImages ?? []).join("\n") !== (approved.referenceImages ?? []).join("\n") || (shot.referenceVideos ?? []).join("\n") !== (approved.referenceVideos ?? []).join("\n")) return `第 ${approved.shotNo} 镜解析出的参考素材地址已变化`;
+    const localKey = (items: VideoLocalImageReference[] | undefined) => (items ?? []).map((item) => `${item.assetId ?? ""}\u0000${item.sourceUri ?? ""}\u0000${item.path}\u0000${item.label}`).join("\n");
+    if (localKey(shot.referenceLocalImages) !== localKey(approved.referenceLocalImages)) return `第 ${approved.shotNo} 镜的本地图片参考已变化`;
   }
   return null;
 }

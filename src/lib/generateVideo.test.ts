@@ -12,6 +12,7 @@ import { runVideo, saveMediaAsset } from "./ipc";
 import { concatMp4 } from "./media";
 import { useLibraryStore } from "../store/useLibraryStore";
 import { useProjectStore } from "../store/useProjectStore";
+import { normalizeVideoParams } from "../store/useVideoStore";
 
 const params = {
   shots: [
@@ -95,6 +96,83 @@ describe("generateVideo independent shots", () => {
     ]);
     expect(persistAssets).toHaveBeenNthCalledWith(1, expect.anything(), "视频镜头 1/2", expect.objectContaining({ params: expect.objectContaining({ referenceStrategy: "first_frame", referenceAssetIds: ["image-a"] }) }));
     expect(persistAssets).toHaveBeenNthCalledWith(2, expect.anything(), "视频镜头 2/2", expect.objectContaining({ params: expect.objectContaining({ referenceStrategy: "text", referenceAssetIds: [] }) }));
+  });
+
+  it("sends a current-project local image by identity only, while history keeps its reloadable path without base64", async () => {
+    useLibraryStore.setState({
+      assets: [{ asset: { id: "image-local", kind: "image", path: "C:/private/local.png" }, source: "本地参考图", projectId: "project_video", createdAt: 1 }],
+      tasks: [],
+    });
+    const local = { assetId: "image-local", path: "C:/private/local.png", label: "本地参考图" };
+    await generateVideo({ ...params, shots: [{ ...params.shots[0], referenceStrategy: "first_frame", referenceLocalImages: [local] }] });
+    const request = vi.mocked(runVideo).mock.calls[0][0];
+    expect(request.config).toMatchObject({ project_id: "project_video", mode: "first_frame", images: [], local_images: [{ assetId: "image-local" }] });
+    expect(JSON.stringify(request.config)).not.toContain("C:/private/local.png");
+    const meta = vi.mocked(persistAssets).mock.calls[0][2] as { params: { shots: unknown; provenance: { sourceMaterials: Array<{ assetId?: string; path?: string }>; parentAssetIds: string[] } } };
+    expect(JSON.stringify(meta.params.shots)).toContain("C:/private/local.png");
+    expect(meta.params.provenance.sourceMaterials).toContainEqual(expect.objectContaining({ assetId: "image-local" }));
+    expect(meta.params.provenance.sourceMaterials.some((item) => item.path === "C:/private/local.png")).toBe(true);
+    expect(JSON.stringify(meta)).not.toContain("data:image/");
+    expect(meta.params.provenance.parentAssetIds).toContain("image-local");
+    expect(normalizeVideoParams(meta.params as Parameters<typeof normalizeVideoParams>[0]).shots[0].referenceLocalImages).toEqual([local]);
+    const task = vi.mocked(persistTask).mock.calls[0][0] as unknown as { params: { provenance: { sourceMaterials: Array<{ assetId?: string }>; parentAssetIds: string[] } } };
+    expect(task.params.provenance.sourceMaterials).toContainEqual(expect.objectContaining({ assetId: "image-local" }));
+    expect(task.params.provenance.parentAssetIds).toContain("image-local");
+  });
+
+  it("submits canonical comic image identity without exposing its local path to native and reloads it from history", async () => {
+    const canonical = { sourceUri: "comic-md://project_video/work/chapter/image/canonical-1", path: "C:/private/canonical.png", label: "漫画第1页" };
+    await generateVideo({ ...params, shots: [{ ...params.shots[0], referenceStrategy: "first_frame", referenceLocalImages: [canonical] }] });
+    expect(vi.mocked(runVideo).mock.calls[0][0].config).toMatchObject({ local_images: [{ sourceUri: canonical.sourceUri }], images: [] });
+    const meta = vi.mocked(persistAssets).mock.calls[0][2] as { params: { shots: unknown; provenance: { sourceMaterials: Array<{ source?: string; path?: string }> } } };
+    expect(meta.params.provenance.sourceMaterials).toContainEqual(expect.objectContaining({ source: canonical.sourceUri }));
+    expect(JSON.stringify(meta)).toContain(canonical.path);
+    expect(JSON.stringify(meta)).not.toContain("data:image/");
+    expect(normalizeVideoParams(meta.params as Parameters<typeof normalizeVideoParams>[0]).shots[0].referenceLocalImages).toEqual([canonical]);
+  });
+
+  it("counts URL and local images together for first_frame and rejects a mixed pair before any task", async () => {
+    useLibraryStore.setState({
+      assets: [{ asset: { id: "image-local", kind: "image", path: "C:/private/local.png" }, source: "本地参考图", projectId: "project_video", createdAt: 1 }],
+      tasks: [],
+    });
+    await expect(generateVideo({ ...params, shots: [{ ...params.shots[0], referenceStrategy: "first_frame", referenceImages: ["https://example.com/hosted.png"], referenceLocalImages: [{ assetId: "image-local", path: "C:/private/local.png", label: "本地参考图" }] }] }))
+      .rejects.toThrow("需要且只能使用 1 张图片");
+    expect(runVideo).not.toHaveBeenCalled();
+    expect(persistTask).not.toHaveBeenCalled();
+  });
+
+  it("rejects cross-project local identities and filters imported parent ids per shot", async () => {
+    useLibraryStore.setState({
+      assets: [{ asset: { id: "foreign-image", kind: "image", path: "C:/foreign.png" }, source: "其他项目图片", projectId: "other-project", createdAt: 1 }],
+      tasks: [],
+    });
+    await expect(generateVideo({ ...params, shots: [{ ...params.shots[0], referenceStrategy: "first_frame", referenceLocalImages: [{ assetId: "foreign-image", path: "C:/foreign.png", label: "其他项目图片" }] }] }))
+      .rejects.toThrow("不属于当前项目");
+    expect(runVideo).not.toHaveBeenCalled();
+    expect(persistTask).not.toHaveBeenCalled();
+
+    vi.mocked(runVideo).mockResolvedValueOnce({ assets: [{ id: "segment_local", kind: "video", path: "C:/1.mp4", durationS: 3 }] });
+    await generateVideo({ ...params, shots: [params.shots[0]], importedSources: [
+      { action: "reference", targetShotId: "shot-1", assetIds: ["only-shot-1"], sourceMaterials: [] },
+      { action: "reference", targetShotId: "other-shot", assetIds: ["other-shot-id"], sourceMaterials: [] },
+    ] });
+    const meta = vi.mocked(persistAssets).mock.calls[0][2] as { params: { provenance: { parentAssetIds: string[] } } };
+    expect(meta.params.provenance.parentAssetIds).toContain("only-shot-1");
+    expect(meta.params.provenance.parentAssetIds).not.toContain("other-shot-id");
+  });
+
+  it("keeps a shot-scoped imported prompt out of the other shot's persisted provenance", async () => {
+    await generateVideo({ ...params, importedSources: [
+      { action: "merge_prompt", targetShotId: "shot-1", assetIds: ["source-1"], sourceMaterials: [{ kind: "text", label: "镜头一资料", source: "asset:source-1", text: "一" }] },
+      { action: "merge_prompt", targetShotId: "shot-2", assetIds: ["source-2"], sourceMaterials: [{ kind: "text", label: "镜头二资料", source: "asset:source-2", text: "二" }] },
+    ] });
+    const first = vi.mocked(persistAssets).mock.calls[0][2] as { params: { provenance: { sourceMaterials: Array<{ label: string }> } } };
+    const second = vi.mocked(persistAssets).mock.calls[1][2] as { params: { provenance: { sourceMaterials: Array<{ label: string }> } } };
+    expect(first.params.provenance.sourceMaterials.map((item) => item.label)).toContain("镜头一资料");
+    expect(first.params.provenance.sourceMaterials.map((item) => item.label)).not.toContain("镜头二资料");
+    expect(second.params.provenance.sourceMaterials.map((item) => item.label)).toContain("镜头二资料");
+    expect(second.params.provenance.sourceMaterials.map((item) => item.label)).not.toContain("镜头一资料");
   });
 
   it("rejects legacy audio references because sound work is outside the current video workspace", async () => {

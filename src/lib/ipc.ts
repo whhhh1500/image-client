@@ -111,6 +111,77 @@ export const runVideo = (req: RunNodeRequest): Promise<RunResult> =>
 export const importRefImage = (src: string): Promise<string> =>
   loggedInvoke<string>("import_ref_image", { src });
 
+export type ExternalAssetImportEntry =
+  | "image_reference"
+  | "prompt_library_reference"
+  | "video_reference"
+  | "short_drama_video_reference"
+  | "asset_library_upload";
+
+export type AssetImportFileInput =
+  | { source: "path"; path: string }
+  | { source: "bytes"; fileName: string; data: Uint8Array };
+
+export interface AssetImportFilesRequest {
+  projectId: string;
+  importEntry: ExternalAssetImportEntry;
+  uploadBatchId: string;
+  files: AssetImportFileInput[];
+  params: Record<string, unknown>;
+}
+
+export interface ImportedLibraryAssetResult {
+  asset: AssetRef;
+  source: string;
+  projectId: string;
+  params: Record<string, unknown>;
+  createdAt: number;
+}
+
+export const assetImportFiles = (input: AssetImportFilesRequest): Promise<ImportedLibraryAssetResult[]> =>
+  loggedInvoke<ImportedLibraryAssetResult[]>("asset_import_files", { input });
+
+export type MediaHostingAuthMode = "bearer" | "raw";
+
+export interface MediaHostingStatus {
+  endpoint: string;
+  fileField: string;
+  urlField: string;
+  authMode: MediaHostingAuthMode;
+  hasToken: boolean;
+  configured: boolean;
+}
+
+export interface MediaHostingSaveInput {
+  endpoint: string;
+  fileField: string;
+  urlField: string;
+  authMode: MediaHostingAuthMode;
+  /** An empty value deliberately preserves the already stored token. */
+  token: string;
+}
+
+export interface AssetPublishMediaSource {
+  assetId?: string;
+  sourceUri?: string;
+}
+
+export interface AssetPublishMediaResult {
+  key: string;
+  url?: string;
+  sha256?: string;
+  error?: string;
+}
+
+export const mediaHostingGet = (): Promise<MediaHostingStatus> =>
+  loggedInvoke<MediaHostingStatus>("media_hosting_get");
+
+export const mediaHostingSave = (input: MediaHostingSaveInput): Promise<MediaHostingStatus> =>
+  loggedInvoke<MediaHostingStatus>("media_hosting_save", { input });
+
+export const assetPublishMedia = (input: { projectId: string; expectedEndpoint: string; sources: AssetPublishMediaSource[] }): Promise<{ results: AssetPublishMediaResult[] }> =>
+  loggedInvoke<{ results: AssetPublishMediaResult[] }>("asset_publish_media", { input });
+
 export const llmChat = (system: string, user: string, model?: string): Promise<string> =>
   loggedInvoke<string>("llm_chat", { system, user, model });
 

@@ -3,8 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const state = vi.hoisted(() => ({ assets: [] as Array<Record<string, unknown>> }));
-const api = vi.hoisted(() => ({ llmChat: vi.fn(), saveDocumentVersion: vi.fn() }));
-const pickers = vi.hoisted(() => ({ byTitle: {} as Record<string, (asset: Record<string, unknown>) => void> }));
+const api = vi.hoisted(() => ({ llmChat: vi.fn(), saveDocumentVersion: vi.fn(), confirmAction: vi.fn() }));
+const pickers = vi.hoisted(() => ({ byTitle: {} as Record<string, (asset: Record<string, unknown>) => void>, filters: {} as Record<string, (asset: Record<string, unknown>) => boolean> }));
+const novelManagers = vi.hoisted(() => ({
+  onSelect: undefined as undefined | ((selection: Record<string, unknown>) => void),
+  onChanged: undefined as undefined | ((change: Record<string, unknown>) => void),
+  manageOnSelect: undefined as undefined | ((selection: Record<string, unknown>) => void),
+}));
 
 vi.mock("../../store/useProjectStore", () => ({
   useProjectStore: (selector: (value: Record<string, unknown>) => unknown) => selector({
@@ -18,11 +23,13 @@ vi.mock("../../store/useLibraryStore", () => ({
 }));
 
 vi.mock("../../lib/ipc", () => ({ llmChat: api.llmChat }));
+vi.mock("../../lib/confirm", () => ({ confirmAction: api.confirmAction }));
 vi.mock("../../lib/documents", async (original) => ({
   ...await original<typeof import("../../lib/documents")>(),
   saveDocumentVersion: api.saveDocumentVersion,
 }));
-vi.mock("../AssetPicker", () => ({ default: ({ title, open, onPick }: { title: string; open: boolean; onPick: (asset: Record<string, unknown>) => void }) => { if (open) pickers.byTitle[title] = onPick; return null; } }));
+vi.mock("../AssetPicker", () => ({ default: ({ title, open, onPick, filter }: { title: string; open: boolean; onPick: (asset: Record<string, unknown>) => void; filter: (asset: Record<string, unknown>) => boolean }) => { if (open) { pickers.byTitle[title] = onPick; pickers.filters[title] = filter; } return null; } }));
+vi.mock("../novel/NovelAssetManager", () => ({ default: ({ open, mode, onSelect, onChanged }: { open: boolean; mode: "select" | "manage"; onSelect?: (selection: Record<string, unknown>) => void; onChanged?: (change: Record<string, unknown>) => void }) => { if (open && mode === "select") novelManagers.onSelect = onSelect; if (open && mode === "manage") { novelManagers.onChanged = onChanged; novelManagers.manageOnSelect = onSelect; } return null; } }));
 vi.mock("./VideoStoryboardEditor", () => ({ default: () => null }));
 
 import VideoMarkdownWorkspace from "./VideoMarkdownWorkspace";
@@ -43,6 +50,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
   pickers.byTitle = {};
+  pickers.filters = {};
+  novelManagers.onSelect = undefined;
+  novelManagers.onChanged = undefined;
+  novelManagers.manageOnSelect = undefined;
   state.assets = [
     textAsset("director-v1", "导演规划 · 第1章", {
       text: "# 改编规划\n\n旧规划",
@@ -70,13 +81,16 @@ beforeEach(() => {
       sourceKind: "novel_chapter",
       novelWorkId: "book",
       novelChapterId: "chapter-1",
+      novelChapterRevisionId: "revision-1",
       chapterNo: 1,
+      novelSourceReference: { projectId: "p", novelWorkId: "book", novelChapterId: "chapter-1", novelChapterRevisionId: "revision-1", chapterNo: 1, title: "夜雨", content: "第一章正文" },
       provenance: provenance([]),
     }, 1),
   ];
   api.llmChat
     .mockResolvedValueOnce("# 改编规划\n\n## 输入边界\n严格停在原文结尾。\n\n## 项目硬约束\n16:9，无声音字幕。\n\n## 核心戏剧判断\n人物因选择承担后果。\n\n## 人物弧与关系\n保持人物关系不变。\n\n## 叙事节拍\n进入状态 → 选择 → 结果 → 承接。\n\n## 核心视觉母题\n用原文既有道具贯穿。\n\n## 视觉策略\n克制写实。\n\n## 风险与自检\n无越界续写。")
     .mockResolvedValueOnce("# 产物质量审查\n【结论】通过\n【总分】88\n【剧情吸引力】85 | 因果清晰\n【视觉独特性】80 | 使用原文视觉母题\n【原文忠实度】92 | 未越界\n【人物与情感】86 | 动机成立\n【可执行性】88 | 可拍\n【一致性】90 | 一致\n【亮点】人物选择明确\n【阻断问题】无\n【一般问题】无\n【改进建议】保持克制");
+  api.confirmAction.mockResolvedValue(true);
   api.saveDocumentVersion.mockResolvedValue(textAsset("director-v2", "导演规划 · 第1章", {
     text: "# 改编规划\n\n## 输入边界\n严格停在原文结尾。\n\n## 项目硬约束\n16:9，无声音字幕。\n\n## 核心戏剧判断\n人物因选择承担后果。\n\n## 人物弧与关系\n保持人物关系不变。\n\n## 叙事节拍\n进入状态 → 选择 → 结果 → 承接。\n\n## 核心视觉母题\n用原文既有道具贯穿。\n\n## 视觉策略\n克制写实。\n\n## 风险与自检\n无越界续写。",
     title: "导演规划 · 第1章",
@@ -109,6 +123,179 @@ it("imports a current-project video work as a workflow-level Agent reference", a
 afterEach(cleanup);
 
 describe("VideoMarkdownWorkspace editing loop", () => {
+  it("uses a confirmed novel revision as an editable, persistently labelled source snapshot", async () => {
+    api.saveDocumentVersion.mockResolvedValue(textAsset("source-v2", "视频原始资料 · 第2章", {
+      text: "# 原始资料\n\n## 类型\n小说章节\n\n## 正文\n第二章正文",
+      title: "视频原始资料 · 第2章",
+      documentType: "document",
+      documentId: "source-doc-2",
+      version: 1,
+      changeType: "manual",
+      agentId: "source",
+      videoWorkflowId: "video:novel:book:chapter-2",
+      sourceKind: "novel_chapter",
+      novelWorkId: "book",
+      novelChapterId: "chapter-2",
+      novelChapterRevisionId: "revision-2",
+      chapterNo: 2,
+      novelSourceReference: { projectId: "p", novelWorkId: "book", novelChapterId: "chapter-2", novelChapterRevisionId: "revision-2", chapterNo: 2, workTitle: "雨夜来信", title: "转机", content: "第二章正文" },
+      provenance: provenance([]),
+    }, 4));
+    render(<VideoMarkdownWorkspace onEditPrompt={vi.fn()} onSendToVideo={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "引用/采用小说章节为短剧快照" }));
+    novelManagers.onSelect?.({ projectId: "p", novelWorkId: "book", novelChapterId: "chapter-2", novelChapterRevisionId: "revision-2", revisionNo: 3, sourceAssetId: "novel-r2", chapterNo: 2, workTitle: "雨夜来信", title: "转机", content: "第二章正文" });
+
+    await waitFor(() => expect(screen.getByLabelText("原始资料 Markdown")).toHaveProperty("value", "第二章正文"));
+    expect(screen.getByText(/雨夜来信/)).toBeTruthy();
+    expect(screen.getByText(/第2章.*转机.*revision-2/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "保存初稿" }));
+
+    await waitFor(() => expect(api.saveDocumentVersion).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({
+        sourceKind: "novel_chapter",
+        novelWorkId: "book",
+        novelChapterId: "chapter-2",
+        novelChapterRevisionId: "revision-2",
+        chapterNo: 2,
+        sourceAssetId: "novel-r2",
+        novelSourceReference: expect.objectContaining({ workTitle: "雨夜来信", title: "转机", content: "第二章正文" }),
+      }),
+      provenance: expect.objectContaining({
+        originalInput: "第二章正文",
+        sourceMaterials: [expect.objectContaining({ label: expect.stringContaining("第2章") })],
+        parentAssetIds: ["novel-r2"],
+      }),
+    })));
+  });
+
+  it("keeps the short-drama snapshot unchanged when shared novel-asset management saves a revision", async () => {
+    render(<VideoMarkdownWorkspace onEditPrompt={vi.fn()} onSendToVideo={vi.fn()} />);
+    const originalSnapshot = (screen.getByLabelText("原始资料 Markdown") as HTMLTextAreaElement).value;
+
+    fireEvent.click(screen.getByRole("button", { name: "管理小说原文资产" }));
+    expect(novelManagers.manageOnSelect).toBeUndefined();
+    novelManagers.onChanged?.({ projectId: "p", novelWorkId: "book", novelChapterId: "chapter-1", novelChapterRevisionId: "revision-2" });
+
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("当前短剧原文快照未改动"));
+    expect(screen.getByLabelText("原始资料 Markdown")).toHaveProperty("value", originalSnapshot);
+    expect(api.saveDocumentVersion).not.toHaveBeenCalled();
+  });
+
+  it("does not replace an unsaved draft in the selected chapter until the user confirms it", async () => {
+    state.assets.push(textAsset("source-b", "视频原始资料 · 第2章", {
+      text: "# 原始资料\n\n## 类型\n小说章节\n\n## 正文\n第二章已保存正文",
+      title: "视频原始资料 · 第2章",
+      documentType: "document",
+      documentId: "source-doc-b",
+      version: 1,
+      changeType: "manual",
+      agentId: "source",
+      videoWorkflowId: "video:novel:book:chapter-2",
+      sourceKind: "novel_chapter",
+      novelWorkId: "book",
+      novelChapterId: "chapter-2",
+      novelChapterRevisionId: "revision-2",
+      chapterNo: 2,
+      provenance: provenance([]),
+    }, 3));
+    localStorage.setItem("video-md:draft:p:video:novel:book:chapter-2:source:source-b", JSON.stringify({
+      text: "# 原始资料\n\n## 类型\n小说章节\n\n## 正文\n第二章未保存正文",
+      optimizationInstruction: "",
+      changeType: "manual",
+      sourceKind: "novel",
+      dependencyMode: "current",
+    }));
+    localStorage.setItem("video-md:last-workflow:p", "video:novel:book:chapter-1");
+    api.confirmAction.mockResolvedValueOnce(false);
+    render(<VideoMarkdownWorkspace onEditPrompt={vi.fn()} onSendToVideo={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "引用/采用小说章节为短剧快照" }));
+    novelManagers.onSelect?.({ projectId: "p", novelWorkId: "book", novelChapterId: "chapter-2", novelChapterRevisionId: "revision-2", revisionNo: 3, chapterNo: 2, workTitle: "雨夜来信", title: "转机", content: "第二章正文" });
+
+    await waitFor(() => expect(api.confirmAction).toHaveBeenCalledOnce());
+    expect(screen.getByLabelText("原始资料 Markdown")).toHaveProperty("value", "# 原始资料\n\n## 类型\n小说\n\n## 正文\n第一章正文");
+    expect(localStorage.getItem("video-md:draft:p:video:novel:book:chapter-2:source:source-b")).toContain("第二章未保存正文");
+  });
+
+  it("clears novel lineage when manual source text is saved and reopened", async () => {
+    let savedManual: Record<string, unknown> | undefined;
+    api.saveDocumentVersion.mockImplementationOnce(async (input: Record<string, any>) => {
+      savedManual = textAsset("source-manual-v2", "视频原始资料 · 第1章", {
+        ...input.metadata,
+        text: input.text,
+        title: "视频原始资料 · 第1章",
+        documentType: "document",
+        documentId: "source-doc",
+        version: 2,
+        changeType: "manual",
+        agentId: "source",
+        provenance: input.provenance,
+      }, 5);
+      return savedManual;
+    });
+    const rendered = render(<VideoMarkdownWorkspace onEditPrompt={vi.fn()} onSendToVideo={vi.fn()} />);
+
+    fireEvent.change(screen.getByLabelText("原文来源类型"), { target: { value: "manual" } });
+    fireEvent.change(screen.getByLabelText("原始资料 Markdown"), { target: { value: "手动补充的原文" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存 v2" }));
+
+    await waitFor(() => expect(api.saveDocumentVersion).toHaveBeenCalledOnce());
+    const request = api.saveDocumentVersion.mock.calls[0][0] as { metadata: Record<string, unknown>; provenance: Record<string, unknown> };
+    expect(request.metadata).toMatchObject({ sourceKind: "manual" });
+    expect(request.metadata).not.toHaveProperty("novelWorkId");
+    expect(request.metadata).not.toHaveProperty("novelChapterId");
+    expect(request.metadata).not.toHaveProperty("novelChapterRevisionId");
+    expect(request.metadata).not.toHaveProperty("novelSourceReference");
+    expect(request.provenance).toMatchObject({ sourceMaterials: [], parentAssetIds: [] });
+
+    state.assets = [savedManual!, ...state.assets];
+    rendered.unmount();
+    render(<VideoMarkdownWorkspace onEditPrompt={vi.fn()} onSendToVideo={vi.fn()} />);
+    expect(screen.getByLabelText("原文来源类型")).toHaveProperty("value", "manual");
+    expect(screen.queryByText(/^来源：/)).toBeNull();
+    expect(screen.getByLabelText("原始资料 Markdown")).toHaveProperty("value", "# 原始资料\n\n## 类型\n手动原文\n\n## 正文\n手动补充的原文");
+  });
+
+  it("keeps the existing fixed snapshot flow for other project text assets", async () => {
+    const otherText = textAsset("research-note", "人物关系笔记", {
+      text: "其他文本资产正文",
+      title: "人物关系笔记",
+      documentType: "note",
+      agentId: "research",
+    }, 4);
+    const savedIdeaSource = textAsset("idea-source", "视频原始资料 · 脑洞", {
+      text: "# 原始资料\n\n## 类型\n脑洞\n\n## 正文\n旧脑洞正文",
+      title: "视频原始资料 · 脑洞",
+      documentType: "document",
+      agentId: "source",
+      videoWorkflowId: "video:idea:p",
+      sourceKind: "idea",
+    }, 4);
+    state.assets.push(otherText, savedIdeaSource);
+    localStorage.setItem("video-md:last-workflow:p", "video:novel:book:chapter-1");
+    render(<VideoMarkdownWorkspace onEditPrompt={vi.fn()} onSendToVideo={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "从其他文本资产选择" }));
+    const onPick = pickers.byTitle["选择其他文本原文资产"];
+    const filter = pickers.filters["选择其他文本原文资产"];
+    expect(onPick).toBeTypeOf("function");
+    expect(filter(otherText)).toBe(true);
+    expect(filter(savedIdeaSource)).toBe(true);
+    expect(filter(state.assets.find((asset) => (asset.asset as { id: string }).id === "source-v1")!)).toBe(false);
+    expect(filter(state.assets.find((asset) => (asset.asset as { id: string }).id === "director-v1")!)).toBe(false);
+    onPick(otherText);
+
+    await waitFor(() => expect(screen.getByLabelText("原始资料 Markdown")).toHaveProperty("value", "其他文本资产正文"));
+    fireEvent.click(screen.getByRole("button", { name: "保存 v2" }));
+    await waitFor(() => expect(api.saveDocumentVersion).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({ sourceKind: "manual", sourceAssetId: "research-note" }),
+      provenance: expect.objectContaining({ parentAssetIds: ["research-note"] }),
+    })));
+    const request = api.saveDocumentVersion.mock.calls[0][0] as { metadata: Record<string, unknown> };
+    expect(request.metadata).not.toHaveProperty("novelWorkId");
+    expect(request.metadata).not.toHaveProperty("novelChapterRevisionId");
+  });
+
   it("directly saves a reviewed optimization and its existing downstream chain", async () => {
     render(<VideoMarkdownWorkspace llmModel="test-llm" onEditPrompt={vi.fn()} onSendToVideo={vi.fn()} />);
     fireEvent.click(screen.getByRole("tab", { name: /改编规划/ }));
@@ -261,7 +448,7 @@ describe("VideoMarkdownWorkspace editing loop", () => {
     expect(screen.getByRole("button", { name: "保存迁移版本" })).toHaveProperty("disabled", false);
   });
 
-  it("marks a video source stale when the same novel chapter publishes a new revision", async () => {
+  it("keeps a saved novel snapshot stable when the chapter receives a newer revision", async () => {
     const videoSource = state.assets.find((asset) => (asset.asset as { id: string }).id === "source-v1")!;
     videoSource.params = { ...(videoSource.params as Record<string, unknown>), sourceAssetId: "novel-r1", novelChapterRevisionId: "r1" };
     state.assets = [
@@ -271,11 +458,9 @@ describe("VideoMarkdownWorkspace editing loop", () => {
     ];
 
     render(<VideoMarkdownWorkspace llmModel="test-llm" onEditPrompt={vi.fn()} onSendToVideo={vi.fn()} />);
-    const sourceStep = screen.getByRole("tab", { name: /原始资料 需更新/ });
-    fireEvent.click(sourceStep);
-    fireEvent.click(screen.getByRole("button", { name: "载入章节最新版" }));
-    expect(screen.getByLabelText("当前草稿")).toHaveProperty("value", "第二版章节正文");
-    expect(screen.getByRole("status").textContent).toContain("迁移草稿");
+    expect(screen.queryByRole("tab", { name: /原始资料 需更新/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "载入章节最新版" })).toBeNull();
+    expect(screen.getByLabelText("原始资料 Markdown")).toHaveProperty("value", "# 原始资料\n\n## 类型\n小说\n\n## 正文\n第一章正文");
   });
 
   it("requires an explicit choice when a project contains multiple video workspaces", () => {
