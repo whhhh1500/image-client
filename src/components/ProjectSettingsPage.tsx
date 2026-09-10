@@ -82,7 +82,6 @@ export default function ProjectSettingsPage({
     const nextResolution = preferredResolution(selectedVideoCapability.resolutions);
     const previousResolution = draft.videoResolution;
     setDraft((current) => current ? { ...current, videoResolution: nextResolution } : current);
-    setDirty(true);
     setVideoCapabilityNotice(`${selectedVideoCapability.label} 不支持 ${previousResolution}，已切换为 ${nextResolution}。保存后会用于质检和每个视频任务。`);
   }, [draft, selectedVideoCapability]);
 

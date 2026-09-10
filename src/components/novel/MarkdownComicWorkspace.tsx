@@ -117,6 +117,10 @@ function ChapterWorkspace({ scope, chapter, refreshChapters, onChooseChapter, so
   const { workspace, error, refresh } = useComicMdWorkspace(scope);
   const libraryAssets = useLibraryStore((state) => state.assets);
   const [view, setView] = useState<View>("source");
+  const [visualOpen, setVisualOpen] = useState(false);
+  useEffect(() => {
+    setVisualOpen(view === "settings");
+  }, [view]);
   const [pageNo, setPageNo] = useState(1);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -265,19 +269,38 @@ function ChapterWorkspace({ scope, chapter, refreshChapters, onChooseChapter, so
       {(error || message) && <p role="alert" className="rounded-lg bg-amber-500/10 p-3 text-sm text-amber-100">{error || message}</p>}
       {currentJob && <p aria-label="当前生成状态" className="border-l-2 border-slate-600 pl-3 text-sm text-slate-300">{mdLabels[currentJob.kind]} · {currentJob.status === "running" ? `正在${currentJob.kind === "sync" ? "更新" : currentJob.kind === "optimize" ? "优化" : "生成"}${["images", "optimize", "sync"].includes(currentJob.kind) ? ` · ${currentJob.completedPages}/${currentJob.totalPages} ${currentJob.kind === "images" ? "页" : "份"}` : "，可以继续编辑文字"}` : "本次未完成，已有成果保留；请查看下方生成记录，修正后重新生成。"}</p>}
       <MarkdownSyncNotice scope={scope} workspace={workspace} disabled={disabled} onSync={sync} onChooseChapter={onChooseChapter} />
-      <ComicStyleReferencePanel scope={scope} references={styleReferences} onChange={setStyleReferenceDraft} disabled={disabled} />
-      <section className="rounded-xl border border-indigo-300/15 bg-indigo-300/[0.035] p-4">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div><h3 className="text-sm font-semibold text-indigo-100">统一视觉宪法</h3><p className="mt-1 max-w-3xl text-xs leading-5 text-slate-400">作品级画风会影响作品设定、剧本、分镜、每页 Prompt 和实际生图，只控制视觉语言，不改变小说剧情。</p></div>
-          <div className="flex flex-wrap gap-2"><button className={button} disabled={disabled || !styleReferences.length || !!invalidDraftReferences.length || visualConflict} onClick={() => void extractWorkVisual()}>根据参考图提取</button><button className={primary} disabled={disabled || !visualDirty || !!invalidDraftReferences.length || visualConflict} onClick={() => void run(async () => { await saveWorkVisual(); setMessage("作品级画风参考和视觉宪法已保存。"); })}>保存作品视觉设定</button></div>
+      <details
+        className="group rounded-xl border border-indigo-900/60 bg-indigo-950/20 p-4 transition"
+        open={visualOpen}
+        onToggle={(event) => setVisualOpen(event.currentTarget.open)}
+      >
+        <summary className="flex cursor-pointer select-none items-center justify-between font-medium text-indigo-100">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-semibold">作品视觉设定与画风参考（统一视觉宪法）</span>
+            <span className="text-xs text-slate-400">
+              {styleReferences.length ? `${styleReferences.length} 张参考图` : "无参考图"} · 第 {visualProfile.revision} 版{visualDirty ? " · 有未保存修改" : ""}
+            </span>
+          </div>
+          <span className="text-xs text-indigo-300 underline-offset-2 group-open:text-slate-400">
+            {visualOpen ? "收起" : "展开"}
+          </span>
+        </summary>
+        <div className="mt-3 space-y-4">
+          <ComicStyleReferencePanel scope={scope} references={styleReferences} onChange={setStyleReferenceDraft} disabled={disabled} />
+          <section className="rounded-xl border border-indigo-300/15 bg-indigo-300/[0.035] p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div><h3 className="text-sm font-semibold text-indigo-100">统一视觉宪法</h3><p className="mt-1 max-w-3xl text-xs leading-5 text-slate-400">作品级画风会影响作品设定、剧本、分镜、每页 Prompt 和实际生图，只控制视觉语言，不改变小说剧情。</p></div>
+              <div className="flex flex-wrap gap-2"><button className={button} disabled={disabled || !styleReferences.length || !!invalidDraftReferences.length || visualConflict} onClick={() => void extractWorkVisual()}>根据参考图提取</button><button className={primary} disabled={disabled || !visualDirty || !!invalidDraftReferences.length || visualConflict} onClick={() => void run(async () => { await saveWorkVisual(); setMessage("作品级画风参考和视觉宪法已保存。"); })}>保存作品视觉设定</button></div>
+            </div>
+            <textarea aria-label="作品级视觉宪法" className={`${field} mt-3 min-h-40 w-full`} value={constitution} onChange={(event) => setConstitutionDraft(event.target.value)} placeholder="先上传图片作品，再点击“根据参考图提取”；也可以直接编辑 Markdown。" />
+            <p className="mt-2 text-xs text-slate-500">当前第 {visualProfile.revision} 版{visualDirty ? " · 有未保存修改" : " · 已保存"}。生成文字或图片前会先保存；修改后不会自动重画已有图片。</p>
+            {!!invalidDraftReferences.length && <p role="alert" className="mt-2 text-xs text-amber-200">有 {invalidDraftReferences.length} 张本地草稿参考图尚未加载、已经失效或不属于当前作品。系统不会静默删除服务器中的参考图；请等待资源加载或主动移除。</p>}
+            {!!unavailableSavedReferences.length && <p role="alert" className="mt-2 text-xs text-amber-200">有 {unavailableSavedReferences.length} 张已保存参考图的文件内容丢失或发生变化。生成已阻断，请移除并重新上传。</p>}
+            {visualConflict && <div role="alert" className="mt-2 rounded-lg border border-amber-300/20 bg-amber-300/5 p-3 text-xs text-amber-100"><p>服务器中的作品视觉设定已有新版本，当前草稿未覆盖它。</p><div className="mt-2 flex flex-wrap gap-2"><button className={button} onClick={() => { setStyleReferenceDraft(null); setConstitutionDraft(null); setVisualConflict(false); setMessage("已加载服务器中的最新作品视觉设定。"); }}>加载服务器版本</button><button className={button} onClick={() => { setVisualConflict(false); setMessage("已保留当前草稿；再次保存时会以最新服务器版本为基准，请先核对内容。"); }}>保留当前草稿</button></div></div>}
+            {(styleReferenceStorageError || constitutionStorageError) && <p role="alert" className="mt-2 text-xs text-amber-200">作品视觉草稿无法写入本地，请先复制内容。</p>}
+          </section>
         </div>
-        <textarea aria-label="作品级视觉宪法" className={`${field} mt-3 min-h-40 w-full`} value={constitution} onChange={(event) => setConstitutionDraft(event.target.value)} placeholder="先上传图片作品，再点击“根据参考图提取”；也可以直接编辑 Markdown。" />
-        <p className="mt-2 text-xs text-slate-500">当前第 {visualProfile.revision} 版{visualDirty ? " · 有未保存修改" : " · 已保存"}。生成文字或图片前会先保存；修改后不会自动重画已有图片。</p>
-        {!!invalidDraftReferences.length && <p role="alert" className="mt-2 text-xs text-amber-200">有 {invalidDraftReferences.length} 张本地草稿参考图尚未加载、已经失效或不属于当前作品。系统不会静默删除服务器中的参考图；请等待资源加载或主动移除。</p>}
-        {!!unavailableSavedReferences.length && <p role="alert" className="mt-2 text-xs text-amber-200">有 {unavailableSavedReferences.length} 张已保存参考图的文件内容丢失或发生变化。生成已阻断，请移除并重新上传。</p>}
-        {visualConflict && <div role="alert" className="mt-2 rounded-lg border border-amber-300/20 bg-amber-300/5 p-3 text-xs text-amber-100"><p>服务器中的作品视觉设定已有新版本，当前草稿未覆盖它。</p><div className="mt-2 flex flex-wrap gap-2"><button className={button} onClick={() => { setStyleReferenceDraft(null); setConstitutionDraft(null); setVisualConflict(false); setMessage("已加载服务器中的最新作品视觉设定。"); }}>加载服务器版本</button><button className={button} onClick={() => { setVisualConflict(false); setMessage("已保留当前草稿；再次保存时会以最新服务器版本为基准，请先核对内容。"); }}>保留当前草稿</button></div></div>}
-        {(styleReferenceStorageError || constitutionStorageError) && <p role="alert" className="mt-2 text-xs text-amber-200">作品视觉草稿无法写入本地，请先复制内容。</p>}
-      </section>
+      </details>
       {view === "source" ? <section aria-label="小说原文资产" className="space-y-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold text-slate-100">小说原文资产</h2><p className="mt-1 max-w-3xl text-sm leading-6 text-slate-400">这是当前漫画章节使用的小说原文快照。编辑原文会新建原文修订，并只把现有漫画改编稿标记为需要核对；不会自动生成、覆盖剧本、分镜或已有图片。</p></div><button className={button} disabled={disabled} onClick={onManageSource}>管理小说原文</button></div><dl className="grid gap-3 text-sm sm:grid-cols-2"><div className="rounded-lg border border-slate-800 p-3"><dt className="text-xs text-slate-500">漫画章节</dt><dd className="mt-1 text-slate-200">第{chapter.chapterNo}章 · {chapter.title || "未命名章节"}</dd></div><div className="rounded-lg border border-slate-800 p-3"><dt className="text-xs text-slate-500">当前原文修订</dt><dd className="mt-1 break-all text-slate-200">{workspace.sourceRevisionId ?? "尚未保存原文"}</dd></div></dl><label className="block text-sm text-slate-300">小说原文预览<textarea aria-label="小说原文预览" readOnly className={`${field} mt-1 min-h-72 w-full resize-y leading-7`} value={workspace.sourceContent} /></label><p className="text-xs leading-5 text-slate-500">下面的“作品设定”“本章剧本”“分页分镜”和 Prompt 都是漫画改编稿；它们的保存和原文资产相互独立。</p></section> : view === "images" ? <>
         <div><h2 className="text-lg font-semibold text-slate-100">漫画结果</h2><p className="mt-1 text-sm leading-6 text-slate-400">一份页 Prompt 对应一张漫画页。按页码顺序生成；缺页、未保存或需更新时会明确提示。</p></div>
         <label className="block text-sm text-slate-300">本章 Prompt 注入<textarea aria-label="本章 Prompt 注入" className={`${field} mt-1 min-h-24 w-full`} value={injection} onChange={(event) => setInjectionDraft(event.target.value === renderOptions.promptInjection && (!injectionDraft || injectionDraft.expectedRevision === renderOptions.revision) ? null : { promptInjection: event.target.value, expectedRevision: injectionDraft?.expectedRevision ?? renderOptions.revision })} placeholder="例如：使用黑白水墨画风，所有对白用简体中文" /></label>

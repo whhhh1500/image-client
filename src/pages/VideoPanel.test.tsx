@@ -436,4 +436,64 @@ describe("VideoPanel storyboard import", () => {
     await waitFor(() => expect(screen.getByText(/没有 wan3-720p 的能力定义/)).toBeTruthy());
     expect((screen.getByRole("button", { name: /生成 1 个视频镜头/ }) as HTMLButtonElement).disabled).toBe(true);
   });
+
+  it("renders shot reference videos and clicking remove button deletes it and resets referenceStrategy", async () => {
+    useProjectStore.setState({ activeId: "project-a", projects: [project("project-a")] });
+    useVideoStore.getState().load({
+      model: "model",
+      mode: "text",
+      aspectRatio: "16:9",
+      resolution: "720p",
+      images: [],
+      videos: [],
+      audios: [],
+      shots: [{
+        id: "shot-1",
+        shotNo: 1,
+        prompt: "镜头",
+        durationS: 3,
+        referenceStrategy: "reference",
+        referenceVideos: ["https://cdn.example/shot-video.mp4"],
+      }],
+    });
+
+    render(<VideoPanel />);
+    await waitFor(() => expect(screen.getByText("托管视频 URL · https://cdn.example/shot-video.mp4")).toBeTruthy());
+    const removeBtn = screen.getByRole("button", { name: "移除托管视频 https://cdn.example/shot-video.mp4" });
+    fireEvent.click(removeBtn);
+
+    expect(useVideoStore.getState().shots[0].referenceVideos).toEqual([]);
+    expect(useVideoStore.getState().shots[0].referenceStrategy).toBeUndefined();
+    await waitFor(() => expect(screen.queryByText("托管视频 URL · https://cdn.example/shot-video.mp4")).toBeNull());
+  });
+
+  it("allows importing unassigned video references under default project", async () => {
+    useProjectStore.setState({ activeId: "default-p", projects: [project("default-p")] });
+    useVideoStore.getState().load({
+      model: "model",
+      mode: "text",
+      aspectRatio: "16:9",
+      resolution: "720p",
+      images: [],
+      videos: [],
+      audios: [],
+      shots: [{ id: "shot-1", shotNo: 1, prompt: "镜头", durationS: 3 }],
+    });
+    const unassignedVideo = asset("unassigned-video", "video", "", "https://cdn.example/unassigned.mp4");
+    useLibraryStore.setState({ assets: [unassignedVideo], tasks: [] });
+
+    render(<VideoPanel />);
+    await waitFor(() => expect(picker.onApply).not.toBeNull());
+    await act(async () => {
+      await picker.onApply?.({
+        action: "reference",
+        referenceMode: "replace",
+        entries: [{ entryType: "library_asset", asset: unassignedVideo }],
+      });
+    });
+
+    expect(useVideoStore.getState().shots[0]).toMatchObject({
+      referenceVideos: ["https://cdn.example/unassigned.mp4"],
+    });
+  });
 });

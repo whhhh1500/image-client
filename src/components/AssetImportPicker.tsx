@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { FileText, Image as ImageIcon, Search, Video, X } from "lucide-react";
 import { useLibraryStore } from "../store/useLibraryStore";
 import { useProjectStore } from "../store/useProjectStore";
@@ -104,6 +104,7 @@ export default function AssetImportPicker({
   mediaHosting,
 }: AssetImportPickerProps) {
   const activeProjectId = useProjectStore((state) => state.activeId);
+  const defaultProjectId = useProjectStore((state) => state.projects[0]?.id);
   const libraryEntries = useLibraryStore((state) => state.assets);
   const [action, setAction] = useState<AssetImportAction>(actions[0] ?? "prompt");
   const [referenceMode, setReferenceMode] = useState<ReferenceImportMode>("replace");
@@ -116,26 +117,30 @@ export default function AssetImportPicker({
   const [groupFilter, setGroupFilter] = useState<string>("all");
   const [groupContent, setGroupContent] = useState<"all" | "page_prompt" | "image">("all");
 
+  const matchesActiveProject = useCallback((entry: ImportEntry) => {
+    if (!strictProject) return true;
+    const entryPid = entry.entryType === "library_asset" ? entry.asset.projectId : entry.projectId;
+    return entryPid === activeProjectId || (!entryPid && activeProjectId === defaultProjectId);
+  }, [activeProjectId, defaultProjectId, strictProject]);
+
   useEffect(() => {
     if (!open) {
       setSelected([]); setQuery(""); setError(null); setGroupFilter("all"); setCategoryFilter("all"); setGroupContent("all");
       return;
     }
-    setSelected((initialEntries ?? []).filter((entry) => entry.entryType === "library_asset" ? entry.asset.projectId === activeProjectId : entry.projectId === activeProjectId));
+    setSelected((initialEntries ?? []).filter(matchesActiveProject));
     setAction(initialAction ?? actions[0] ?? "prompt");
     // actions is commonly an inline literal from the host page; it must not
     // reset a user's selection on every host render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, activeProjectId, initialAction, initialEntries]);
+  }, [open, activeProjectId, initialAction, initialEntries, matchesActiveProject]);
 
   const candidates = useMemo(() => {
     const source = entries ?? libraryEntries.map(libraryImportEntry);
     const needle = query.trim().toLowerCase();
     return source
       .filter((entry) => kinds.includes(importEntryKind(entry)))
-      .filter((entry) => !strictProject || (entry.entryType === "library_asset"
-        ? entry.asset.projectId === activeProjectId
-        : entry.projectId === activeProjectId))
+      .filter(matchesActiveProject)
       .filter((entry) => !needle || importEntryLabel(entry).toLowerCase().includes(needle))
       .filter((entry) => categoryFilter === "all" || category(entry) === categoryFilter)
       .filter((entry) => groupFilter === "all" || groupKey(entry) === groupFilter)
@@ -145,11 +150,11 @@ export default function AssetImportPicker({
         const rightCreated = right.entryType === "library_asset" ? right.asset.createdAt : right.createdAt;
         return rightCreated - leftCreated;
       });
-  }, [activeProjectId, categoryFilter, entries, groupContent, groupFilter, kinds, libraryEntries, query, strictProject]);
+  }, [categoryFilter, entries, groupContent, groupFilter, kinds, libraryEntries, matchesActiveProject, query]);
 
   const allProjectCandidates = useMemo(() => (entries ?? libraryEntries.map(libraryImportEntry))
     .filter((entry) => kinds.includes(importEntryKind(entry)))
-    .filter((entry) => !strictProject || (entry.entryType === "library_asset" ? entry.asset.projectId === activeProjectId : entry.projectId === activeProjectId)), [activeProjectId, entries, kinds, libraryEntries, strictProject]);
+    .filter(matchesActiveProject), [entries, kinds, libraryEntries, matchesActiveProject]);
   const availableCategories = [...new Set(allProjectCandidates.map(category))];
   const availableGroups = [...new Map(allProjectCandidates.flatMap((entry) => {
     const key = groupKey(entry);
@@ -181,7 +186,7 @@ export default function AssetImportPicker({
   };
   const apply = async () => {
     if (!canApply) return;
-    const currentEntries = selected.filter((entry) => entry.entryType === "library_asset" ? entry.asset.projectId === activeProjectId : entry.projectId === activeProjectId);
+    const currentEntries = selected.filter(matchesActiveProject);
     if (!currentEntries.length) { setError("项目已切换，旧项目的导入选择已清除。请在当前项目重新选择。"); setSelected([]); return; }
     const applicableEntries = action === "reference" ? currentEntries : currentEntries.filter((entry) => Boolean(importEntryPrompt(entry)));
     if (!applicableEntries.length) { setError("所选项目没有可用的正文或已保存提示词，未应用任何内容。"); return; }

@@ -511,9 +511,13 @@ export default function VideoPanel() {
     const projectId = activeId ?? defaultId;
     if (!projectId) throw new Error("请先选择项目，再上传本地参考媒体。");
     const projectIdForEntry = (entry: ImportEntry) => entry.entryType === "library_asset" ? entry.asset.projectId : entry.projectId;
-    if (media.some((item) => projectIdForEntry(item.entry) !== projectId)) throw new Error("项目已切换，旧项目的导入选择已清除。请在当前项目重新选择。");
+    const belongsToCurrentProject = (entry: ImportEntry) => {
+      const entryPid = projectIdForEntry(entry);
+      return entryPid === projectId || (!entryPid && projectId === defaultId);
+    };
+    if (media.some((item) => !belongsToCurrentProject(item.entry))) throw new Error("项目已切换，旧项目的导入选择已清除。请在当前项目重新选择。");
     const sourceKey = (entry: ImportEntry) => entry.entryType === "library_asset" ? `asset:${entry.asset.asset.id}` : `comic:${entry.sourceUri}`;
-    const cacheKey = (endpoint: string, entry: ImportEntry) => `${endpoint}:${projectIdForEntry(entry)}:${sourceKey(entry)}`;
+    const cacheKey = (endpoint: string, entry: ImportEntry) => `${endpoint}:${projectIdForEntry(entry) || projectId}:${sourceKey(entry)}`;
     let cacheEndpoint = hostingStatus?.endpoint ?? "";
     const cachedUrl = (item: typeof media[number]) => publishedMedia.current.get(cacheKey(cacheEndpoint, item.entry))?.url;
     const referenceUrl = (item: typeof media[number]) => item.publishedUrl ?? (item.path && isPublicHttpsUrl(item.path) ? item.path : undefined) ?? cachedUrl(item);
@@ -660,13 +664,21 @@ export default function VideoPanel() {
       .filter((record) => record.targetShotId === shotId && record.action === "reference")
       .flatMap((record) => record.sourceMaterials.flatMap((material) => material.assetId ? [material.assetId] : []))]);
     current.set({
-      shots: current.shots.map((shot) => shot.id === shotId ? {
-        ...shot,
-        referenceLocalImages: (shot.referenceLocalImages ?? []).filter((item) => item.assetId !== local.assetId || item.sourceUri !== local.sourceUri),
-        referenceAssetIds: local.assetId && !retainedAssetIds.has(local.assetId)
-          ? (shot.referenceAssetIds ?? []).filter((id) => id !== local.assetId)
-          : shot.referenceAssetIds,
-      } : shot),
+      shots: current.shots.map((shot) => {
+        if (shot.id !== shotId) return shot;
+        const nextLocal = (shot.referenceLocalImages ?? []).filter((item) => item.assetId !== local.assetId || item.sourceUri !== local.sourceUri);
+        const remainingReferences = nextLocal.length
+          + (shot.referenceImages?.length ?? 0)
+          + (shot.referenceVideos?.length ?? 0);
+        return {
+          ...shot,
+          referenceLocalImages: nextLocal,
+          referenceAssetIds: local.assetId && !retainedAssetIds.has(local.assetId)
+            ? (shot.referenceAssetIds ?? []).filter((id) => id !== local.assetId)
+            : shot.referenceAssetIds,
+          referenceStrategy: remainingReferences ? shot.referenceStrategy : undefined,
+        };
+      }),
       importedSources,
     });
   };
@@ -689,11 +701,54 @@ export default function VideoPanel() {
       .filter((record) => record.targetShotId === shotId && record.action === "reference")
       .flatMap((record) => record.sourceMaterials.flatMap((material) => material.assetId ? [material.assetId] : []))]);
     current.set({
-      shots: current.shots.map((shot) => shot.id === shotId ? {
-        ...shot,
-        referenceImages: (shot.referenceImages ?? []).filter((item) => item !== url),
-        referenceAssetIds: (shot.referenceAssetIds ?? []).filter((id) => !removedAssetIds.has(id) || retainedAssetIds.has(id)),
-      } : shot),
+      shots: current.shots.map((shot) => {
+        if (shot.id !== shotId) return shot;
+        const nextImages = (shot.referenceImages ?? []).filter((item) => item !== url);
+        const remainingReferences = nextImages.length
+          + (shot.referenceLocalImages?.length ?? 0)
+          + (shot.referenceVideos?.length ?? 0);
+        return {
+          ...shot,
+          referenceImages: nextImages,
+          referenceAssetIds: (shot.referenceAssetIds ?? []).filter((id) => !removedAssetIds.has(id) || retainedAssetIds.has(id)),
+          referenceStrategy: remainingReferences ? shot.referenceStrategy : undefined,
+        };
+      }),
+      importedSources,
+    });
+  };
+
+  const removeHostedVideoReference = (shotId: string, url: string) => {
+    const current = useVideoStore.getState();
+    const removedAssetIds = new Set((current.importedSources ?? []).filter((record) => record.targetShotId === shotId && record.action === "reference").flatMap((record) => record.sourceMaterials.filter((material) => material.publishedUrl === url || material.path === url).flatMap((material) => material.assetId ? [material.assetId] : [])));
+    const importedSources = (current.importedSources ?? []).flatMap((record) => {
+      if (record.targetShotId !== shotId || record.action !== "reference") return [record];
+      const sourceMaterials = record.sourceMaterials.filter((material) => material.publishedUrl !== url && material.path !== url);
+      return sourceMaterials.length ? [{
+        ...record,
+        sourceMaterials,
+        assetIds: [...new Set(sourceMaterials.flatMap((material) => material.assetId ? [material.assetId] : []))],
+      }] : [];
+    });
+    const target = current.shots.find((shot) => shot.id === shotId);
+    const localAssetIds = new Set((target?.referenceLocalImages ?? []).flatMap((item) => item.assetId ? [item.assetId] : []));
+    const retainedAssetIds = new Set([...localAssetIds, ...importedSources
+      .filter((record) => record.targetShotId === shotId && record.action === "reference")
+      .flatMap((record) => record.sourceMaterials.flatMap((material) => material.assetId ? [material.assetId] : []))]);
+    current.set({
+      shots: current.shots.map((shot) => {
+        if (shot.id !== shotId) return shot;
+        const nextVideos = (shot.referenceVideos ?? []).filter((item) => item !== url);
+        const remainingReferences = (shot.referenceImages?.length ?? 0)
+          + (shot.referenceLocalImages?.length ?? 0)
+          + nextVideos.length;
+        return {
+          ...shot,
+          referenceVideos: nextVideos,
+          referenceAssetIds: (shot.referenceAssetIds ?? []).filter((id) => !removedAssetIds.has(id) || retainedAssetIds.has(id)),
+          referenceStrategy: remainingReferences ? shot.referenceStrategy : undefined,
+        };
+      }),
       importedSources,
     });
   };
@@ -821,9 +876,10 @@ export default function VideoPanel() {
                       <div className="flex items-center gap-2"><select aria-label={`第 ${shot.shotNo} 镜时长`} value={shot.durationS} onChange={(event) => updateShots(shots.map((item, itemIndex) => itemIndex === index ? { ...item, durationS: Number(event.target.value) } : item))} className="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] text-slate-200">{shotDurations.map((duration) => <option key={duration} value={duration}>{duration} 秒</option>)}</select><button type="button" disabled={shots.length === 1} onClick={() => updateShots(shots.filter((_, itemIndex) => itemIndex !== index))} className="rounded p-1 text-slate-500 hover:text-rose-300 disabled:opacity-30" title="删除镜头"><Trash2 size={12} /></button></div>
                     </div>
                     <ShotPromptTextarea className={`${inputCls} h-20 resize-y leading-snug`} value={shot.prompt} placeholder="这一镜的完整视频 Prompt…" onCommit={(prompt) => commitShotPrompt(shot.id, prompt)} />
-                    {((shot.referenceLocalImages?.length ?? 0) > 0 || (shot.referenceImages?.length ?? 0) > 0) && <div className="mt-2 space-y-1" aria-label={`第 ${shot.shotNo} 镜图片参考`}>
+                    {((shot.referenceLocalImages?.length ?? 0) > 0 || (shot.referenceImages?.length ?? 0) > 0 || (shot.referenceVideos?.length ?? 0) > 0) && <div className="mt-2 space-y-1" aria-label={`第 ${shot.shotNo} 镜参考素材`}>
                       {(shot.referenceLocalImages ?? []).map((local) => <div key={local.assetId ?? local.sourceUri} className="flex items-center gap-2 rounded border border-cyan-300/10 bg-cyan-300/[0.03] p-1.5"><img src={convertFileSrc(local.path)} alt={local.label} className="h-8 w-8 rounded object-cover" /><span className="min-w-0 flex-1 truncate text-[10px] text-cyan-100">本地图片 · {local.label}<span className="ml-1 text-slate-500">随生成请求发送</span></span><button type="button" onClick={() => removeLocalImageReference(shot.id, local)} className="rounded p-1 text-slate-500 hover:text-rose-300" aria-label={`移除本地图片 ${local.label}`}><X size={11} /></button></div>)}
                       {(shot.referenceImages ?? []).map((url) => <div key={url} className="flex items-center gap-2 rounded border border-white/5 p-1.5"><span className="h-8 w-8 rounded bg-slate-800 text-center leading-8 text-[9px] text-slate-500">URL</span><span className="min-w-0 flex-1 truncate text-[10px] text-slate-400">托管图片 URL · {url}</span><button type="button" onClick={() => removeHostedImageReference(shot.id, url)} className="rounded p-1 text-slate-500 hover:text-rose-300" aria-label={`移除托管图片 ${url}`}><X size={11} /></button></div>)}
+                      {(shot.referenceVideos ?? []).map((url) => <div key={url} className="flex items-center gap-2 rounded border border-fuchsia-300/10 bg-fuchsia-300/[0.03] p-1.5"><span className="h-8 w-8 rounded bg-slate-800 text-center leading-8 text-[9px] text-fuchsia-400">VIDEO</span><span className="min-w-0 flex-1 truncate text-[10px] text-fuchsia-200">托管视频 URL · {url}</span><button type="button" onClick={() => removeHostedVideoReference(shot.id, url)} className="rounded p-1 text-slate-500 hover:text-rose-300" aria-label={`移除托管视频 ${url}`}><X size={11} /></button></div>)}
                     </div>}
                   </div>
                 );

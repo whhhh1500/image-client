@@ -471,4 +471,18 @@ describe("Markdown comic workflow", () => {
     expect(screen.queryByText("从小说到漫画，先把故事写好")).toBeNull();
     expect(screen.getByText("小说原文资产由统一管理器维护；本页保存的是独立的漫画改编稿、分镜和图片。管理原文不会自动覆盖这些成果。")).toBeTruthy();
   });
+  it("keeps visual constitution collapsed on non-settings steps and expands automatically on settings step", async () => {
+    await open();
+    const details = screen.getByText("作品视觉设定与画风参考（统一视觉宪法）").closest("details") as HTMLDetailsElement;
+    expect(details.open).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "2. 作品设定" }));
+    expect(details.open).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "3. 本章剧本" }));
+    expect(details.open).toBe(false);
+
+    fireEvent.click(screen.getByText("作品视觉设定与画风参考（统一视觉宪法）"));
+    expect(details.open).toBe(true);
+  });
 });

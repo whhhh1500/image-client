@@ -74,3 +74,17 @@ it("keeps verified capability controls available when only the remote model cata
   expect((screen.getByLabelText("默认视频分辨率") as HTMLSelectElement).disabled).toBe(false);
   expect(screen.getByRole("status").textContent).toContain("模型目录");
 });
+
+it("does not prompt confirmation when closing after automatic resolution alignment on mount", async () => {
+  const onClose = vi.fn();
+  const project: Project = {
+    id: "test", name: "项目", description: "", storyStyle: "通用短剧", artStyle: "电影写实",
+    aspectRatio: "16:9", imageModel: "gpt-image-2", imageQuality: "high", videoModel: "minimax-h3", videoResolution: "720p",
+  };
+  render(<ProjectSettingsPage open project={project} onClose={onClose} />);
+  await waitFor(() => expect(screen.getByRole("status").textContent).toContain("已切换为 2K"));
+
+  fireEvent.click(screen.getByRole("button", { name: "取消" }));
+  expect(confirmAction).not.toHaveBeenCalled();
+  expect(onClose).toHaveBeenCalledOnce();
+});

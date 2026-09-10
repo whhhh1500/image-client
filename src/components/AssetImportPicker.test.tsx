@@ -50,4 +50,31 @@ describe("AssetImportPicker", () => {
     rendered.rerender(<AssetImportPicker open onClose={close} actions={["merge_prompt"]} kinds={["text"]} onApply={apply} initialEntries={[{ entryType: "library_asset", asset: usable }]} />);
     expect(screen.queryByText("可用")).toBeNull();
   });
+
+  it("allows importing unassigned assets under default project and supports strictProject=false", async () => {
+    const apply = vi.fn();
+    const unassigned = text("未归属素材", "", "未归属正文");
+    useProjectStore.setState({ projects: [project("default"), project("other")], activeId: "default" });
+    useLibraryStore.setState({ assets: [unassigned], tasks: [] });
+
+    // Under default project, unassigned asset should be available with default strictProject=true
+    const rendered = render(<AssetImportPicker open onClose={vi.fn()} actions={["merge_prompt"]} kinds={["text"]} onApply={apply} />);
+    expect(screen.getByText("未归属素材")).toBeTruthy();
+    fireEvent.click(screen.getByText("未归属素材"));
+    fireEvent.click(screen.getByRole("button", { name: "确认应用" }));
+    await waitFor(() => expect(apply).toHaveBeenCalledWith(expect.objectContaining({
+      entries: [expect.objectContaining({ asset: expect.objectContaining({ source: "未归属素材" }) })],
+    })));
+
+    // Under non-default project with strictProject=false, unassigned asset should also be available
+    apply.mockClear();
+    useProjectStore.setState({ activeId: "other" });
+    rendered.rerender(<AssetImportPicker open onClose={vi.fn()} actions={["merge_prompt"]} kinds={["text"]} onApply={apply} strictProject={false} />);
+    expect(screen.getByText("未归属素材")).toBeTruthy();
+    fireEvent.click(screen.getByText("未归属素材"));
+    fireEvent.click(screen.getByRole("button", { name: "确认应用" }));
+    await waitFor(() => expect(apply).toHaveBeenCalledWith(expect.objectContaining({
+      entries: [expect.objectContaining({ asset: expect.objectContaining({ source: "未归属素材" }) })],
+    })));
+  });
 });
