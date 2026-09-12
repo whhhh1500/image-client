@@ -43,8 +43,21 @@ function releaseName(platform, version) {
   return name;
 }
 
-function releaseNames(version) {
-  return ["windows-x64", "macos-arm64", "linux-x64"].map((platform) => releaseName(platform, version));
+const ALL_PLATFORMS = ["windows-x64", "macos-arm64", "linux-x64"];
+
+/** Platforms this run covers: `--platforms a,b` or every supported release. */
+function requestedPlatforms() {
+  const raw = option("--platforms");
+  if (!raw) return ALL_PLATFORMS;
+  const platforms = raw.split(",").map((value) => value.trim()).filter(Boolean);
+  if (!platforms.length) throw new Error("--platforms 不能为空");
+  for (const platform of platforms) releaseName(platform, "0.0.0");
+  if (!platforms.includes("windows-x64")) throw new Error("发布必须包含 windows-x64");
+  return [...new Set(platforms)];
+}
+
+function releaseNames(version, platforms = ALL_PLATFORMS) {
+  return platforms.map((platform) => releaseName(platform, version));
 }
 
 function targetReleaseDirectory(target) {
@@ -160,15 +173,22 @@ function changelogSection(version) {
   return lines.slice(start, end).join("\n").trim();
 }
 
-function writeReleaseNotes(version, destination) {
+function writeReleaseNotes(version, destination, platforms) {
+  const downloads = [
+    `- Windows x64：\`Image-Client_${version}_x64_portable.exe\`。下载后直接运行；系统需要 Microsoft Edge WebView2 Runtime。`,
+    platforms.includes("macos-arm64")
+      ? `- macOS Apple Silicon：\`Image-Client_${version}_aarch64.app.tar.gz\`。解压后运行应用。`
+      : "",
+    platforms.includes("linux-x64")
+      ? `- Linux x64：\`Image-Client_${version}_amd64.AppImage\`。赋予执行权限后运行。`
+      : "",
+  ].filter(Boolean);
   const notes = [
     `# Image-Client v${version}`,
     "",
     "## 下载与使用",
     "",
-    `- Windows x64：\`Image-Client_${version}_x64_portable.exe\`。下载后直接运行；系统需要 Microsoft Edge WebView2 Runtime。`,
-    `- macOS Apple Silicon：\`Image-Client_${version}_aarch64.app.tar.gz\`。解压后运行应用。`,
-    `- Linux x64：\`Image-Client_${version}_amd64.AppImage\`。赋予执行权限后运行。`,
+    ...downloads,
     "",
     "此版本未进行商业代码签名，系统首次打开时可能显示安全提示。",
     "",
@@ -185,13 +205,15 @@ const version = option("--version") ?? appVersion();
 if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
   throw new Error(`版本号无效：${version}`);
 }
+const platforms = requestedPlatforms();
 if (args.includes("--release-notes")) {
-  writeReleaseNotes(version, safeRepositoryFile("--notes-file", "发布说明文件"));
+  writeReleaseNotes(version, safeRepositoryFile("--notes-file", "发布说明文件"), platforms);
 } else {
   const outputDirectory = safeOutputDirectory(option("--output-dir"), version);
   if (args.includes("--verify-all")) {
-  verifyDirectory(outputDirectory, releaseNames(version));
-  console.log(`发布 allowlist 验证通过：${releaseNames(version).join(", ")}`);
+    const expected = releaseNames(version, platforms);
+    verifyDirectory(outputDirectory, expected);
+    console.log(`发布 allowlist 验证通过：${expected.join(", ")}`);
   } else {
     packagePlatform(requiredOption("--platform"), version, outputDirectory, option("--target"));
   }

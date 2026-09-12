@@ -1126,6 +1126,127 @@ pub async fn list_video_models(state: tauri::State<'_, AppState>) -> Result<Vec<
     list_video_models_with_config(&cfg).await
 }
 
+/// Stored connection a catalog request may borrow credentials from.
+fn stored_connection<'a>(
+    cfg: &'a config::ConfigState,
+    kind: &str,
+) -> Result<(&'a str, &'a str), String> {
+    match kind {
+        "image" => Ok((cfg.image_api_url.as_str(), cfg.image_api_key.as_str())),
+        "video" => Ok((cfg.video_api_url.as_str(), cfg.video_api_key.as_str())),
+        "llm" => Ok((cfg.llm_api_url.as_str(), cfg.llm_api_key.as_str())),
+        other => Err(format!("未知的模型类型: {other}")),
+    }
+}
+
+/// Pick the address/key pair for an ad-hoc catalog request.
+///
+/// The settings page sends whatever the form currently holds. A blank key may
+/// reuse the stored one **only** while the address is unchanged: keeping the
+/// stored key for a newly typed host would turn this endpoint into a
+/// credential-exfiltration path, exactly like `merge_config` guards against.
+fn resolve_catalog_credentials(
+    incoming_url: &str,
+    incoming_key: &str,
+    stored_url: &str,
+    stored_key: &str,
+) -> Result<(String, String), String> {
+    let url = if incoming_url.trim().is_empty() {
+        stored_url.trim()
+    } else {
+        incoming_url.trim()
+    };
+    if url.is_empty() {
+        return Err("请先填写 API 地址".into());
+    }
+    let key = incoming_key.trim();
+    if !key.is_empty() {
+        return Ok((url.to_string(), key.to_string()));
+    }
+    let stored_key = stored_key.trim();
+    if stored_key.is_empty() {
+        return Err("请先填写 API Key".into());
+    }
+    if stored_url.trim().trim_end_matches('/') != url.trim_end_matches('/') {
+        return Err(
+            "当前地址与已保存地址不同：请填写该地址对应的 API Key，不能沿用已保存的旧 Key".into(),
+        );
+    }
+    Ok((url.to_string(), stored_key.to_string()))
+}
+
+/// Read model ids from an OpenAI-compatible catalog payload.
+fn parse_model_ids(json: &serde_json::Value) -> Vec<String> {
+    let entries = json
+        .get("data")
+        .and_then(serde_json::Value::as_array)
+        .or_else(|| json.get("models").and_then(serde_json::Value::as_array))
+        .or_else(|| json.as_array());
+    let mut seen = std::collections::HashSet::new();
+    entries
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            item.as_str()
+                .or_else(|| item.get("id").and_then(serde_json::Value::as_str))
+                .or_else(|| item.get("name").and_then(serde_json::Value::as_str))
+        })
+        .map(str::trim)
+        .filter(|id| !id.is_empty() && seen.insert(id.to_string()))
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Fetch the gateway model catalog for the credentials currently typed in the
+/// settings page, without persisting them first. `kind` selects which stored
+/// connection may lend its key when the form left the key blank.
+#[tauri::command]
+pub async fn fetch_models(
+    state: tauri::State<'_, AppState>,
+    url: String,
+    api_key: String,
+    kind: String,
+) -> Result<Vec<String>, String> {
+    let cfg = state.cfg.read().unwrap().clone();
+    let (stored_url, stored_key) = stored_connection(&cfg, &kind)?;
+    let (url, key) = resolve_catalog_credentials(&url, &api_key, stored_url, stored_key)?;
+    let endpoint = config::models_endpoint_for(&url)
+        .ok_or_else(|| format!("无法从地址推导模型目录（需要 http(s) 地址）: {url}"))?;
+    let client = crate::http::client_for_url(&endpoint)?;
+    let response = client
+        .get(&endpoint)
+        .bearer_auth(&key)
+        .timeout(Duration::from_secs(20))
+        .send()
+        .await
+        .map_err(|error| format!("读取模型目录失败: {error}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!(
+            "模型目录返回 {status}，请检查 API Key、权限和地址：{endpoint}"
+        ));
+    }
+    let json = response
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|error| format!("解析模型目录失败: {error}"))?;
+    let models = parse_model_ids(&json);
+    if models.is_empty() {
+        crate::logging::warn(
+            "settings.models_empty",
+            json!({ "kind": kind, "endpoint": crate::logging::safe_url(&endpoint) }),
+        );
+        return Err(format!(
+            "模型目录为空，请确认该地址是 OpenAI 兼容网关：{endpoint}"
+        ));
+    }
+    crate::logging::info(
+        "settings.models_fetched",
+        json!({ "kind": kind, "count": models.len(), "endpoint": crate::logging::safe_url(&endpoint) }),
+    );
+    Ok(models)
+}
+
 pub(crate) async fn list_video_models_with_config(
     cfg: &crate::config::ConfigState,
 ) -> Result<Vec<String>, String> {
@@ -1708,9 +1829,10 @@ fn run_tag(config: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        cleanup_video_segments_with_config, original_stem, promptlib_image_filename,
-        save_document_version_with_config, strip_thinking, validate_agent_request,
-        validate_agent_tools, DocumentVersionSaveRequest, ToolDef,
+        cleanup_video_segments_with_config, original_stem, parse_model_ids,
+        promptlib_image_filename, resolve_catalog_credentials, save_document_version_with_config,
+        stored_connection, strip_thinking, validate_agent_request, validate_agent_tools,
+        DocumentVersionSaveRequest, ToolDef,
     };
     use serde_json::json;
     use std::path::Path;
@@ -2000,5 +2122,42 @@ mod tests {
         })
         .unwrap();
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reuses_a_stored_key_only_for_an_unchanged_address() {
+        let stored_url = "https://gw.example.com/v1/images/generations";
+        let stored_key = "sk-stored";
+
+        // The form carries the key: it always wins.
+        assert_eq!(
+            resolve_catalog_credentials("https://other.example.com/v1", "sk-typed", stored_url, stored_key).unwrap(),
+            ("https://other.example.com/v1".to_string(), "sk-typed".to_string())
+        );
+        // Blank key + same address (trailing slash tolerated) reuses the stored pair.
+        assert_eq!(
+            resolve_catalog_credentials(" https://gw.example.com/v1/images/generations/ ", "", stored_url, stored_key).unwrap(),
+            ("https://gw.example.com/v1/images/generations/".to_string(), stored_key.to_string())
+        );
+        // Blank key + new address must not leak the stored key to a new host.
+        assert!(resolve_catalog_credentials("https://evil.example.com/v1", "", stored_url, stored_key).is_err());
+        // Nothing to send.
+        assert!(resolve_catalog_credentials("", "", "", "").is_err());
+        assert!(resolve_catalog_credentials("https://gw.example.com/v1", "", stored_url, "").is_err());
+        // Unknown kinds are rejected instead of silently probing the image API.
+        assert!(stored_connection(&test_config(Path::new(".")), "audio").is_err());
+    }
+
+    #[test]
+    fn reads_model_ids_from_openai_and_loose_catalogs() {
+        assert_eq!(
+            parse_model_ids(&json!({ "data": [{ "id": "gpt-image-2" }, { "id": "kling-video-v3" }, { "id": "gpt-image-2" }] })),
+            vec!["gpt-image-2".to_string(), "kling-video-v3".to_string()]
+        );
+        assert_eq!(
+            parse_model_ids(&json!({ "models": [{ "name": "gemini-3.7-flash" }, "text-embedding-3"] })),
+            vec!["gemini-3.7-flash".to_string(), "text-embedding-3".to_string()]
+        );
+        assert!(parse_model_ids(&json!({ "error": "unauthorized" })).is_empty());
     }
 }

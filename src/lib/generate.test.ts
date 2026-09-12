@@ -17,6 +17,7 @@ const params = {
   quality: "high",
   background: "opaque",
   model: "gpt-image-2",
+  count: 1,
 };
 
 const comicGeneration = {
@@ -90,8 +91,7 @@ describe("generateImage asset persistence", () => {
     }));
   });
 
-  it("keeps the legacy single reference contract when references are absent", async () => {
-    const reference = { asset: { id: "ref_legacy", kind: "image" as const, path: "C:/legacy.png" }, source: "旧参考", createdAt: 1 };
+  it("keeps the legacy single reference contract when references are absent", async () => {    const reference = { asset: { id: "ref_legacy", kind: "image" as const, path: "C:/legacy.png" }, source: "旧参考", createdAt: 1 };
     useLibraryStore.setState({ assets: [reference] });
     const generated = { id: "asset_legacy", kind: "image" as const, path: "C:/legacy-out.png" };
     vi.mocked(runNode).mockResolvedValue({ assets: [generated] });
@@ -154,5 +154,34 @@ describe("generateImage asset persistence", () => {
 
     await expect(generateImage(params)).rejects.toThrow("asset database unavailable");
     expect(useLibraryStore.getState().assets).toEqual([]);
+  });
+
+  it("forwards the requested image count and keeps every returned asset", async () => {
+    const batch = [1, 2, 3].map((index) => ({ id: `asset_${index}`, kind: "image" as const, path: `C:/out-${index}.png` }));
+    vi.mocked(runNode).mockResolvedValue({ assets: batch });
+
+    await expect(generateImage({ ...params, count: 3 })).resolves.toEqual(batch);
+
+    expect(runNode).toHaveBeenCalledWith(expect.objectContaining({
+      config: expect.objectContaining({ n: 3 }),
+    }));
+    expect(persistAssets).toHaveBeenCalledWith(batch, "文生图", expect.objectContaining({
+      params: expect.objectContaining({ count: 3 }),
+    }));
+    expect(useLibraryStore.getState().assets.map((item) => item.asset.id)).toEqual(["asset_1", "asset_2", "asset_3"]);
+  });
+
+  it("clamps an out-of-range count before it reaches the gateway", async () => {
+    vi.mocked(runNode).mockResolvedValue({ assets: [{ id: "asset_high", kind: "image", path: "C:/high.png" }] });
+    await generateImage({ ...params, count: 99 });
+    expect(runNode).toHaveBeenLastCalledWith(expect.objectContaining({
+      config: expect.objectContaining({ n: 4 }),
+    }));
+
+    vi.mocked(runNode).mockResolvedValue({ assets: [{ id: "asset_low", kind: "image", path: "C:/low.png" }] });
+    await generateImage({ ...params, count: 0 });
+    expect(runNode).toHaveBeenLastCalledWith(expect.objectContaining({
+      config: expect.objectContaining({ n: 1 }),
+    }));
   });
 });

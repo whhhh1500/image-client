@@ -255,6 +255,35 @@ pub fn models_endpoint(api_url: &str) -> Option<String> {
     Some(format!("{head}models"))
 }
 
+/// Derive the `/v1/models` URL from an address the user is still editing, so
+/// the settings page can probe a catalog before a full generation path exists.
+///
+/// Unlike [`models_endpoint`] this accepts a bare base URL and appends the
+/// documented OpenAI-compatible path (`https://host` → `https://host/v1/models`,
+/// `https://host/v1` → `https://host/v1/models`).
+pub fn models_endpoint_for(api_url: &str) -> Option<String> {
+    let trimmed = api_url.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let parsed = reqwest::Url::parse(trimmed).ok()?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return None;
+    }
+    if let Some(idx) = trimmed.find("/v1/") {
+        return Some(format!("{}models", &trimmed[..idx + "/v1/".len()]));
+    }
+    let mut base = parsed;
+    base.set_query(None);
+    base.set_fragment(None);
+    let text = base.as_str().trim_end_matches('/').to_string();
+    if text.ends_with("/v1") {
+        Some(format!("{text}/models"))
+    } else {
+        Some(format!("{text}/v1/models"))
+    }
+}
+
 #[allow(dead_code)]
 pub fn known_image_models() -> Vec<String> {
     IMAGE_MODELS.iter().map(|s| s.to_string()).collect()
@@ -331,5 +360,39 @@ mod tests {
         );
         assert!(looks_foreign_absolute(r"C:\\Users\\Alice\\output", false));
         assert!(looks_foreign_absolute("/Users/alice/output", true));
+    }
+
+    #[test]
+    fn derives_the_model_catalog_endpoint_from_partial_addresses() {
+        // Documented behaviour: everything up to and including `/v1/`.
+        assert_eq!(
+            models_endpoint_for("https://gw.example.com/v1/images/generations").as_deref(),
+            Some("https://gw.example.com/v1/models")
+        );
+        assert_eq!(
+            models_endpoint_for("https://gw.example.com/v1/videos?tag=x").as_deref(),
+            Some("https://gw.example.com/v1/models")
+        );
+        // Addresses the user is still typing.
+        assert_eq!(
+            models_endpoint_for("  https://gw.example.com  ").as_deref(),
+            Some("https://gw.example.com/v1/models")
+        );
+        assert_eq!(
+            models_endpoint_for("https://gw.example.com/v1").as_deref(),
+            Some("https://gw.example.com/v1/models")
+        );
+        assert_eq!(
+            models_endpoint_for("https://gw.example.com/v1/").as_deref(),
+            Some("https://gw.example.com/v1/models")
+        );
+        assert_eq!(
+            models_endpoint_for("http://127.0.0.1:8080/gateway").as_deref(),
+            Some("http://127.0.0.1:8080/gateway/v1/models")
+        );
+        // Unusable input stays unusable instead of producing a bogus URL.
+        assert_eq!(models_endpoint_for(""), None);
+        assert_eq!(models_endpoint_for("not a url"), None);
+        assert_eq!(models_endpoint_for("ftp://gw.example.com/v1"), None);
     }
 }

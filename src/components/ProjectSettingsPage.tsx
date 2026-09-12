@@ -4,6 +4,8 @@ import { FolderCog, Save, X } from "lucide-react";
 import { ART_STYLES, ASPECT_RATIOS, STORY_STYLES, applyProjectProfile } from "../lib/projectProfile";
 import { IMAGE_MODELS, VIDEO_MODELS } from "../lib/models";
 import { listVideoModelCapabilities, listVideoModels, type VideoModelCapability } from "../lib/ipc";
+import ModelCombobox from "./ModelCombobox";
+import { useModelCatalog } from "../lib/useModelCatalog";
 import { useProjectStore, type Project } from "../store/useProjectStore";
 
 const inputCls =
@@ -35,7 +37,8 @@ export default function ProjectSettingsPage({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
-  const [videoModels, setVideoModels] = useState<string[]>(VIDEO_MODELS);
+  const imageCatalog = useModelCatalog("image", IMAGE_MODELS);
+  const videoCatalog = useModelCatalog("video", VIDEO_MODELS);
   const [videoCapabilities, setVideoCapabilities] = useState<VideoModelCapability[]>([]);
   const [videoCapabilityNotice, setVideoCapabilityNotice] = useState<string | null>(null);
   const [videoCapabilityLoading, setVideoCapabilityLoading] = useState(false);
@@ -54,7 +57,7 @@ export default function ProjectSettingsPage({
     void Promise.allSettled([listVideoModels(), listVideoModelCapabilities()])
       .then(([modelsResult, capabilitiesResult]) => {
         if (disposed) return;
-        if (modelsResult.status === "fulfilled") setVideoModels(modelsResult.value.length ? modelsResult.value : VIDEO_MODELS);
+        if (modelsResult.status === "fulfilled") videoCatalog.setOptions(modelsResult.value.length ? modelsResult.value : VIDEO_MODELS);
         if (capabilitiesResult.status === "fulfilled") setVideoCapabilities(capabilitiesResult.value);
         const failures = [
           modelsResult.status === "rejected" ? `模型目录：${String(modelsResult.reason)}` : "",
@@ -75,7 +78,8 @@ export default function ProjectSettingsPage({
   const resolutionOptions = selectedVideoCapability?.resolutions.length
     ? selectedVideoCapability.resolutions
     : draft?.videoResolution ? [draft.videoResolution] : ["720p"];
-  const videoModelOptions = [...new Set([draft?.videoModel, ...videoModels].filter((value): value is string => Boolean(value)))];
+  const videoModelOptions = [...new Set([draft?.videoModel, ...videoCatalog.options].filter((value): value is string => Boolean(value)))];
+  const videoModelLabels = Object.fromEntries(videoCapabilities.map((item) => [item.id, item.label]));
 
   useEffect(() => {
     if (!draft || !selectedVideoCapability?.resolutions.length || selectedVideoCapability.resolutions.includes(draft.videoResolution)) return;
@@ -159,9 +163,16 @@ export default function ProjectSettingsPage({
             </select>
           </Field>
           <Field label="默认图像模型">
-            <select className={inputCls} value={draft.imageModel} onChange={(e) => update({ imageModel: e.target.value })}>
-              {(draft.imageModel && !IMAGE_MODELS.includes(draft.imageModel) ? [draft.imageModel, ...IMAGE_MODELS] : IMAGE_MODELS).map((value) => <option key={value}>{value}</option>)}
-            </select>
+            <ModelCombobox
+              label="默认图像模型"
+              value={draft.imageModel}
+              options={imageCatalog.options}
+              onChange={(value) => update({ imageModel: value })}
+              onFetch={() => void imageCatalog.refresh()}
+              fetching={imageCatalog.loading}
+              status={imageCatalog.message ? { text: imageCatalog.message, error: imageCatalog.error } : null}
+              placeholder="例如 gpt-image-2"
+            />
           </Field>
           <Field label="默认图像质量">
             <select className={inputCls} value={draft.imageQuality} onChange={(e) => update({ imageQuality: e.target.value })}>
@@ -170,9 +181,17 @@ export default function ProjectSettingsPage({
           </Field>
           <div className="col-span-2">
             <Field label="默认视频模型">
-              <select className={inputCls} value={draft.videoModel} onChange={(e) => selectVideoModel(e.target.value)}>
-                {videoModelOptions.map((value) => <option key={value} value={value}>{videoCapabilities.find((item) => item.id === value)?.label ?? value}</option>)}
-              </select>
+              <ModelCombobox
+                label="默认视频模型"
+                value={draft.videoModel}
+                options={videoModelOptions}
+                labels={videoModelLabels}
+                onChange={selectVideoModel}
+                onFetch={() => void videoCatalog.refresh()}
+                fetching={videoCatalog.loading}
+                status={videoCatalog.message ? { text: videoCatalog.message, error: videoCatalog.error } : null}
+                placeholder="例如 kling-video-v3"
+              />
             </Field>
             <Field label="默认视频分辨率">
               <select

@@ -1,9 +1,19 @@
 name: Publish release
 
+# Default release path is Windows-only: a tag build costs ~2 billed minutes on
+# Linux plus ~2x that on Windows, while the macOS runner is billed at 10x and
+# dominated the previous bill (85 of ~125 minutes per tag). macOS is therefore
+# opt-in through a manual dispatch on the tag.
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      macos:
+        description: "同时构建并附加 macOS Apple Silicon 版本"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -14,6 +24,12 @@ concurrency:
 
 env:
   CARGO_INCREMENTAL: "0"
+  # CI-only optimization trade: fat LTO with one codegen unit is the slowest
+  # possible release build (~10 min per platform). Thin LTO parallelises the
+  # same work and is what makes the tag run affordable; delete these two lines
+  # to ship byte-identical-optimization binaries to the local release build.
+  CARGO_PROFILE_RELEASE_LTO: thin
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
 
 jobs:
   # Verification and native packaging intentionally start together. Bundles are
@@ -47,28 +63,47 @@ jobs:
       - run: pnpm test
       - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
 
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: windows-latest
-            artifact: windows-x64
-            args: --no-bundle
-            package_args: --platform windows-x64
-            cache_key: windows-x64
-          - platform: ubuntu-22.04
-            artifact: linux-x64
-            args: --bundles appimage
-            package_args: --platform linux-x64
-            cache_key: linux-x64
-          - platform: macos-latest
-            artifact: macos-arm64
-            target: aarch64-apple-darwin
-            args: --target aarch64-apple-darwin --bundles app
-            package_args: --platform macos-arm64 --target aarch64-apple-darwin
-            cache_key: macos-arm64
-    runs-on: ${{ matrix.platform }}
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          shared-key: release-target-windows-x64
+          add-job-id-key: false
+          # Release builds are rare; saving here is what makes the *next* tag
+          # fast (a restored dependency cache is worth several minutes).
+          save-if: true
+      - run: pnpm install --frozen-lockfile
+      - name: Build portable executable
+        run: pnpm tauri build --ci --no-bundle
+      - name: Prepare one portable release file
+        shell: bash
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          node scripts/package-release.mjs --platform windows-x64 --version "$version" --output-dir "release-exe/${{ github.ref_name }}"
+      - name: Upload native bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-windows-x64
+          path: release-exe/${{ github.ref_name }}/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  build-macos:
+    if: github.event_name == 'workflow_dispatch' && inputs.macos
+    runs-on: macos-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -81,40 +116,35 @@ jobs:
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: aarch64-apple-darwin
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-          shared-key: release-target-${{ matrix.cache_key }}
+          shared-key: release-target-macos-arm64
           add-job-id-key: false
-          save-if: false
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+          save-if: true
       - run: pnpm install --frozen-lockfile
       - name: Configure unsigned macOS bundle
-        if: runner.os == 'macOS'
         run: echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
       - name: Build native bundle
-        run: pnpm tauri build --ci ${{ matrix.args }}
+        run: pnpm tauri build --ci --target aarch64-apple-darwin --bundles app
       - name: Prepare one portable release file
         shell: bash
         run: |
           version="$(node -p "require('./package.json').version")"
-          node scripts/package-release.mjs ${{ matrix.package_args }} --version "$version" --output-dir "release-exe/${{ github.ref_name }}"
+          node scripts/package-release.mjs --platform macos-arm64 --target aarch64-apple-darwin --version "$version" --output-dir "release-exe/${{ github.ref_name }}"
       - name: Upload native bundle
         uses: actions/upload-artifact@v7
         with:
-          name: release-${{ matrix.artifact }}
+          name: release-macos-arm64
           path: release-exe/${{ github.ref_name }}/*
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
 
   release:
-    needs: [verify, build]
+    needs: [verify, build-windows, build-macos]
+    if: needs.verify.result == 'success' && needs.build-windows.result == 'success'
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     permissions:
@@ -134,22 +164,26 @@ jobs:
         shell: bash
         run: |
           version="${GITHUB_REF_NAME#v}"
-          node scripts/package-release.mjs --verify-all --version "$version" --output-dir release-artifacts
-          node scripts/package-release.mjs --release-notes --version "$version" --notes-file release-notes.md
+          platforms="$(for dir in release-artifacts/release-*; do basename "$dir" | sed 's/^release-//'; done | paste -sd, -)"
+          echo "platforms=$platforms"
+          node scripts/package-release.mjs --verify-all --version "$version" --output-dir release-artifacts --platforms "$platforms"
+          node scripts/package-release.mjs --release-notes --version "$version" --notes-file release-notes.md --platforms "$platforms"
       - name: Publish one complete GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
-          version="${GITHUB_REF_NAME#v}"
-          assets=(
-            "release-artifacts/release-windows-x64/Image-Client_${version}_x64_portable.exe"
-            "release-artifacts/release-macos-arm64/Image-Client_${version}_aarch64.app.tar.gz"
-            "release-artifacts/release-linux-x64/Image-Client_${version}_amd64.AppImage"
-          )
-          for asset in "${assets[@]}"; do test -f "$asset"; done
-          gh release create "${GITHUB_REF_NAME}" "${assets[@]}" \
-            --title "Image-Client ${GITHUB_REF_NAME}" \
-            --notes-file release-notes.md \
-            --verify-tag
+          mapfile -t assets < <(find release-artifacts -type f | sort)
+          for asset in "${assets[@]}"; do echo "asset: $asset"; done
+          # Idempotent: re-running on the same tag (for example to add macOS)
+          # uploads the missing file instead of failing on an existing release.
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" "${assets[@]}" --clobber
+            gh release edit "${GITHUB_REF_NAME}" --notes-file release-notes.md
+          else
+            gh release create "${GITHUB_REF_NAME}" "${assets[@]}" \
+              --title "Image-Client ${GITHUB_REF_NAME}" \
+              --notes-file release-notes.md \
+              --verify-tag
+          fi

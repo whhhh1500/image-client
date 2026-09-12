@@ -41,3 +41,27 @@ export const LLM_MODELS = [
   "gemini-3.1-flash-lite",
   "gemini-2.5-pro",
 ];
+
+/**
+ * Grok 图像模型不使用 OpenAI 的 `size` 契约：后端会改发
+ * `aspect_ratio` + `resolution`（1k/2k），并忽略 `background`；
+ * 若网关拒绝该契约，后端会自动用 OpenAI 参数重试一次。
+ *
+ * 判定规则与后端 `gateway::is_grok_image_model` 保持一致：
+ * 供应商段为 `grok`、`grok-*` 或 `grok<数字>*`（`grokking-image` 不算）。
+ */
+export function isGrokImageModel(model: string): boolean {
+  return model
+    .trim()
+    .toLowerCase()
+    .split(/[/:@]/)
+    .some((segment) => {
+      if (segment === "grok") return true;
+      if (!segment.startsWith("grok")) return false;
+      const rest = segment.slice(4);
+      return /^[-_]/.test(rest) || /^\d/.test(rest);
+    });
+}
+
+/** 单次请求最多生成的图片数量（与后端 gateway::MAX_IMAGE_BATCH 一致）。 */
+export const MAX_IMAGE_COUNT = 4;

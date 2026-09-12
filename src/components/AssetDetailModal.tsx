@@ -4,6 +4,8 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { Copy, FilePenLine, Image as ImageIcon, Loader2, Save, Sparkles, Video, X } from "lucide-react";
 import { llmChat, readTextAsset } from "../lib/ipc";
 import { LLM_MODELS } from "../lib/models";
+import ModelCombobox from "./ModelCombobox";
+import { useModelCatalog } from "../lib/useModelCatalog";
 import {
   documentTypeLabel,
   documentChangeLabel,
@@ -133,6 +135,7 @@ export default function AssetDetailModal({
   const [shots, setShots] = useState<StoryboardShot[]>([]);
   const [editing, setEditing] = useState(false);
   const [model, setModel] = useState("gemini-3.7-flash");
+  const llmCatalog = useModelCatalog("llm", LLM_MODELS);
   const [instruction, setInstruction] = useState("优化结构、可执行性和表达，保留原有核心内容；只返回完整修改稿。");
   const [busy, setBusy] = useState<"save" | "copy" | "optimize" | null>(null);
   const [draftChangeType, setDraftChangeType] = useState<DocumentChangeType>("manual");
@@ -384,9 +387,16 @@ export default function AssetDetailModal({
                   </label>
                   <label>
                     <span className="mb-1 block text-[10px] font-medium text-slate-500">优化模型</span>
-                    <select value={model} onChange={(event) => setModel(event.target.value)} className={inputCls}>
-                      {(model && !LLM_MODELS.includes(model) ? [model, ...LLM_MODELS] : LLM_MODELS).map((item) => <option key={item}>{item}</option>)}
-                    </select>
+                    <ModelCombobox
+                      compact
+                      label="优化模型"
+                      value={model}
+                      options={llmCatalog.options}
+                      onChange={setModel}
+                      onFetch={() => void llmCatalog.refresh()}
+                      fetching={llmCatalog.loading}
+                      status={llmCatalog.message ? { text: llmCatalog.message, error: llmCatalog.error } : null}
+                    />
                   </label>
                 </div>
 
@@ -412,7 +422,7 @@ export default function AssetDetailModal({
                 <label><span className="mb-1 block text-[10px] text-slate-500">资源标题（可修改）</span><input value={title} onChange={(event) => { setTitle(event.target.value); setDirty(true); }} className={inputCls} /></label>
                 <div className="grid gap-3 md:grid-cols-[1fr_220px]">
                   <label><span className="mb-1 block text-[10px] text-slate-500">视频提示词（可修改）</span><textarea value={mediaPrompt} onChange={(event) => { setMediaPrompt(event.target.value); setMediaChangeType("manual"); setDirty(true); }} className={`${inputCls} min-h-28 resize-y text-xs`} /></label>
-                  <label><span className="mb-1 block text-[10px] text-slate-500">优化模型</span><select value={model} onChange={(event) => setModel(event.target.value)} className={inputCls}>{LLM_MODELS.map((item) => <option key={item}>{item}</option>)}</select></label>
+                  <label><span className="mb-1 block text-[10px] text-slate-500">优化模型</span><ModelCombobox compact label="优化模型" value={model} options={llmCatalog.options} onChange={setModel} onFetch={() => void llmCatalog.refresh()} fetching={llmCatalog.loading} status={llmCatalog.message ? { text: llmCatalog.message, error: llmCatalog.error } : null} /></label>
                 </div>
                 <div className="rounded-xl border border-violet-300/10 bg-violet-300/[0.035] p-3"><textarea value={mediaInstruction} onChange={(event) => setMediaInstruction(event.target.value)} className={`${inputCls} min-h-16 resize-y text-xs`} /><button onClick={() => void optimizeMediaPrompt()} disabled={busy !== null || !mediaPrompt.trim()} className="mt-2 rounded-lg border border-violet-300/15 px-3 py-1.5 text-xs text-violet-200 disabled:opacity-40">{busy === "optimize" ? "优化中…" : "智能优化提示词"}</button></div>
                 <pre className="overflow-auto rounded-xl border border-white/5 bg-slate-950/50 p-3 text-[11px] text-slate-400">{JSON.stringify(selected.params ?? {}, null, 2)}</pre>
@@ -423,7 +433,7 @@ export default function AssetDetailModal({
                 <label><span className="mb-1 block text-[10px] text-slate-500">资源标题（可修改）</span><input value={title} onChange={(event) => { setTitle(event.target.value); setDirty(true); }} className={inputCls} /></label>
                 <div className="grid gap-3 md:grid-cols-[1fr_220px]">
                   <label><span className="mb-1 block text-[10px] text-slate-500">图片提示词（可修改）</span><textarea value={mediaPrompt} onChange={(event) => { setMediaPrompt(event.target.value); setMediaChangeType("manual"); setDirty(true); }} className={`${inputCls} min-h-28 resize-y text-xs`} /></label>
-                  <label><span className="mb-1 block text-[10px] text-slate-500">优化模型</span><select value={model} onChange={(event) => setModel(event.target.value)} className={inputCls}>{LLM_MODELS.map((item) => <option key={item}>{item}</option>)}</select></label>
+                  <label><span className="mb-1 block text-[10px] text-slate-500">优化模型</span><ModelCombobox compact label="优化模型" value={model} options={llmCatalog.options} onChange={setModel} onFetch={() => void llmCatalog.refresh()} fetching={llmCatalog.loading} status={llmCatalog.message ? { text: llmCatalog.message, error: llmCatalog.error } : null} /></label>
                 </div>
                 <div className="rounded-xl border border-violet-300/10 bg-violet-300/[0.035] p-3"><textarea value={mediaInstruction} onChange={(event) => setMediaInstruction(event.target.value)} className={`${inputCls} min-h-16 resize-y text-xs`} /><button onClick={() => void optimizeMediaPrompt()} disabled={busy !== null || !mediaPrompt.trim()} className="mt-2 rounded-lg border border-violet-300/15 px-3 py-1.5 text-xs text-violet-200 disabled:opacity-40">{busy === "optimize" ? "优化中…" : "智能优化提示词"}</button></div>
                 <pre className="overflow-auto rounded-xl border border-white/5 bg-slate-950/50 p-3 text-[11px] text-slate-400">{JSON.stringify(selected.params ?? {}, null, 2)}</pre>

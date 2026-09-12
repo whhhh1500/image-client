@@ -18,6 +18,9 @@ describe("image compression helpers", () => {
 
   it("summarizes generation params and prefers latest display path", () => {
     expect(generationParamsSummary({ model: "gpt-image-2", size: "1024x1024 (1:1)", quality: "high" })).toContain("模型 gpt-image-2");
+    // A batch mentions its size; a single-image run stays quiet about it.
+    expect(generationParamsSummary({ model: "gpt-image-2", count: 4 })).toContain("4 张");
+    expect(generationParamsSummary({ model: "gpt-image-2", count: 1 })).not.toContain("张");
     expect(latestDisplayPath({
       path: "C:/out/hero.jpg",
       directory: "C:/out",

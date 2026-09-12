@@ -15,7 +15,9 @@
     {
       "identifier": "opener:allow-open-url",
       "allow": [
-        { "url": "https://oenai.cc.cd/j/i1.cmVzZWxsZXIAZmQxeVp2TEY1V3hJb0JWeDltNDYwYlpS.cn5C6uhqhbNTFeR46uZf1TPAP-3Uf7-zsIcsDZovdK8" }
+        { "url": "https://oenai.cc.cd/j/i1.cmVzZWxsZXIAZmQxeVp2TEY1V3hJb0JWeDltNDYwYlpS.cn5C6uhqhbNTFeR46uZf1TPAP-3Uf7-zsIcsDZovdK8" },
+        { "url": "https://github.com/whhhh1500/image-client" },
+        { "url": "https://github.com/whhhh1500/image-client/**" }
       ]
     },
     "opener:allow-reveal-item-in-dir",

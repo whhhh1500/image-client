@@ -9,7 +9,7 @@
 - REST 不做鉴权。浏览器 CORS 默认只允许 Tauri 与本地开发来源；可通过逗号分隔的 `API_CORS_ORIGINS` 显式增加可信来源。PowerShell、Python、curl 等非浏览器客户端不受 CORS 影响。
 - 每个响应包含 `x-request-id`，可与 JSONL 日志关联。
 - 单次请求体上限 64 MiB。
-- 文本、Prompt、模型名、标签和工具参数均有长度限制；媒体接口会校验容器格式。
+- 生成用 `prompt` 不做长度限制（只要求非空），由上游模型决定能否接受；模型名、标签等结构化字段仍有长度限制；媒体接口会校验容器格式。
 - `PUT /system/config` 会持久化后端配置快照，重启后仍可恢复。
 - `GET/PUT /system/llm` 是文本 Agent 专用配置接口。PUT 请求为 `{ "url": "https://.../v1", "key": "...", "model": "..." }`，只更新 LLM；GET 不返回 Key。
 - Agent、图像、视频、文本资产和媒体资产接口成功后，产物会登记进统一 SQLite 历史，并向桌面前台触发 `history://changed` 事件。
@@ -42,6 +42,15 @@
 - `GET /api/v1/system/history-sync` 返回事件监听器是否就绪、已发出/已确认的修订号以及待确认数量，可用于多调用方诊断。
 
 完整机器可读接口清单：`GET /api/v1/system/info`。
+
+## 图像生成参数
+
+`POST /api/v1/media/images/generations`：
+
+- `prompt` 必填，长度不限制（只要求非空）；`size`、`quality`、`background`、`referencePath`、`model`、`projectId` 可选。
+- `n`：一次请求生成的图片数量，取值 1–4（缺省 1）；越界会被拒绝。响应中的**每一张**图片都会作为独立资产落盘并登记到历史，`assets` 数组与数量一一对应。
+- Grok 图像模型不使用 OpenAI 的 `size`/`background` 契约：native 会把 `size` 折算成 `aspect_ratio` + `resolution`（`1k`/`2k`，超过 2k 的按 `2k` 提交），并固定 `response_format: b64_json`。参考图走 `/v1/images/edits`，表单同样提交 `aspect_ratio`/`resolution`。
+- 其他 OpenAI 兼容模型继续提交 `size`/`quality`/`background`。
 
 ## 视频生成参数
 

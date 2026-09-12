@@ -113,6 +113,7 @@ export function generationParamsSummary(params?: Record<string, unknown>): strin
     pick("size") && `尺寸 ${pick("size")}`,
     pick("quality") && `质量 ${pick("quality")}`,
     pick("background") && `背景 ${pick("background")}`,
+    Number(pick("count") || pick("n")) > 1 && `${pick("count") || pick("n")} 张`,
   ].filter(Boolean);
   return bits.join(" · ") || "无生成参数";
 }

@@ -245,6 +245,7 @@ pub fn run() {
             commands::set_active_provider,
             commands::list_image_models,
             commands::list_video_models,
+            commands::fetch_models,
             commands::list_video_model_capabilities,
             commands::run_node,
             commands::run_video,

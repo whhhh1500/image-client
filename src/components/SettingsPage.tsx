@@ -14,7 +14,9 @@ import {
 } from "lucide-react";
 import type { ConfigStatus } from "../lib/ipc";
 import { listVideoModels } from "../lib/ipc";
-import { IMAGE_MODELS, LLM_MODELS } from "../lib/models";
+import { IMAGE_MODELS, LLM_MODELS, VIDEO_MODELS } from "../lib/models";
+import { useModelCatalog, type ModelCatalog } from "../lib/useModelCatalog";
+import ModelCombobox, { type ModelComboboxStatus } from "./ModelCombobox";
 import {
   emptyProfile,
   loadSettings,
@@ -26,20 +28,33 @@ import { logEvent } from "../lib/logger";
 const inputCls =
   "w-full rounded-lg border border-slate-600 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400/40";
 
+/** Model fields that can refresh their catalog from the gateway. */
+type ModelField = "image" | "video" | "llm";
+
+function catalogStatus(catalog: ModelCatalog): ModelComboboxStatus | null {
+  return catalog.message ? { text: catalog.message, error: catalog.error } : null;
+}
+
 function ConnForm({
   tab,
   conn,
   models,
   onUpdate,
   ready,
+  catalogStatus,
+  fetchingModels,
+  onFetchModels,
 }: {
   tab: "image" | "video";
   conn: { url: string; key: string; model: string };
   models: string[];
   onUpdate: (patch: Partial<{ url: string; key: string; model: string }>) => void;
   ready: boolean;
+  catalogStatus: ModelComboboxStatus | null;
+  fetchingModels: boolean;
+  onFetchModels: () => void;
 }) {
-  const options = conn.model && !models.includes(conn.model) ? [conn.model, ...models] : models;
+  const modelLabel = tab === "image" ? "图像模型" : "视频模型";
   return (
     <div className="space-y-4">
       <label className="block">
@@ -65,27 +80,23 @@ function ConnForm({
           autoComplete="off"
         />
       </label>
-      <label className="block">
+      <div className="block">
         <div className="mb-1 flex items-center justify-between text-xs font-medium text-slate-300">
-          <span>{tab === "image" ? "图像" : "视频"}模型</span>
-          <span className="text-[10px] text-slate-500">单选</span>
+          <span>{modelLabel}</span>
+          <span className="text-[10px] text-slate-500">可下拉选择或直接输入</span>
         </div>
-        <select
-          className={inputCls}
+        <ModelCombobox
+          label={modelLabel}
           value={conn.model}
-          onChange={(e) => onUpdate({ model: e.target.value })}
-        >
-          {options.length ? (
-            options.map((m) => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))
-          ) : (
-            <option value={conn.model}>{conn.model}</option>
-          )}
-        </select>
-      </label>
+          options={models}
+          onChange={(model) => onUpdate({ model })}
+          onFetch={onFetchModels}
+          fetching={fetchingModels}
+          status={catalogStatus}
+          placeholder={tab === "image" ? "例如 gpt-image-2" : "例如 kling-video-v3"}
+          hint="「获取模型」按上面填写的地址与 Key 读取 /v1/models；Key 留空时仅在地址未变的情况下沿用已保存的 Key。"
+        />
+      </div>
     </div>
   );
 }
@@ -99,6 +110,7 @@ function GlobalSettingsForm({
   setLlmKey,
   llmModel,
   setLlmModel,
+  llmCatalog,
   status,
   setDirty,
 }: {
@@ -110,6 +122,7 @@ function GlobalSettingsForm({
   setLlmKey: (v: string) => void;
   llmModel: string;
   setLlmModel: (v: string) => void;
+  llmCatalog: ModelCatalog;
   status: ConfigStatus | null;
   setDirty: (d: boolean) => void;
 }) {
@@ -158,12 +171,23 @@ function GlobalSettingsForm({
           <div className="mb-1 text-xs font-medium text-slate-300">LLM API Key</div>
           <input type="password" className={inputCls} value={llmKey} onChange={(e) => { setLlmKey(e.target.value); setDirty(true); }} placeholder={status?.llmReady ? "已配置（留空保持不变）" : "sk-…"} autoComplete="off" />
         </label>
-        <label className="block">
-          <div className="mb-1 text-xs font-medium text-slate-300">LLM 模型</div>
-          <select className={inputCls} value={llmModel} onChange={(e) => { setLlmModel(e.target.value); setDirty(true); }}>
-            {(llmModel && !LLM_MODELS.includes(llmModel) ? [llmModel, ...LLM_MODELS] : LLM_MODELS).map((m) => (<option key={m} value={m}>{m}</option>))}
-          </select>
-        </label>
+        <div className="block">
+          <div className="mb-1 flex items-center justify-between text-xs font-medium text-slate-300">
+            <span>LLM 模型</span>
+            <span className="text-[10px] text-slate-500">可下拉选择或直接输入</span>
+          </div>
+          <ModelCombobox
+            label="LLM 模型"
+            value={llmModel}
+            options={llmCatalog.options}
+            onChange={(v) => { setLlmModel(v); setDirty(true); }}
+            onFetch={() => void llmCatalog.refresh({ url: llmUrl, key: llmKey })}
+            fetching={llmCatalog.loading}
+            status={catalogStatus(llmCatalog)}
+            placeholder="例如 gemini-3.7-flash"
+            hint="「获取模型」按上面的 LLM 地址与 Key 读取 /v1/models；Key 留空时仅在地址未变的情况下沿用已保存的 Key。"
+          />
+        </div>
       </div>
     </div>
   );
@@ -184,7 +208,14 @@ export default function SettingsPage({
   const [activeId, setActiveId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [tab, setTab] = useState<"image" | "video">("image");
-  const [videoModels, setVideoModels] = useState<string[]>([]);
+  const imageCatalog = useModelCatalog("image", IMAGE_MODELS);
+  const videoCatalog = useModelCatalog("video", VIDEO_MODELS);
+  const llmCatalog = useModelCatalog("llm", LLM_MODELS);
+  const catalogs: Record<ModelField, ModelCatalog> = {
+    image: imageCatalog,
+    video: videoCatalog,
+    llm: llmCatalog,
+  };
   const [outputDir, setOutputDir] = useState("");
   const [llmUrl, setLlmUrl] = useState("");
   const [llmKey, setLlmKey] = useState("");
@@ -201,6 +232,9 @@ export default function SettingsPage({
     setLlmUrl("");
     setLlmModel(status?.llmModel ?? "gemini-3.7-flash");
     setLlmKey("");
+    imageCatalog.clearMessage();
+    videoCatalog.clearMessage();
+    llmCatalog.clearMessage();
     loadSettings().then((s) => {
       setConfigs(s.configs);
       setActiveId(s.activeId);
@@ -210,7 +244,11 @@ export default function SettingsPage({
       if (s.llmModel) setLlmModel(s.llmModel);
       setDirty(false);
     });
-    listVideoModels().then(setVideoModels).catch(() => {});
+    // Seed the dropdowns from the saved configuration; 「获取模型」 is the
+    // explicit refresh for whatever the form currently holds.
+    listVideoModels()
+      .then((list) => videoCatalog.setOptions(list.length ? list : VIDEO_MODELS))
+      .catch(() => videoCatalog.setOptions(VIDEO_MODELS));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -279,6 +317,20 @@ export default function SettingsPage({
           : c,
       ),
     );
+  };
+
+  /**
+   * Read the model catalog for the address/key the form is currently holding,
+   * so a brand new endpoint can be probed before the settings are saved.
+   */
+  const fetchCatalog = (field: ModelField) => {
+    const conn = field === "llm"
+      ? { url: llmUrl, key: llmKey }
+      : field === "image"
+        ? selected?.image
+        : selected?.video;
+    if (!conn) return;
+    void catalogs[field].refresh(conn);
   };
 
   const attemptClose = async () => {
@@ -420,6 +472,7 @@ export default function SettingsPage({
                   setLlmKey={setLlmKey}
                   llmModel={llmModel}
                   setLlmModel={setLlmModel}
+                  llmCatalog={catalogs.llm}
                   status={status}
                   setDirty={setDirty}
                 />
@@ -457,17 +510,23 @@ export default function SettingsPage({
                   <ConnForm
                     tab="image"
                     conn={selected.image}
-                    models={IMAGE_MODELS}
+                    models={catalogs.image.options}
                     onUpdate={(p) => updateSelected({ image: p })}
                     ready={!selected.image.key}
+                    catalogStatus={catalogStatus(catalogs.image)}
+                    fetchingModels={catalogs.image.loading}
+                    onFetchModels={() => fetchCatalog("image")}
                   />
                 ) : (
                   <ConnForm
                     tab="video"
                     conn={selected.video}
-                    models={videoModels}
+                    models={catalogs.video.options}
                     onUpdate={(p) => updateSelected({ video: p })}
                     ready={!selected.video.key}
+                    catalogStatus={catalogStatus(catalogs.video)}
+                    fetchingModels={catalogs.video.loading}
+                    onFetchModels={() => fetchCatalog("video")}
                   />
                 )}
 
@@ -491,6 +550,7 @@ export default function SettingsPage({
                     setLlmKey={setLlmKey}
                     llmModel={llmModel}
                     setLlmModel={setLlmModel}
+                    llmCatalog={catalogs.llm}
                     status={status}
                     setDirty={setDirty}
                   />

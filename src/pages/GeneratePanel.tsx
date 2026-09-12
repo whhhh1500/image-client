@@ -7,7 +7,9 @@ import { useProjectStore } from "../store/useProjectStore";
 import { useGenerationStore, type GenParams } from "../store/useGenerationStore";
 import { usePromptlibStore } from "../store/usePromptlibStore";
 import { generateImage } from "../lib/generate";
-import { IMAGE_MODELS } from "../lib/models";
+import { IMAGE_MODELS, MAX_IMAGE_COUNT, isGrokImageModel } from "../lib/models";
+import { useModelCatalog } from "../lib/useModelCatalog";
+import ModelCombobox from "../components/ModelCombobox";
 import { ContextMenu } from "../components/ContextMenu";
 import HistoryImageCard from "../components/HistoryImageCard";
 import AssetImportPicker from "../components/AssetImportPicker";
@@ -91,6 +93,9 @@ const SIZES = [
   "4096x4096 (4K)",
 ];
 
+/** 单次请求可生成的图片数量（与后端 gateway::MAX_IMAGE_BATCH 一致）。 */
+const COUNT_OPTIONS = Array.from({ length: MAX_IMAGE_COUNT }, (_, index) => index + 1);
+
 function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
   return (
     <label className="block">
@@ -136,6 +141,7 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
   const size = useGenerationStore((s) => s.size);
   const quality = useGenerationStore((s) => s.quality);
   const background = useGenerationStore((s) => s.background);
+  const count = useGenerationStore((s) => s.count);
   // Subscribe to a boolean rather than the prompt string: the textarea owns the
   // string subscription, so typing cannot re-render this whole panel.
   const hasPrompt = useGenerationStore((s) => s.prompt.trim().length > 0);
@@ -145,6 +151,9 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
   const [error, setError] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; asset: LibAsset } | null>(null);
   const [previewAsset, setPreviewAsset] = useState<LibAsset | null>(null);
+  // Assets produced by the most recent run, so a multi-image request is shown
+  // as one batch instead of leaving only the newest file visible.
+  const [lastBatchIds, setLastBatchIds] = useState<string[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerPreset, setPickerPreset] = useState<{ entries: ImportEntry[]; action: "prompt" | "merge_prompt" | "reference" } | null>(null);
   const [libraryOpen, setLibraryOpen] = useState(false);
@@ -184,9 +193,18 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
     : referencePath.trim() ? [{ path: referencePath.trim(), role: "base_image" as const, sortOrder: 0 }] : [];
   const isImg2Img = activeReferences.length > 0;
   const originals = useMemo(() => assets.filter((item) => !isCompressedAsset(item)), [assets]);
+  const lastBatch = useMemo(
+    () => lastBatchIds
+      .map((id) => assets.find((item) => item.asset.id === id))
+      .filter((item): item is LibAsset => Boolean(item)),
+    [lastBatchIds, assets],
+  );
   const previewItem = useMemo(() => (isImg2Img
     ? originals.find((a) => a.source === "图生图")
     : originals.find((a) => a.source === "文生图") ?? originals[0] ?? assets[0]), [isImg2Img, originals, assets]);
+  /** What the preview area shows: the newest batch when it holds several images. */
+  const previewBatch = lastBatch.length > 1 ? lastBatch : lastBatch[0] ? [lastBatch[0]] : previewItem ? [previewItem] : [];
+  const previewSingle = previewBatch.length === 1 ? previewBatch[0] : null;
 
   const canRun = hasPrompt && !busy;
 
@@ -303,12 +321,16 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
         quality: current.quality,
         background: current.background,
         model: current.model,
+        count: current.count,
         importedSources: current.importedSources,
       }, {
         originalInput: current.prompt,
         generationInput: current.prompt,
         sourceMaterials: sources.length ? sources : undefined,
         parentAssetIds: [...new Set((current.importedSources ?? []).flatMap((item) => item.assetIds))],
+      }).then((created) => {
+        // Remember this run's assets so the preview shows the whole batch.
+        setLastBatchIds(created.map((asset) => asset.id));
       });
     } catch (e) {
       setError(String(e));
@@ -326,21 +348,28 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
     setPromptlibEntry(cleared.entry);
   };
 
-  const modelOptions = model && !IMAGE_MODELS.includes(model) ? [model, ...IMAGE_MODELS] : IMAGE_MODELS;
+  const imageCatalog = useModelCatalog("image", IMAGE_MODELS);
+  const grokModel = isGrokImageModel(model);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {/* Top: model switcher */}
-      <div className="flex items-center gap-2 border-b border-slate-800 bg-slate-900/40 px-6 py-2.5">
+      <div className="flex flex-wrap items-center gap-2 border-b border-slate-800 bg-slate-900/40 px-6 py-2.5">
         <span className="text-xs font-medium text-slate-400">图像模型</span>
-        <select
-          value={model}
-          onChange={(e) => setGen({ model: e.target.value })}
-          className="rounded-lg border border-slate-600 bg-slate-900/70 px-3 py-1.5 text-xs text-slate-100 outline-none transition focus:border-indigo-400"
-        >
-          {modelOptions.map((m) => (<option key={m} value={m}>{m}</option>))}
-        </select>
-        <span className="ml-auto text-[11px] text-slate-500">切换后本次生成使用所选模型</span>
+        <div className="w-72 max-w-full">
+          <ModelCombobox
+            compact
+            label="图像模型"
+            value={model}
+            options={imageCatalog.options}
+            onChange={(next) => setGen({ model: next })}
+            onFetch={() => void imageCatalog.refresh()}
+            fetching={imageCatalog.loading}
+            status={imageCatalog.message ? { text: imageCatalog.message, error: imageCatalog.error } : null}
+            placeholder="例如 gpt-image-2"
+          />
+        </div>
+        <span className="ml-auto text-[11px] text-slate-500">切换后本次生成使用所选模型；也可直接输入列表以外的模型名</span>
       </div>
       <WorkflowGuide current="整理提示词与参考图" next="生成后点击历史查看完整参数，必要时加载并修改后重做" detail="文档和图片资源可从项目历史搜索导入" />
 
@@ -412,9 +441,18 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
           <button type="button" onClick={() => setPickerOpen(true)} className="mt-2 flex items-center gap-1 text-[10px] text-cyan-200/75 hover:text-white"><FileInput size={11} /> 从已有资产选择或合并参考</button>
         </Field>
 
-        <Field label="尺寸 / 比例">
+        <Field
+          label="尺寸 / 比例"
+          hint={grokModel ? "Grok 按比例+分辨率提交（最高 2k）" : undefined}
+        >
           <select className={inputCls} value={size} onChange={(e) => setGen({ size: e.target.value })}>
             {SIZES.map((s) => (<option key={s} value={s}>{s}</option>))}
+          </select>
+        </Field>
+
+        <Field label="数量" hint={count > 1 ? `${count} 张按张计费` : "单张"}>
+          <select className={inputCls} value={count} onChange={(e) => setGen({ count: Number(e.target.value) })}>
+            {COUNT_OPTIONS.map((n) => (<option key={n} value={n}>{n} 张</option>))}
           </select>
         </Field>
 
@@ -424,7 +462,7 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
           </select>
         </Field>
 
-        <Field label="背景">
+        <Field label="背景" hint={grokModel ? "Grok 不支持，提交时忽略" : undefined}>
           <select className={inputCls} value={background} onChange={(e) => setGen({ background: e.target.value })}>
             {["auto", "transparent", "opaque"].map((b) => (<option key={b} value={b}>{b}</option>))}
           </select>
@@ -438,7 +476,9 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
           className="flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-500 px-3 py-2.5 text-sm font-medium text-white transition hover:bg-indigo-400 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {busy ? <Loader2 size={15} className="animate-spin" /> : <Wand2 size={15} />}
-          {busy ? "生成中…" : "生成"}
+          {busy
+            ? (count > 1 ? `生成中…（${count} 张）` : "生成中…")
+            : (count > 1 ? `生成 ${count} 张` : "生成")}
         </button>
       </div>
 
@@ -448,28 +488,46 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
           <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
             <div className="mb-2 flex items-center justify-between text-xs font-semibold uppercase tracking-wide text-slate-400">
               <span>输出预览</span>
-            </div>
-            <div className="flex min-h-[320px] items-center justify-center rounded-xl border border-dashed border-slate-700 bg-slate-800/30">
-              {previewItem ? (
-                <HistoryImageCard
-                  asset={previewItem}
-                  tall
-                  onOpen={() => setPreviewAsset(previewItem)}
-                  onMenu={(x, y) => setMenu({ x, y, asset: previewItem })}
-                />
-              ) : busy ? (
-                <Loader2 size={24} className="animate-spin text-slate-500" />
-              ) : (
-                <div className="text-center text-sm text-slate-500">输入提示词，点「生成」</div>
+              {previewBatch.length > 1 && (
+                <span className="text-[10px] font-normal normal-case text-slate-500">
+                  本次生成 {previewBatch.length} 张 · 点图放大
+                </span>
               )}
             </div>
+            {previewBatch.length > 1 ? (
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                {previewBatch.map((item) => (
+                  <HistoryImageCard
+                    key={item.asset.id}
+                    asset={item}
+                    onOpen={() => setPreviewAsset(item)}
+                    onMenu={(x, y) => setMenu({ x, y, asset: item })}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="flex min-h-[320px] items-center justify-center rounded-xl border border-dashed border-slate-700 bg-slate-800/30">
+                {previewSingle ? (
+                  <HistoryImageCard
+                    asset={previewSingle}
+                    tall
+                    onOpen={() => setPreviewAsset(previewSingle)}
+                    onMenu={(x, y) => setMenu({ x, y, asset: previewSingle })}
+                  />
+                ) : busy ? (
+                  <Loader2 size={24} className="animate-spin text-slate-500" />
+                ) : (
+                  <div className="text-center text-sm text-slate-500">输入提示词，点「生成」</div>
+                )}
+              </div>
+            )}
           </div>
 
           {assets.length > 0 && (
             <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
               <div className="mb-2 flex items-center justify-between">
                 <span className="text-xs font-semibold uppercase tracking-wide text-slate-400">历史结果</span>
-                <span className="text-[10px] text-slate-600">悬停看文件信息 · 右键压缩/转格式</span>
+                <span className="text-[10px] text-slate-600">共 {originals.length} 张 · 悬停看文件信息 · 右键压缩/转格式</span>
               </div>
               <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 lg:grid-cols-6">
                 {originals.map((a) => (

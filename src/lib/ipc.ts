@@ -73,6 +73,28 @@ export const listImageModels = (): Promise<string[]> =>
 export const listVideoModels = (): Promise<string[]> =>
   loggedInvoke<string[]>("list_video_models");
 
+/** Which stored connection a catalog request belongs to. */
+export type ModelCatalogKind = "image" | "video" | "llm";
+
+/**
+ * Read the gateway model catalog for the credentials the settings form is
+ * currently holding, so a new address can be probed before it is saved.
+ *
+ * The API key is sent as `apiKey` so the client logger redacts it; a blank key
+ * makes the backend borrow the stored one, and only while the address is
+ * unchanged.
+ */
+export const fetchModels = (input: {
+  url: string;
+  key: string;
+  kind: ModelCatalogKind;
+}): Promise<string[]> =>
+  loggedInvoke<string[]>("fetch_models", {
+    url: input.url,
+    apiKey: input.key,
+    kind: input.kind,
+  });
+
 export type VideoGenerationMode = "text" | "first_frame" | "reference";
 
 /** Model-specific constraints returned by the desktop video gateway. */

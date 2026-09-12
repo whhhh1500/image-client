@@ -30,6 +30,8 @@ export interface GenParams {
   quality: string;
   background: string;
   model: string;
+  /** Images requested in one request (1–4, see MAX_IMAGE_COUNT). */
+  count: number;
 }
 
 const DEFAULTS: GenParams = {
@@ -41,6 +43,7 @@ const DEFAULTS: GenParams = {
   quality: "high",
   background: "auto",
   model: "gpt-image-2",
+  count: 1,
 };
 
 interface GenerationState extends GenParams {

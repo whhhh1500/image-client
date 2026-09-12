@@ -23,6 +23,32 @@ const MAX_REFERENCE_TOTAL_BYTES: usize = 50 * 1024 * 1024;
 const REFERENCE_TILE_EDGE: u32 = 512;
 const REFERENCE_TILE_GUTTER: u32 = 8;
 
+/// Requested image count ("n"). The gateway supports at most four images per
+/// request, so the app clamps instead of forwarding an out-of-range value.
+pub(crate) const MAX_IMAGE_BATCH: u32 = 4;
+
+/// Grok image models reject the OpenAI `size` contract: the gateway documents
+/// `aspect_ratio` plus `resolution` ("1k" | "2k") and no `background`.
+/// Prompts are forwarded verbatim — the gateway is the only authority on what
+/// a model accepts, and it does not enforce a length limit.
+const GROK_IMAGE_RESOLUTIONS: &[&str] = &["1k", "2k"];
+/// Ratios the Grok image endpoint documents, as (label, numeric value).
+const GROK_ASPECT_RATIOS: &[(&str, f64)] = &[
+    ("1:1", 1.0),
+    ("3:4", 3.0 / 4.0),
+    ("4:3", 4.0 / 3.0),
+    ("9:16", 9.0 / 16.0),
+    ("16:9", 16.0 / 9.0),
+    ("2:3", 2.0 / 3.0),
+    ("3:2", 3.0 / 2.0),
+    ("9:19.5", 9.0 / 19.5),
+    ("19.5:9", 19.5 / 9.0),
+    ("9:20", 9.0 / 20.0),
+    ("20:9", 20.0 / 9.0),
+    ("1:2", 1.0 / 2.0),
+    ("2:1", 2.0),
+];
+
 const REFERENCE_ROLES: &[&str] = &[
     "character_identity",
     "outfit",
@@ -88,16 +114,195 @@ impl Drop for TemporaryReferenceBoard {
 }
 
 fn size_str(config: &serde_json::Value) -> String {
+    let base = normalize_size(&size_selection(config));
+    if !base.is_empty() {
+        return base;
+    }
+    let w = get_u32(config, "width").unwrap_or(1024);
+    let h = get_u32(config, "height").unwrap_or(1024);
+    format!("{w}x{h}")
+}
+
+/// Values look like "1024x1024 (1:1)" — keep only the WxH part.
+fn normalize_size(selection: &str) -> String {
+    let base = selection.split('(').next().unwrap_or(selection).trim();
+    if base.contains('x') {
+        base.to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// Raw size selection, keeping the "(1:1)" / "(2K)" annotation the UI adds.
+fn size_selection(config: &serde_json::Value) -> String {
     if let Some(s) = get_str(config, "size") {
-        // Values look like "1024x1024 (1:1)" — keep only the WxH part.
-        let base = s.split('(').next().unwrap_or(&s).trim();
-        if base.contains('x') {
-            return base.to_string();
+        if !s.trim().is_empty() {
+            return s;
         }
     }
     let w = get_u32(config, "width").unwrap_or(1024);
     let h = get_u32(config, "height").unwrap_or(1024);
     format!("{w}x{h}")
+}
+
+/// Whether the model is served by the Grok image adapter, whose request
+/// contract differs from OpenAI's (`aspect_ratio` + `resolution`).
+///
+/// Matching is segment-aware so a namespaced id (`xai/grok-2-image`) still
+/// matches while an unrelated id that merely contains the letters (`grokking`)
+/// keeps the OpenAI contract.
+fn is_grok_image_model(model: &str) -> bool {
+    model
+        .trim()
+        .to_ascii_lowercase()
+        .split(['/', ':', '@'])
+        .any(is_grok_name_segment)
+}
+
+/// A vendor segment is Grok when it is `grok`, uses a separator
+/// (`grok-imagine-image`), or continues straight into a version
+/// (`grok3-image`). `grokking-image` is deliberately not a match.
+fn is_grok_name_segment(segment: &str) -> bool {
+    if segment == "grok" {
+        return true;
+    }
+    match segment.strip_prefix("grok") {
+        Some(rest) => rest.starts_with(['-', '_']) || rest.starts_with(|c: char| c.is_ascii_digit()),
+        None => false,
+    }
+}
+
+/// Grok rejects an unexpected parameter list with 400/422, which is also how a
+/// gateway that proxies Grok behind an OpenAI-only adapter answers the Grok
+/// contract. Those statuses trigger one retry with the OpenAI body.
+fn is_contract_rejection(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 400 | 422)
+}
+
+/// Images requested for this run: `n` when present, otherwise one.
+pub(crate) fn requested_image_count(config: &serde_json::Value) -> u32 {
+    get_u32(config, "n")
+        .unwrap_or(1)
+        .clamp(1, MAX_IMAGE_BATCH)
+}
+
+fn grok_aspect_ratio(selection: &str) -> String {
+    // An explicit "(2:3)" annotation wins: it is what the user picked.
+    let annotation = selection
+        .split_once('(')
+        .and_then(|(_, rest)| rest.split_once(')'))
+        .map(|(inner, _)| inner.trim().to_ascii_lowercase());
+    if let Some(annotation) = annotation {
+        if let Some((label, _)) = GROK_ASPECT_RATIOS
+            .iter()
+            .find(|(label, _)| *label == annotation)
+        {
+            return (*label).to_string();
+        }
+    }
+    let Some((width, height)) = pixel_size(selection) else {
+        return "1:1".to_string();
+    };
+    let ratio = width as f64 / height as f64;
+    GROK_ASPECT_RATIOS
+        .iter()
+        .min_by(|(_, left), (_, right)| {
+            (left - ratio)
+                .abs()
+                .partial_cmp(&(right - ratio).abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(label, _)| (*label).to_string())
+        .unwrap_or_else(|| "1:1".to_string())
+}
+
+/// Grok only generates "1k" or "2k". Larger selections (the UI offers 2K and
+/// 4K) collapse onto the documented maximum instead of being rejected.
+fn grok_resolution(selection: &str) -> String {
+    let hinted = selection.to_ascii_lowercase();
+    if hinted.contains("2k") || hinted.contains("4k") || hinted.contains("8k") {
+        return GROK_IMAGE_RESOLUTIONS[1].to_string();
+    }
+    match pixel_size(selection) {
+        Some((width, height)) if width.max(height) >= 2000 => GROK_IMAGE_RESOLUTIONS[1].to_string(),
+        _ => GROK_IMAGE_RESOLUTIONS[0].to_string(),
+    }
+}
+
+/// Parse the leading "1024x1536" (or "1024×1536") of a size selection.
+fn pixel_size(selection: &str) -> Option<(u32, u32)> {
+    let base = selection.split('(').next().unwrap_or(selection).trim();
+    let normalized = base.replace(['×', 'X'], "x");
+    let (width, height) = normalized.split_once('x')?;
+    let width = width.trim().parse::<u32>().ok()?;
+    let height = height.trim().parse::<u32>().ok()?;
+    (width > 0 && height > 0).then_some((width, height))
+}
+
+/// Request body for POST /v1/images/generations.
+///
+/// OpenAI-compatible providers take `size`/`quality`/`background`; Grok takes
+/// `aspect_ratio` + `resolution` and rejects the others, so the app's size
+/// selection is translated instead of forwarded blindly.
+fn image_generation_body(
+    model: &str,
+    prompt: &str,
+    size: &str,
+    size_selection: &str,
+    quality: &str,
+    background: &str,
+    count: u32,
+) -> serde_json::Value {
+    if is_grok_image_model(model) {
+        return grok_image_generation_body(model, prompt, size_selection, quality, count);
+    }
+    openai_image_generation_body(model, prompt, size, quality, background, count)
+}
+
+/// The historical OpenAI-compatible body, kept intact for every non-Grok model
+/// and reused as the fallback when a gateway rejects the Grok contract.
+fn openai_image_generation_body(
+    model: &str,
+    prompt: &str,
+    size: &str,
+    quality: &str,
+    background: &str,
+    count: u32,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({ "model": model, "prompt": prompt, "n": count });
+    if !size.is_empty() {
+        body["size"] = serde_json::json!(size);
+    }
+    if !quality.is_empty() {
+        body["quality"] = serde_json::json!(quality);
+    }
+    if !background.is_empty() && background != "auto" {
+        body["background"] = serde_json::json!(background);
+    }
+    body
+}
+
+fn grok_image_generation_body(
+    model: &str,
+    prompt: &str,
+    size_selection: &str,
+    quality: &str,
+    count: u32,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "model": model,
+        "prompt": prompt,
+        "n": count,
+        "aspect_ratio": grok_aspect_ratio(size_selection),
+        "resolution": grok_resolution(size_selection),
+        "response_format": "b64_json",
+    });
+    // Grok accepts low/medium/high only; anything else is dropped rather than
+    // sent as an invalid enum value.
+    if matches!(quality, "low" | "medium" | "high") {
+        body["quality"] = serde_json::json!(quality);
+    }
+    body
 }
 
 /// Generate an image through the OpenAI-compatible gateway.
@@ -145,9 +350,12 @@ async fn generate_image_with_clients(
         return Err("提示词为空".into());
     }
     let model = get_str(&req.config, "model").unwrap_or_else(|| cfg.image_model.clone());
+    let selection = size_selection(&req.config);
     let size = size_str(&req.config);
     let quality = get_str(&req.config, "quality").unwrap_or_default();
     let background = get_str(&req.config, "background").unwrap_or_default();
+    let count = requested_image_count(&req.config);
+    let grok = is_grok_image_model(&model);
     let references = normalize_references(&req.config, cfg)?;
     let has_reference = !references.is_empty();
     let request_id = Uuid::new_v4().to_string();
@@ -162,6 +370,9 @@ async fn generate_image_with_clients(
             "size": size,
             "quality": quality,
             "background": background,
+            "count": count,
+            "aspectRatio": grok.then(|| grok_aspect_ratio(&selection)),
+            "resolution": grok.then(|| grok_resolution(&selection)),
             "promptStats": crate::logging::text_stats(&prompt),
             "hasReference": has_reference,
             "referenceCount": references.len(),
@@ -176,91 +387,165 @@ async fn generate_image_with_clients(
         } else {
             format!("image/{}", upload.kind)
         };
-        let part = Part::bytes(upload.bytes)
-            .file_name(upload.file_name)
-            .mime_str(&mime)
-            .map_err(|e| format!("构造上传失败: {e}"))?;
         let provider_prompt = prompt_with_reference_roles(&prompt, &references);
-        let mut form = Form::new()
-            .text("model", model.clone())
-            .text("prompt", provider_prompt)
-            .text("n", "1")
-            .part("image", part);
-        if !size.is_empty() {
-            form = form.text("size", size.clone());
-        }
-        if !quality.is_empty() {
-            form = form.text("quality", quality.clone());
-        }
-        if !background.is_empty() && background != "auto" {
-            form = form.text("background", background.clone());
-        }
+        // Built on demand: the fallback request needs a second, OpenAI-shaped
+        // form, and `Part` owns its bytes.
+        let build_form = |grok_contract: bool| -> Result<Form, String> {
+            let part = Part::bytes(upload.bytes.clone())
+                .file_name(upload.file_name.clone())
+                .mime_str(&mime)
+                .map_err(|e| format!("构造上传失败: {e}"))?;
+            let mut form = Form::new()
+                .text("model", model.clone())
+                .text("prompt", provider_prompt.clone())
+                .text("n", count.to_string())
+                .part("image", part);
+            if grok_contract {
+                // Grok takes aspect_ratio/resolution and rejects size/background.
+                form = form
+                    .text("aspect_ratio", grok_aspect_ratio(&selection))
+                    .text("resolution", grok_resolution(&selection));
+            } else if !size.is_empty() {
+                form = form.text("size", size.clone());
+            }
+            if !quality.is_empty() {
+                form = form.text("quality", quality.clone());
+            }
+            if !grok_contract && !background.is_empty() && background != "auto" {
+                form = form.text("background", background.clone());
+            }
+            Ok(form)
+        };
 
         // "/v1/images/generations" -> "/v1/images/edits"
         let edits_url = edits_endpoint(&cfg.image_api_url)?;
-        let send_started = Instant::now();
-        #[cfg(feature = "real-e2e-harness")]
-        crate::harness_transport::reserve_image_post()?;
-        let resp = generation_client
-            .post(&edits_url)
-            .bearer_auth(&cfg.image_api_key)
-            .multipart(form)
-            .timeout(Duration::from_secs(240))
-            .send()
-            .await
-            .map_err(|e| {
-                crate::logging::error("image.request.end", serde_json::json!({ "requestId": request_id, "status": "error", "durationMs": started.elapsed().as_millis(), "error": crate::logging::error_text(&e) }));
-                format!("请求图像编辑接口失败: {e}")
-            })?;
-        #[cfg(feature = "real-e2e-harness")]
-        crate::harness_transport::mark_image_http_received()?;
-        crate::logging::debug(
-            "image.response.headers",
-            serde_json::json!({ "requestId": request_id, "durationMs": send_started.elapsed().as_millis(), "status": resp.status().as_u16() }),
-        );
+        let mut resp = post_image_multipart(
+            generation_client,
+            &edits_url,
+            &cfg.image_api_key,
+            build_form(grok)?,
+            &request_id,
+            started,
+        )
+        .await?;
+        if grok && is_contract_rejection(resp.status()) {
+            crate::logging::warn(
+                "image.request.grok_contract_fallback",
+                serde_json::json!({ "requestId": request_id, "status": resp.status().as_u16(), "mode": "image_to_image" }),
+            );
+            resp = post_image_multipart(
+                generation_client,
+                &edits_url,
+                &cfg.image_api_key,
+                build_form(false)?,
+                &request_id,
+                started,
+            )
+            .await?;
+        }
         finish_request(
             parse_and_save(resp, &asset_download_client, out_dir).await,
             &request_id,
             started,
         )
     } else {
-        let mut body = serde_json::json!({ "model": model, "prompt": prompt, "n": 1 });
-        if !size.is_empty() {
-            body["size"] = serde_json::json!(size);
+        let body = image_generation_body(&model, &prompt, &size, &selection, &quality, &background, count);
+        let mut resp = post_image_json(
+            generation_client,
+            &cfg.image_api_url,
+            &cfg.image_api_key,
+            &body,
+            &request_id,
+            started,
+        )
+        .await?;
+        if grok && is_contract_rejection(resp.status()) {
+            // Compatibility net: a gateway may serve Grok models through an
+            // OpenAI-only adapter. Retrying once with the OpenAI body can only
+            // add capacity — the rejected request produced no image.
+            crate::logging::warn(
+                "image.request.grok_contract_fallback",
+                serde_json::json!({ "requestId": request_id, "status": resp.status().as_u16(), "mode": "text_to_image" }),
+            );
+            let fallback = openai_image_generation_body(&model, &prompt, &size, &quality, &background, count);
+            resp = post_image_json(
+                generation_client,
+                &cfg.image_api_url,
+                &cfg.image_api_key,
+                &fallback,
+                &request_id,
+                started,
+            )
+            .await?;
         }
-        if !quality.is_empty() {
-            body["quality"] = serde_json::json!(quality);
-        }
-        if !background.is_empty() && background != "auto" {
-            body["background"] = serde_json::json!(background);
-        }
-
-        let send_started = Instant::now();
-        #[cfg(feature = "real-e2e-harness")]
-        crate::harness_transport::reserve_image_post()?;
-        let resp = generation_client
-            .post(&cfg.image_api_url)
-            .bearer_auth(&cfg.image_api_key)
-            .json(&body)
-            .timeout(Duration::from_secs(240))
-            .send()
-            .await
-            .map_err(|e| {
-                crate::logging::error("image.request.end", serde_json::json!({ "requestId": request_id, "status": "error", "durationMs": started.elapsed().as_millis(), "error": crate::logging::error_text(&e) }));
-                format!("请求图像接口失败: {e}")
-            })?;
-        #[cfg(feature = "real-e2e-harness")]
-        crate::harness_transport::mark_image_http_received()?;
-        crate::logging::debug(
-            "image.response.headers",
-            serde_json::json!({ "requestId": request_id, "durationMs": send_started.elapsed().as_millis(), "status": resp.status().as_u16() }),
-        );
         finish_request(
             parse_and_save(resp, &asset_download_client, out_dir).await,
             &request_id,
             started,
         )
     }
+}
+
+async fn post_image_json(
+    client: &reqwest::Client,
+    url: &str,
+    key: &str,
+    body: &serde_json::Value,
+    request_id: &str,
+    started: Instant,
+) -> Result<reqwest::Response, String> {
+    let send_started = Instant::now();
+    #[cfg(feature = "real-e2e-harness")]
+    crate::harness_transport::reserve_image_post()?;
+    let resp = client
+        .post(url)
+        .bearer_auth(key)
+        .json(body)
+        .timeout(Duration::from_secs(240))
+        .send()
+        .await
+        .map_err(|e| {
+            crate::logging::error("image.request.end", serde_json::json!({ "requestId": request_id, "status": "error", "durationMs": started.elapsed().as_millis(), "error": crate::logging::error_text(&e) }));
+            format!("请求图像接口失败: {e}")
+        })?;
+    #[cfg(feature = "real-e2e-harness")]
+    crate::harness_transport::mark_image_http_received()?;
+    crate::logging::debug(
+        "image.response.headers",
+        serde_json::json!({ "requestId": request_id, "durationMs": send_started.elapsed().as_millis(), "status": resp.status().as_u16() }),
+    );
+    Ok(resp)
+}
+
+async fn post_image_multipart(
+    client: &reqwest::Client,
+    url: &str,
+    key: &str,
+    form: Form,
+    request_id: &str,
+    started: Instant,
+) -> Result<reqwest::Response, String> {
+    let send_started = Instant::now();
+    #[cfg(feature = "real-e2e-harness")]
+    crate::harness_transport::reserve_image_post()?;
+    let resp = client
+        .post(url)
+        .bearer_auth(key)
+        .multipart(form)
+        .timeout(Duration::from_secs(240))
+        .send()
+        .await
+        .map_err(|e| {
+            crate::logging::error("image.request.end", serde_json::json!({ "requestId": request_id, "status": "error", "durationMs": started.elapsed().as_millis(), "error": crate::logging::error_text(&e) }));
+            format!("请求图像编辑接口失败: {e}")
+        })?;
+    #[cfg(feature = "real-e2e-harness")]
+    crate::harness_transport::mark_image_http_received()?;
+    crate::logging::debug(
+        "image.response.headers",
+        serde_json::json!({ "requestId": request_id, "durationMs": send_started.elapsed().as_millis(), "status": resp.status().as_u16() }),
+    );
+    Ok(resp)
 }
 
 fn finish_request(
@@ -537,20 +822,52 @@ async fn parse_and_save(
     let json: serde_json::Value =
         serde_json::from_slice(&response_bytes).map_err(|e| format!("解析图像响应失败: {e}"))?;
 
-    let first = json
+    let entries = json
         .get("data")
         .and_then(|d| d.as_array())
-        .and_then(|a| a.first())
+        .filter(|items| !items.is_empty())
         .ok_or("图像响应缺少 data")?;
 
-    let bytes: Vec<u8> = if let Some(b64) = first.get("b64_json").and_then(|b| b.as_str()) {
+    // Decode every returned image before writing anything, so a malformed
+    // entry cannot leave a half-saved batch behind.
+    let mut payloads: Vec<Vec<u8>> = Vec::with_capacity(entries.len().min(MAX_IMAGE_BATCH as usize));
+    for entry in entries.iter().take(MAX_IMAGE_BATCH as usize) {
+        payloads.push(decode_image_entry(entry, client).await?);
+    }
+    if payloads.is_empty() {
+        return Err("模型未返回图像数据".into());
+    }
+
+    let mut formats = Vec::with_capacity(payloads.len());
+    for bytes in &payloads {
+        formats.push(
+            assets::detect_format_checked(bytes)
+                .ok_or("图像接口返回的内容不是支持的图片格式")?
+                .to_string(),
+        );
+    }
+
+    let mut saved = Vec::with_capacity(payloads.len());
+    for (bytes, format) in payloads.into_iter().zip(formats) {
+        saved.push(assets::save_bytes(out_dir, "image", &bytes, &format)?);
+    }
+    Ok(saved)
+}
+
+/// One `data[]` entry: inline base64 or a URL to download.
+async fn decode_image_entry(
+    entry: &serde_json::Value,
+    client: &reqwest::Client,
+) -> Result<Vec<u8>, String> {
+    if let Some(b64) = entry.get("b64_json").and_then(|b| b.as_str()) {
         if b64.is_empty() {
             return Err("模型未返回图像数据（可能不支持该参数，如透明背景）".into());
         }
-        base64::engine::general_purpose::STANDARD
+        return base64::engine::general_purpose::STANDARD
             .decode(b64)
-            .map_err(|e| format!("base64 解码失败: {e}"))?
-    } else if let Some(url) = first.get("url").and_then(|u| u.as_str()) {
+            .map_err(|e| format!("base64 解码失败: {e}"));
+    }
+    if let Some(url) = entry.get("url").and_then(|u| u.as_str()) {
         let download_started = Instant::now();
         let r = client
             .get(url)
@@ -566,19 +883,9 @@ async fn parse_and_save(
             "image.download",
             serde_json::json!({ "durationMs": download_started.elapsed().as_millis(), "bytes": bytes.len(), "source": crate::logging::safe_url(url) }),
         );
-        bytes
-    } else {
-        return Err("图像响应中没有 b64_json 或 url".into());
-    };
-
-    if bytes.is_empty() {
-        return Err("模型未返回图像数据".into());
+        return Ok(bytes);
     }
-
-    let format =
-        assets::detect_format_checked(&bytes).ok_or("图像接口返回的内容不是支持的图片格式")?;
-    let asset = assets::save_bytes(out_dir, "image", &bytes, format)?;
-    Ok(vec![asset])
+    Err("图像响应中没有 b64_json 或 url".into())
 }
 
 async fn read_limited(
@@ -628,10 +935,13 @@ mod tests {
     };
 
     use super::{
-        edits_endpoint, generate_image_with_clients, normalize_references,
-        prepare_reference_upload, prompt_with_reference_roles, validate_reference_inputs,
-        validate_reference_path, ReferenceInput, ReferenceLimits,
+        edits_endpoint, generate_image_with_clients, grok_aspect_ratio, grok_resolution,
+        image_generation_body, is_grok_image_model, normalize_references,
+        prepare_reference_upload, prompt_with_reference_roles, requested_image_count,
+        validate_reference_inputs, validate_reference_path, ReferenceInput, ReferenceLimits,
+        MAX_IMAGE_BATCH,
     };
+    use base64::Engine as _;
     use crate::config::ConfigState;
     use crate::model::RunNodeRequest;
     use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
@@ -646,17 +956,32 @@ mod tests {
     struct GatewayLoopback {
         url: String,
         requests: Arc<Mutex<Vec<String>>>,
+        bodies: Arc<Mutex<Vec<String>>>,
         task: Option<JoinHandle<()>>,
     }
 
     impl GatewayLoopback {
         async fn start(asset_bytes: Vec<u8>) -> Self {
+            Self::start_with(asset_bytes, 2, Vec::new()).await
+        }
+
+        /// `connections` is how many requests the loop serves before finishing;
+        /// `post_responses` supplies (status, body) pairs for POSTs in order,
+        /// with the default `data[].url` response once the queue is empty.
+        async fn start_with(
+            asset_bytes: Vec<u8>,
+            connections: usize,
+            post_responses: Vec<(u16, String)>,
+        ) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let address = listener.local_addr().unwrap();
             let requests = Arc::new(Mutex::new(Vec::new()));
             let captured = Arc::clone(&requests);
+            let bodies = Arc::new(Mutex::new(Vec::new()));
+            let captured_bodies = Arc::clone(&bodies);
             let task = tokio::spawn(async move {
-                for _ in 0..2 {
+                let mut served = 0usize;
+                for _ in 0..connections {
                     let (mut stream, _) = listener.accept().await.unwrap();
                     let mut request = Vec::new();
                     loop {
@@ -676,10 +1001,18 @@ mod tests {
                         .unwrap()
                         + 4;
                     let head = String::from_utf8_lossy(&request[..header_end]).into_owned();
+                    // hyper writes lowercase header names, so the lookup must be
+                    // case-insensitive: a missed content-length left the body
+                    // unread and reset the connection once it exceeded the
+                    // socket buffer.
                     let content_length = head
                         .lines()
-                        .find_map(|line| line.strip_prefix("Content-Length: "))
-                        .and_then(|value| value.trim().parse::<usize>().ok())
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
                         .unwrap_or(0);
                     while request.len() < header_end + content_length {
                         let mut chunk = [0u8; 2048];
@@ -691,6 +1024,9 @@ mod tests {
                     }
                     let is_get = head.starts_with("GET ");
                     captured.lock().unwrap().push(head);
+                    captured_bodies.lock().unwrap().push(
+                        String::from_utf8_lossy(&request[header_end..]).into_owned(),
+                    );
                     if is_get {
                         let headers = format!(
                             "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -699,10 +1035,24 @@ mod tests {
                         stream.write_all(headers.as_bytes()).await.unwrap();
                         stream.write_all(&asset_bytes).await.unwrap();
                     } else {
-                        let body =
-                            format!("{{\"data\":[{{\"url\":\"http://{address}/asset.png\"}}]}}");
+                        let (status, body) = post_responses
+                            .get(served)
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                (
+                                    200,
+                                    format!("{{\"data\":[{{\"url\":\"http://{address}/asset.png\"}}]}}"),
+                                )
+                            });
+                        served += 1;
+                        let reason = match status {
+                            200 => "OK",
+                            400 => "Bad Request",
+                            422 => "Unprocessable Entity",
+                            _ => "Error",
+                        };
                         let headers = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                             body.len()
                         );
                         stream.write_all(headers.as_bytes()).await.unwrap();
@@ -714,6 +1064,7 @@ mod tests {
             Self {
                 url: format!("http://{address}/v1/images/generations"),
                 requests,
+                bodies,
                 task: Some(task),
             }
         }
@@ -730,6 +1081,24 @@ mod tests {
                 }
             }
             self.requests.lock().unwrap().clone()
+        }
+
+        /// Request heads plus the raw bodies that were posted.
+        async fn finish_with_bodies(mut self) -> (Vec<String>, Vec<String>) {
+            let mut task = self.task.take().unwrap();
+            match timeout(Duration::from_secs(1), &mut task).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => panic!("gateway loopback task failed: {error}"),
+                Err(_) => {
+                    task.abort();
+                    let _ = task.await;
+                    panic!("gateway loopback must finish");
+                }
+            }
+            (
+                self.requests.lock().unwrap().clone(),
+                self.bodies.lock().unwrap().clone(),
+            )
         }
     }
 
@@ -851,6 +1220,353 @@ mod tests {
             "https://example.com/v1/images/edits?tenant=generations"
         );
         assert!(edits_endpoint("https://example.com/v1/images").is_err());
+    }
+
+    #[test]
+    fn grok_bodies_use_aspect_ratio_and_resolution_instead_of_size() {
+        let body = image_generation_body(
+            "grok-imagine-image",
+            "a cat",
+            "1536x1024",
+            "1536x1024 (3:2)",
+            "high",
+            "transparent",
+            4,
+        );
+        assert_eq!(body["model"], "grok-imagine-image");
+        assert_eq!(body["n"], 4);
+        assert_eq!(body["aspect_ratio"], "3:2");
+        assert_eq!(body["resolution"], "1k");
+        assert_eq!(body["response_format"], "b64_json");
+        assert_eq!(body["quality"], "high");
+        assert!(body.get("size").is_none(), "grok rejects the OpenAI size field");
+        assert!(
+            body.get("background").is_none(),
+            "grok has no background parameter"
+        );
+
+        // An unknown quality value is dropped instead of sent as a bad enum.
+        let body = image_generation_body("grok-3-image", "a cat", "1024x1024", "1024x1024 (1:1)", "hd", "", 1);
+        assert_eq!(body["aspect_ratio"], "1:1");
+        assert_eq!(body["n"], 1);
+        assert!(body.get("quality").is_none());
+    }
+
+    #[test]
+    fn grok_ratio_comes_from_the_annotation_or_the_pixels() {
+        assert_eq!(grok_aspect_ratio("1280x720 (16:9)"), "16:9");
+        assert_eq!(grok_aspect_ratio("720x1280 (9:16)"), "9:16");
+        // The comic pipeline sends a bare WxH without the UI annotation.
+        assert_eq!(grok_aspect_ratio("1024x1536"), "2:3");
+        assert_eq!(grok_aspect_ratio("1024x1024"), "1:1");
+        // A non-documented ratio snaps to the closest supported one.
+        assert_eq!(grok_aspect_ratio("1500x1000"), "3:2");
+        assert_eq!(grok_aspect_ratio(""), "1:1");
+        assert_eq!(grok_aspect_ratio("not-a-size"), "1:1");
+    }
+
+    #[test]
+    fn grok_resolution_collapses_oversized_selections_to_the_documented_maximum() {
+        assert_eq!(grok_resolution("1024x1024 (1:1)"), "1k");
+        assert_eq!(grok_resolution("1280x720 (16:9)"), "1k");
+        assert_eq!(grok_resolution("2048x2048 (2K)"), "2k");
+        assert_eq!(grok_resolution("4096x4096 (4K)"), "2k");
+        assert_eq!(grok_resolution("2000x1000"), "2k");
+    }
+
+    #[test]
+    fn openai_compatible_bodies_keep_size_quality_and_background() {
+        let body = image_generation_body(
+            "gpt-image-2",
+            "a cat",
+            "1024x1024",
+            "1024x1024 (1:1)",
+            "high",
+            "transparent",
+            2,
+        );
+        assert_eq!(body["size"], "1024x1024");
+        assert_eq!(body["n"], 2);
+        assert_eq!(body["quality"], "high");
+        assert_eq!(body["background"], "transparent");
+        assert!(body.get("aspect_ratio").is_none());
+        assert!(body.get("resolution").is_none());
+        assert!(body.get("response_format").is_none());
+
+        // "auto" background is still omitted for OpenAI-compatible providers.
+        let body = image_generation_body("gemini-3-pro-image", "a cat", "1024x1024", "1024x1024 (1:1)", "", "auto", 1);
+        assert!(body.get("background").is_none());
+        assert!(body.get("quality").is_none());
+    }
+
+    #[test]
+    fn requested_count_is_clamped_to_the_supported_batch() {
+        assert_eq!(requested_image_count(&json!({})), 1);
+        assert_eq!(requested_image_count(&json!({ "n": 4 })), 4);
+        assert_eq!(requested_image_count(&json!({ "n": 0 })), 1);
+        assert_eq!(requested_image_count(&json!({ "n": 5 })), MAX_IMAGE_BATCH);
+        assert_eq!(requested_image_count(&json!({ "n": 99 })), MAX_IMAGE_BATCH);
+        assert_eq!(MAX_IMAGE_BATCH, 4);
+    }
+
+    #[test]
+    fn is_grok_image_model_matches_every_gateway_id_shape() {
+        assert!(is_grok_image_model("grok-imagine-image"));
+        assert!(is_grok_image_model("grok-imagine-image-2.0"));
+        assert!(is_grok_image_model("grok-imagine-image-quality"));
+        assert!(is_grok_image_model("  Grok-3-Image "));
+        // Namespaced ids still resolve to the Grok adapter ...
+        assert!(is_grok_image_model("xai/grok-2-image"));
+        // ... while an id that merely contains the letters keeps OpenAI params.
+        assert!(!is_grok_image_model("grokking-image"));
+        assert!(!is_grok_image_model("gpt-image-2.5"));
+        assert!(!is_grok_image_model("gemini-3-pro-image"));
+        assert!(!is_grok_image_model("nana-banana-pro"));
+    }
+
+    #[tokio::test]
+    async fn openai_models_post_the_openai_body_over_the_wire() {
+        let root = temp_root();
+        let server = GatewayLoopback::start(png_bytes([3, 3, 3, 255])).await;
+        let mut cfg = test_config(&root);
+        cfg.image_api_url = server.url.clone();
+        cfg.image_api_key = "local-test-key".into();
+
+        let result = timeout(
+            Duration::from_secs(3),
+            generate_image_with_clients(
+                &cfg,
+                &RunNodeRequest {
+                    node_type: "image".into(),
+                    category: "generate".into(),
+                    config: json!({
+                        "prompt": "一只猫",
+                        "model": "gpt-image-2.5",
+                        "size": "1536x1024 (3:2)",
+                        "quality": "high",
+                        "background": "transparent",
+                        "n": 2,
+                    }),
+                    input_assets: Vec::new(),
+                },
+                &root.join("output"),
+                &loopback_client(),
+                &loopback_client(),
+            ),
+        )
+        .await
+        .expect("loopback image generation must return promptly")
+        .unwrap_or_else(|error| panic!("generation failed: {error}"));
+        assert_eq!(result.len(), 1);
+
+        let (_requests, bodies) = server.finish_with_bodies().await;
+        let posted: serde_json::Value = serde_json::from_str(bodies[0].trim()).unwrap();
+        assert_eq!(
+            posted,
+            json!({
+                "model": "gpt-image-2.5",
+                "prompt": "一只猫",
+                "n": 2,
+                "size": "1536x1024",
+                "quality": "high",
+                "background": "transparent",
+            }),
+            "non-Grok models must keep the untouched OpenAI contract"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn a_gateway_that_rejects_the_grok_contract_gets_an_openai_retry() {
+        let root = temp_root();
+        let png = png_bytes([6, 6, 6, 255]);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&png);
+        let asset_body = json!({ "data": [{ "b64_json": encoded }] }).to_string();
+        let server = GatewayLoopback::start_with(
+            png,
+            2,
+            vec![
+                (400, json!({ "error": { "message": "unknown parameter aspect_ratio" } }).to_string()),
+                (200, asset_body),
+            ],
+        )
+        .await;
+        let mut cfg = test_config(&root);
+        cfg.image_api_url = server.url.clone();
+        cfg.image_api_key = "local-test-key".into();
+
+        let result = timeout(
+            Duration::from_secs(3),
+            generate_image_with_clients(
+                &cfg,
+                &RunNodeRequest {
+                    node_type: "image".into(),
+                    category: "generate".into(),
+                    config: json!({ "prompt": "一只猫", "model": "grok-imagine-image", "size": "1024x1536 (2:3)" }),
+                    input_assets: Vec::new(),
+                },
+                &root.join("output"),
+                &loopback_client(),
+                &loopback_client(),
+            ),
+        )
+        .await
+        .expect("loopback image generation must return promptly")
+        .unwrap_or_else(|error| panic!("generation failed: {error}"));
+        assert_eq!(result.len(), 1, "the fallback response must be saved");
+
+        let (_requests, bodies) = server.finish_with_bodies().await;
+        assert_eq!(bodies.len(), 2, "expected the Grok body plus one retry");
+        let first: serde_json::Value = serde_json::from_str(bodies[0].trim()).unwrap();
+        assert_eq!(first["aspect_ratio"], "2:3");
+        assert!(first.get("size").is_none());
+        let retry: serde_json::Value = serde_json::from_str(bodies[1].trim()).unwrap();
+        assert_eq!(retry["size"], "1024x1536");
+        assert!(retry.get("aspect_ratio").is_none());
+        assert!(retry.get("resolution").is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn grok_text_to_image_posts_grok_parameters_over_the_wire() {
+        let root = temp_root();
+        let server = GatewayLoopback::start(png_bytes([7, 8, 9, 255])).await;
+        let mut cfg = test_config(&root);
+        cfg.image_api_url = server.url.clone();
+        cfg.image_api_key = "local-test-key".into();
+        let output = root.join("output");
+
+        let result = timeout(
+            Duration::from_secs(3),
+            generate_image_with_clients(
+                &cfg,
+                &RunNodeRequest {
+                    node_type: "image".into(),
+                    category: "image".into(),
+                    config: json!({
+                        "prompt": "一只猫",
+                        "model": "grok-3-image",
+                        "size": "1024x1536 (2:3)",
+                        "quality": "high",
+                        "background": "transparent",
+                    }),
+                    input_assets: Vec::new(),
+                },
+                &output,
+                &loopback_client(),
+                &loopback_client(),
+            ),
+        )
+        .await
+        .expect("loopback image generation must return promptly")
+        .unwrap();
+        assert_eq!(result.len(), 1);
+
+        let (requests, bodies) = server.finish_with_bodies().await;
+        assert!(requests[0].starts_with("POST /v1/images/generations "));
+        let posted: serde_json::Value = serde_json::from_str(bodies[0].trim()).unwrap();
+        assert_eq!(
+            posted,
+            json!({
+                "model": "grok-3-image",
+                "prompt": "一只猫",
+                "n": 1,
+                "aspect_ratio": "2:3",
+                "resolution": "1k",
+                "response_format": "b64_json",
+                "quality": "high",
+            })
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn every_returned_image_is_saved_and_n_is_forwarded() {
+        let root = temp_root();
+        let png = png_bytes([4, 5, 6, 255]);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&png);
+        let body = json!({
+            "data": [
+                { "b64_json": encoded },
+                { "b64_json": encoded },
+                { "b64_json": encoded },
+            ]
+        })
+        .to_string();
+        let server = GatewayLoopback::start_with(png, 1, vec![(200, body)]).await;
+        let mut cfg = test_config(&root);
+        cfg.image_api_url = server.url.clone();
+        cfg.image_api_key = "local-test-key".into();
+
+        let result = timeout(
+            Duration::from_secs(3),
+            generate_image_with_clients(
+                &cfg,
+                &RunNodeRequest {
+                    node_type: "image".into(),
+                    category: "generate".into(),
+                    config: json!({ "prompt": "三张", "model": "gpt-image-2", "n": 3 }),
+                    input_assets: Vec::new(),
+                },
+                &root.join("output"),
+                &loopback_client(),
+                &loopback_client(),
+            ),
+        )
+        .await
+        .expect("loopback image generation must return promptly")
+        .unwrap();
+        assert_eq!(result.len(), 3, "every returned image must be saved");
+        let mut ids: Vec<String> = result.iter().map(|asset| asset.id.clone()).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 3, "each saved image keeps its own asset id");
+        for asset in &result {
+            assert!(std::path::Path::new(&asset.path).is_file(), "{}", asset.path);
+        }
+
+        let (_requests, bodies) = server.finish_with_bodies().await;
+        let posted: serde_json::Value = serde_json::from_str(bodies[0].trim()).unwrap();
+        assert_eq!(posted["n"], 3);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn long_prompts_are_forwarded_verbatim() {
+        // No prompt length rule of our own: whatever the user typed (or the
+        // comic pipeline composed) goes to the provider unchanged.
+        let root = temp_root();
+        let server = GatewayLoopback::start(png_bytes([1, 2, 3, 255])).await;
+        let mut cfg = test_config(&root);
+        cfg.image_api_url = server.url.clone();
+        cfg.image_api_key = "local-test-key".into();
+        let prompt = "猫".repeat(1500);
+
+        let result = timeout(
+            Duration::from_secs(3),
+            generate_image_with_clients(
+                &cfg,
+                &RunNodeRequest {
+                    node_type: "image".into(),
+                    category: "image".into(),
+                    config: json!({ "prompt": prompt, "model": "grok-imagine-image" }),
+                    input_assets: Vec::new(),
+                },
+                &root.join("output"),
+                &loopback_client(),
+                &loopback_client(),
+            ),
+        )
+        .await
+        .expect("loopback image generation must return promptly")
+        .unwrap_or_else(|error| panic!("generation failed: {error}"));
+        assert_eq!(result.len(), 1);
+
+        let (_requests, bodies) = server.finish_with_bodies().await;
+        let posted: serde_json::Value = serde_json::from_str(bodies[0].trim()).unwrap();
+        assert_eq!(posted["prompt"].as_str().unwrap().chars().count(), 1500);
+        assert_eq!(posted["aspect_ratio"], "1:1");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

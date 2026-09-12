@@ -26,9 +26,8 @@
 
 在 [GitHub Releases](https://github.com/whhhh1500/image-client/releases) 下载对应平台的便携发布文件：
 
-- Windows x64：`Image-Client_版本_x64_portable.exe`，无需安装。
-- macOS Apple Silicon：`Image-Client_版本_aarch64.app.tar.gz`，解压后打开 `.app`。
-- Linux x64：`Image-Client_版本_amd64.AppImage`。
+- Windows x64：`Image-Client_版本_x64_portable.exe`，无需安装（默认发布平台）。
+- macOS Apple Silicon：`Image-Client_版本_aarch64.app.tar.gz`，解压后打开 `.app`。按需构建：在 Actions 里对目标 tag 手动运行 "Publish release" 并勾选 `macos`。
 
 当前发布包未进行商业代码签名，操作系统首次打开时可能显示安全提示。请只从本仓库 Releases 下载并核对发布来源。
 

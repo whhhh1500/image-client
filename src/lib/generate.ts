@@ -2,6 +2,7 @@ import { runNode, type RunNodeRequest } from "./ipc";
 import { useLibraryStore } from "../store/useLibraryStore";
 import { useProjectStore } from "../store/useProjectStore";
 import { useGenerationStore, type GenParams, type ImageGenerationReference } from "../store/useGenerationStore";
+import { MAX_IMAGE_COUNT } from "./models";
 import { persistAssets, persistTask } from "./dbWrite";
 import type { AssetRef } from "../types";
 import { logEvent } from "./logger";
@@ -114,8 +115,9 @@ export async function generateImage(
     ...outputCatalog,
     provenance,
   };
+  const count = Math.min(Math.max(Math.trunc(params.count ?? 1), 1), MAX_IMAGE_COUNT);
   const started = performance.now();
-  logEvent("info", "generation.image.start", { taskId, nodeId, label, model: params.model, projectId, size: params.size, quality: params.quality, background: params.background, hasReference: isImg2Img, prompt: params.prompt });
+  logEvent("info", "generation.image.start", { taskId, nodeId, label, model: params.model, projectId, size: params.size, quality: params.quality, background: params.background, count, hasReference: isImg2Img, prompt: params.prompt });
 
   store.addTask({
     id: taskId,
@@ -135,6 +137,7 @@ export async function generateImage(
     quality: params.quality,
     background: params.background,
     referencePath: params.referencePath,
+    n: count,
   };
   if ((params.references ?? []).length > 0) config.references = references;
   if (params.model) config.model = params.model;

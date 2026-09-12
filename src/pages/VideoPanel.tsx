@@ -20,6 +20,8 @@ import { ContextMenu, menuIcons } from "../components/ContextMenu";
 import AssetImportPicker from "../components/AssetImportPicker";
 import MediaHostingDialog from "../components/MediaHostingDialog";
 import AssetDetailModal from "../components/AssetDetailModal";
+import ModelCombobox from "../components/ModelCombobox";
+import { useModelCatalog } from "../lib/useModelCatalog";
 import { getDocumentMeta } from "../lib/documents";
 import WorkflowGuide from "../components/WorkflowGuide";
 import { logEvent } from "../lib/logger";
@@ -267,7 +269,7 @@ function ShotPromptTextarea({
 export default function VideoPanel() {
   const vid = useVideoStore();
   const [capabilities, setCapabilities] = useState<VideoModelCapability[]>([]);
-  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const videoCatalog = useModelCatalog("video", []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -307,7 +309,7 @@ export default function VideoPanel() {
     void Promise.allSettled([listVideoModels(), listVideoModelCapabilities()])
       .then(([modelsResult, capabilitiesResult]) => {
         if (disposed) return;
-        if (modelsResult.status === "fulfilled") setAvailableModels(modelsResult.value);
+        if (modelsResult.status === "fulfilled") videoCatalog.setOptions(modelsResult.value);
         if (capabilitiesResult.status === "fulfilled") setCapabilities(capabilitiesResult.value);
         const failures = [
           modelsResult.status === "rejected" ? `模型目录：${String(modelsResult.reason)}` : "",
@@ -360,10 +362,9 @@ export default function VideoPanel() {
     [capabilities, vid.model],
   );
   const capability = knownCapability ?? fallbackCapability(vid.model);
-  const advertisedModels = availableModels.length ? availableModels : capabilities.map((item) => item.id);
-  const modelOptions = [...new Set([vid.model, ...advertisedModels])]
-    .filter(Boolean)
-    .map((model) => capabilities.find((item) => item.id === model) ?? fallbackCapability(model));
+  const advertisedModels = videoCatalog.options.length ? videoCatalog.options : capabilities.map((item) => item.id);
+  const modelOptions = [...new Set([vid.model, ...advertisedModels])].filter(Boolean);
+  const modelLabels = Object.fromEntries(capabilities.map((item) => [item.id, item.label]));
   const images = vid.images;
   const hasMaterials = images.length + vid.videos.length > 0;
   const shots = vid.shots;
@@ -829,10 +830,21 @@ export default function VideoPanel() {
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex flex-wrap items-center gap-2 border-b border-slate-800 bg-slate-900/40 px-6 py-2.5">
         <span className="text-xs font-medium text-slate-400">视频模型</span>
-        <select value={vid.model} onChange={(event) => selectModel(event.target.value)} className="rounded-lg border border-slate-600 bg-slate-900/70 px-3 py-1.5 text-xs text-slate-100 outline-none transition focus:border-fuchsia-400">
-          {modelOptions.length ? modelOptions.map((item) => <option key={item.id} value={item.id}>{item.label}</option>) : <option value={vid.model}>{vid.model}</option>}
-        </select>
-        <span className="text-[11px] text-slate-500">能力、上限与可选项按模型实时收敛</span>
+        <div className="w-80 max-w-full">
+          <ModelCombobox
+            compact
+            label="视频模型"
+            value={vid.model}
+            options={modelOptions}
+            labels={modelLabels}
+            onChange={selectModel}
+            onFetch={() => void videoCatalog.refresh()}
+            fetching={videoCatalog.loading}
+            status={videoCatalog.message ? { text: videoCatalog.message, error: videoCatalog.error } : null}
+            placeholder="例如 kling-video-v3"
+          />
+        </div>
+        <span className="text-[11px] text-slate-500">能力、上限与可选项按模型实时收敛；列表以外的模型需客户端内置能力定义后才能生成</span>
       </div>
 
       <WorkflowGuide current="检查每镜 Prompt 与模型支持的时长" next="逐镜生成并保存；需要时勾选镜头手动拼接" detail="每镜对应一次 API 请求和一个独立视频资源，不自动拆分或拼接。" />

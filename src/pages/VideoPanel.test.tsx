@@ -27,8 +27,10 @@ vi.mock("../components/AssetImportPicker", () => ({
   },
 }));
 vi.mock("../lib/comic/markdownApi", () => ({ comicMdCatalogList: vi.fn().mockResolvedValue([]) }));
+const modelCatalog = vi.hoisted(() => ({ fetch: vi.fn() }));
 vi.mock("../lib/ipc", () => ({
   listVideoModels: vi.fn().mockResolvedValue(["model"]),
+  fetchModels: modelCatalog.fetch,
   listVideoModelCapabilities: vi.fn().mockResolvedValue([{
     id: "model",
     label: "Model",
@@ -57,6 +59,7 @@ import VideoPanel, {
 
 afterEach(() => {
   picker.onApply = null;
+  modelCatalog.fetch.mockReset();
   mediaHosting.get.mockReset().mockResolvedValue({ endpoint: "https://host.example/upload", fileField: "file", urlField: "url", authMode: "bearer", hasToken: true, configured: true });
   mediaHosting.publish.mockReset();
   videoApi.generateVideo.mockReset().mockResolvedValue([]);
@@ -495,5 +498,43 @@ describe("VideoPanel storyboard import", () => {
     expect(useVideoStore.getState().shots[0]).toMatchObject({
       referenceVideos: ["https://cdn.example/unassigned.mp4"],
     });
+  });
+
+  it("refreshes the video catalogue on demand and accepts a hand-typed model", async () => {
+    useProjectStore.setState({ activeId: "project-a", projects: [project("project-a")] });
+    useVideoStore.getState().load({
+      model: "model",
+      mode: "text",
+      aspectRatio: "16:9",
+      resolution: "720p",
+      images: [],
+      videos: [],
+      audios: [],
+      shots: [{ id: "shot-1", shotNo: 1, prompt: "镜头", durationS: 3 }],
+    });
+    useLibraryStore.setState({ assets: [], tasks: [] });
+    modelCatalog.fetch.mockResolvedValue(["model", "brand-new-video-model"]);
+
+    render(<VideoPanel />);
+    await waitFor(() => expect(screen.getByRole("combobox", { name: "视频模型" })).toBeTruthy());
+
+    // No credentials in the panel: the backend reuses the saved video config.
+    fireEvent.click(screen.getByRole("button", { name: "获取模型（视频模型）" }));
+    await waitFor(() => {
+      expect(modelCatalog.fetch).toHaveBeenCalledWith({ url: "", key: "", kind: "video" });
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "展开视频模型列表" }));
+    await waitFor(() => {
+      expect(screen.queryByRole("option", { name: "brand-new-video-model" })).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole("option", { name: "brand-new-video-model" }));
+    expect(useVideoStore.getState().model).toBe("brand-new-video-model");
+
+    fireEvent.change(screen.getByRole("combobox", { name: "视频模型" }), {
+      target: { value: "自填视频模型" },
+    });
+    expect(useVideoStore.getState().model).toBe("自填视频模型");
+    expect(screen.getByText(/已获取 2 个模型/)).toBeTruthy();
   });
 });

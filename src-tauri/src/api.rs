@@ -429,7 +429,6 @@ fn err(message: String) -> ApiError {
 }
 
 const MAX_TEXT_INPUT_CHARS: usize = commands::MAX_AGENT_TEXT_CHARS;
-const MAX_PROMPT_CHARS: usize = 200_000;
 const MAX_MODEL_CHARS: usize = commands::MAX_AGENT_MODEL_CHARS;
 
 fn required_text(value: &str, field: &str, max: usize) -> Result<(), ApiError> {
@@ -439,6 +438,15 @@ fn required_text(value: &str, field: &str, max: usize) -> Result<(), ApiError> {
     }
     if trimmed.chars().count() > max {
         return Err(err(format!("{field} 超过 {max} 个字符")));
+    }
+    Ok(())
+}
+
+/// Generation prompts are only required to be non-empty: the provider — not
+/// this app — decides what length a model accepts.
+fn required_prompt(value: &str, field: &str) -> Result<(), ApiError> {
+    if value.trim().is_empty() {
+        return Err(err(format!("{field} 不能为空")));
     }
     Ok(())
 }
@@ -700,7 +708,7 @@ async fn tools() -> Json<Value> {
             tool("storyboard", "生成 Markdown 视频分镜", "/api/v1/agents/storyboard/runs", json!({"input":{"type":"string"}}), vec!["input"]),
             tool("consistency", "建立固定锚定与剧情状态锚点", "/api/v1/agents/consistency/runs", json!({"input":{"type":"string"}}), vec!["input"]),
             tool("qc", "执行逐镜与内容质量检查", "/api/v1/agents/qc/runs", json!({"input":{"type":"string"}}), vec!["input"]),
-            tool("generate_image", "生成图片", "/api/v1/media/images/generations", json!({"prompt":{"type":"string"},"referencePath":{"type":"string"},"model":{"type":"string"},"size":{"type":"string"}}), vec!["prompt"]),
+            tool("generate_image", "生成图片", "/api/v1/media/images/generations", json!({"prompt":{"type":"string"},"referencePath":{"type":"string"},"model":{"type":"string"},"size":{"type":"string"},"n":{"type":"integer","description":"生成数量 1-4"}}), vec!["prompt"]),
             tool("generate_video", "生成视频分段", "/api/v1/media/videos/generations", json!({"prompt":{"type":"string"},"durationS":{"type":"integer"},"images":{"type":"array"},"videos":{"type":"array"},"audios":{"type":"array"},"model":{"type":"string"}}), vec!["prompt"])
         ]
     }))
@@ -973,17 +981,27 @@ struct ImageReq {
     reference_path: Option<String>,
     model: Option<String>,
     project_id: Option<String>,
+    /// Images to generate in one request (1–4, see `gateway::MAX_IMAGE_BATCH`).
+    n: Option<u32>,
 }
 
 async fn image(
     State(state): State<ApiState>,
     Json(body): Json<ImageReq>,
 ) -> Result<Json<Value>, ApiError> {
-    required_text(&body.prompt, "prompt", MAX_PROMPT_CHARS)?;
+    required_prompt(&body.prompt, "prompt")?;
     optional_text(body.size.as_deref(), "size", 64)?;
     optional_text(body.quality.as_deref(), "quality", 32)?;
     optional_text(body.background.as_deref(), "background", 32)?;
     optional_text(body.reference_path.as_deref(), "referencePath", 4_096)?;
+    if let Some(count) = body.n {
+        if !(1..=gateway::MAX_IMAGE_BATCH).contains(&count) {
+            return Err(err(format!(
+                "n 必须是 1 到 {} 之间的整数",
+                gateway::MAX_IMAGE_BATCH
+            )));
+        }
+    }
     optional_text(body.model.as_deref(), "model", MAX_MODEL_CHARS)?;
     optional_text(body.project_id.as_deref(), "projectId", 200)?;
     if let Some(value) = body.quality.as_deref() {
@@ -1019,6 +1037,9 @@ async fn image(
     if let Some(value) = reference_path.clone() {
         config.insert("referencePath".into(), json!(value));
     }
+    if let Some(count) = body.n {
+        config.insert("n".into(), json!(count));
+    }
     config.insert("model".into(), json!(model));
     let request = RunNodeRequest {
         node_type: "textToImage".into(),
@@ -1047,6 +1068,7 @@ async fn image(
         "size": body.size,
         "quality": body.quality,
         "background": body.background,
+        "n": body.n,
         "model": model,
         "provenance": crate::history::generated_provenance(&prompt, &prompt, None, source_materials, json!([])),
         "origin": "rest_api",
@@ -1090,7 +1112,7 @@ async fn video(
     State(state): State<ApiState>,
     Json(body): Json<VideoReq>,
 ) -> Result<Json<Value>, ApiError> {
-    required_text(&body.prompt, "prompt", MAX_PROMPT_CHARS)?;
+    required_prompt(&body.prompt, "prompt")?;
     optional_text(body.aspect_ratio.as_deref(), "aspectRatio", 32)?;
     optional_text(body.resolution.as_deref(), "resolution", 32)?;
     optional_text(body.model.as_deref(), "model", MAX_MODEL_CHARS)?;
@@ -1267,7 +1289,6 @@ async fn save_media_asset(
         return Err(err("dataBase64 不能为空且解码后不得超过 512 MiB".into()));
     }
     optional_text(body.label.as_deref(), "label", 100)?;
-    optional_text(body.prompt.as_deref(), "prompt", MAX_PROMPT_CHARS)?;
     optional_text(body.model.as_deref(), "model", MAX_MODEL_CHARS)?;
     optional_text(body.project_id.as_deref(), "projectId", 200)?;
     use base64::Engine;
@@ -1453,6 +1474,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn prompts_are_not_length_limited() {
+        // Only emptiness is rejected here; the provider decides what length a
+        // model accepts, so a long prompt must never fail validation.
+        assert!(required_prompt("   ", "prompt").is_err());
+        assert!(required_prompt(&"猫".repeat(40_000), "prompt").is_ok());
+        assert!(required_prompt(&"a".repeat(1_000_000), "prompt").is_ok());
     }
 
     #[test]
