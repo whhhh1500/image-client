@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import StatusBar, { ZZONE_INVITE_URL } from "./StatusBar";
+import StatusBar, { GITHUB_REPO_URL, ZZONE_INVITE_URL } from "./StatusBar";
 
 const opener = vi.hoisted(() => ({ openPath: vi.fn(), openUrl: vi.fn() }));
 vi.mock("@tauri-apps/plugin-opener", () => opener);
@@ -50,4 +50,22 @@ it("opens the active ZZone gateway invitation in the system browser", () => {
 
   fireEvent.click(screen.getByRole("button", { name: "ZZone 网关" }));
   expect(opener.openUrl).toHaveBeenCalledWith(ZZONE_INVITE_URL);
+});
+
+it("opens the GitHub repository in the system browser", () => {
+  opener.openUrl.mockResolvedValue(undefined);
+  render(
+    <StatusBar
+      appInfo={null}
+      dbReady
+      configStatus={null}
+      providers={null}
+      onOpenSettings={vi.fn()}
+      onOpenGuide={vi.fn()}
+      onOpenChangelog={vi.fn()}
+    />,
+  );
+
+  fireEvent.click(screen.getByRole("button", { name: "GitHub 仓库" }));
+  expect(opener.openUrl).toHaveBeenCalledWith(GITHUB_REPO_URL);
 });

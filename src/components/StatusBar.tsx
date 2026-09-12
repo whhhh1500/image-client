@@ -1,10 +1,11 @@
-import { BookOpenText, History } from "lucide-react";
+import { BookOpenText, Github, History } from "lucide-react";
 import type { AppInfo, ConfigStatus, ProviderInfo } from "../lib/ipc";
 import { logsDir } from "../lib/ipc";
 import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import { logEvent } from "../lib/logger";
 
 export const ZZONE_INVITE_URL = "https://oenai.cc.cd/j/i1.cmVzZWxsZXIAZmQxeVp2TEY1V3hJb0JWeDltNDYwYlpS.cn5C6uhqhbNTFeR46uZf1TPAP-3Uf7-zsIcsDZovdK8";
+export const GITHUB_REPO_URL = "https://github.com/whhhh1500/image-client";
 
 function item(ok: boolean, label: string, extra?: string) {
   return (
@@ -67,6 +68,15 @@ export default function StatusBar({
         </button>
         <button type="button" onClick={onOpenChangelog} className="flex items-center gap-1 text-slate-500 hover:text-slate-200">
           <History size={12} /> 更新日志
+        </button>
+        <button
+          type="button"
+          onClick={() => void openUrl(GITHUB_REPO_URL).catch((error) => logEvent("error", "github.repo_open_failed", { error: String(error) }))}
+          className="flex items-center text-slate-500 transition hover:text-slate-200"
+          title="GitHub 仓库"
+          aria-label="GitHub 仓库"
+        >
+          <Github size={13} />
         </button>
       </div>
     </footer>
