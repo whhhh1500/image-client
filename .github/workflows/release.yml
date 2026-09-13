@@ -167,12 +167,26 @@ jobs:
         with:
           pattern: release-*
           path: release-artifacts
+          # Flat layout: one artifact does not get its own subdirectory, so the
+          # release step must not depend on per-artifact folders.
+          merge-multiple: true
       - name: Verify release files and generate release notes
         shell: bash
         run: |
           version="${GITHUB_REF_NAME#v}"
-          platforms="$(for dir in release-artifacts/release-*; do basename "$dir" | sed 's/^release-//'; done | paste -sd, -)"
+          # Platforms are derived from the release file names, which are the
+          # same whether the artifacts arrive flat or in subdirectories.
+          platforms=""
+          while IFS= read -r file; do
+            case "$(basename "$file")" in
+              *_x64_portable.exe) platforms="${platforms}windows-x64," ;;
+              *_aarch64.app.tar.gz) platforms="${platforms}macos-arm64," ;;
+              *_amd64.AppImage) platforms="${platforms}linux-x64," ;;
+            esac
+          done < <(find release-artifacts -type f | sort)
+          platforms="${platforms%,}"
           echo "platforms=$platforms"
+          test -n "$platforms"
           node scripts/package-release.mjs --verify-all --version "$version" --output-dir release-artifacts --platforms "$platforms"
           node scripts/package-release.mjs --release-notes --version "$version" --notes-file release-notes.md --platforms "$platforms"
       - name: Publish one complete GitHub Release
