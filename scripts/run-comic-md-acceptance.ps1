@@ -18,7 +18,9 @@ foreach ($portNumber in $ports) {
   if ($portNumber -lt 1024 -or $portNumber -gt 65535) { throw 'Ports must be 1024..65535' }
   if (@(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object LocalPort -eq $portNumber).Count) { throw "Port $portNumber already occupied; refusing to reuse or stop it" }
 }
-$auditRoot = Join-Path ([IO.Path]::GetTempPath()) ('image-client-md-audit-' + [Guid]::NewGuid().ToString('N'))
+$scratchRoot = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')).Path '.test-tmp'
+New-Item -ItemType Directory -Force -Path $scratchRoot | Out-Null
+$auditRoot = Join-Path $scratchRoot ('image-client-md-audit-' + [Guid]::NewGuid().ToString('N'))
 $auditRoot = [IO.Path]::GetFullPath($auditRoot)
 $binDir = Join-Path $auditRoot 'bin'
 $dataDir = Join-Path $auditRoot 'data'

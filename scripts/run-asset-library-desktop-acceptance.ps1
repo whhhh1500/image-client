@@ -19,7 +19,9 @@ $nodeExe = (Get-Command node -ErrorAction Stop).Source
 foreach ($port in @($CdpPort, $ApiPort)) {
   if (@(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object LocalPort -eq $port).Count) { throw "Port $port already occupied; refusing to reuse or stop it" }
 }
-$auditRoot = Join-Path ([IO.Path]::GetTempPath()) ('image-client-asset-library-desktop-' + [Guid]::NewGuid().ToString('N'))
+$scratchRoot = Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')).Path '.test-tmp'
+New-Item -ItemType Directory -Force -Path $scratchRoot | Out-Null
+$auditRoot = Join-Path $scratchRoot ('image-client-asset-library-desktop-' + [Guid]::NewGuid().ToString('N'))
 $binDir = Join-Path $auditRoot 'bin'; $dataDir = Join-Path $auditRoot 'data'; $tempDir = Join-Path $auditRoot 'tmp'; $fixtureDir = Join-Path $auditRoot 'fixtures'; $webViewDataDir = Join-Path $auditRoot 'webview2'
 New-Item -ItemType Directory -Path $binDir, $dataDir, $tempDir, $fixtureDir, $webViewDataDir | Out-Null
 $copiedExe = Join-Path $binDir 'image-client.exe'

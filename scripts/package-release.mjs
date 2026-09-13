@@ -6,6 +6,14 @@ import process from "node:process";
 const root = resolve(import.meta.dirname, "..");
 const args = process.argv.slice(2);
 
+// Bundling helpers (tar/zip) inherit TEMP/TMP: keep their scratch files next to
+// the repository instead of the system drive.
+const scratchRoot = join(root, ".test-tmp");
+mkdirSync(scratchRoot, { recursive: true });
+process.env.TEMP = scratchRoot;
+process.env.TMP = scratchRoot;
+process.env.TMPDIR = scratchRoot;
+
 function option(name) {
   const index = args.indexOf(name);
   return index >= 0 ? args[index + 1] : undefined;

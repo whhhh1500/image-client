@@ -1,9 +1,19 @@
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import process from "node:process";
 
 const root = resolve(import.meta.dirname, "..");
+
+// Keep every child-process scratch file on the same drive as the repository.
+// cargo, rustc, link.exe and vite all honour TEMP/TMP, and a full release
+// build otherwise leaves gigabytes behind in the system temp directory.
+const scratchRoot = resolve(root, ".test-tmp");
+mkdirSync(scratchRoot, { recursive: true });
+process.env.TEMP = scratchRoot;
+process.env.TMP = scratchRoot;
+process.env.TMPDIR = scratchRoot;
+
 const args = new Set(process.argv.slice(2));
 const tagIndex = process.argv.indexOf("--tag");
 const releaseTag = tagIndex >= 0 ? process.argv[tagIndex + 1] : undefined;

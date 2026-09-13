@@ -87,11 +87,13 @@ if ($preflightListeners.Count -gt 0) {
   throw "端口 $Port 已被监听，拒绝借用或停止现有进程。"
 }
 
-$tempBase = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd([char]92, [char]47)
+# 审计产物留在仓库所在的盘（.test-tmp），不要把几 GB 的临时目录写进系统盘。
+$tempBase = [System.IO.Path]::GetFullPath((Join-Path (Resolve-Path (Join-Path $PSScriptRoot '..')).Path '.test-tmp')).TrimEnd([char]92, [char]47)
+New-Item -ItemType Directory -Force -Path $tempBase | Out-Null
 $auditRoot = [System.IO.Path]::GetFullPath((Join-Path $tempBase ("image-client-exe-audit-" + [Guid]::NewGuid().ToString("N"))))
 $auditPrefix = (Join-Path $tempBase "image-client-exe-audit-")
 if (-not $auditRoot.StartsWith($auditPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-  throw "拒绝在临时目录外创建审计根: $auditRoot"
+  throw "拒绝在审计根目录外创建临时目录: $auditRoot"
 }
 
 $binDir = Join-Path $auditRoot "bin"

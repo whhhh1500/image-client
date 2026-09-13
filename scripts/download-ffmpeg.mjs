@@ -47,7 +47,10 @@ const asset = assetFor(platform, arch);
 const url = asset.url;
 
 const resDir = path.join("src-tauri", "resources");
-const tmp = path.join(os.tmpdir(), `ffmpeg-dl-${Date.now()}`);
+// Scratch stays next to the repository so downloads never fill the system drive.
+const scratchRoot = path.join(process.cwd(), ".test-tmp");
+mkdirSync(scratchRoot, { recursive: true });
+const tmp = path.join(scratchRoot, `ffmpeg-dl-${Date.now()}`);
 mkdirSync(tmp, { recursive: true });
 const zip = path.join(tmp, asset.file);
 
