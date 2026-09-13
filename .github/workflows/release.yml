@@ -144,7 +144,14 @@ jobs:
 
   release:
     needs: [verify, build-windows, build-macos]
-    if: needs.verify.result == 'success' && needs.build-windows.result == 'success'
+    # `always()` is required: a skipped dependency (macOS on a plain tag build)
+    # otherwise drags this job into "skipped" as well and no release is ever
+    # published. The explicit result checks keep the safety property.
+    if: |
+      always() &&
+      needs.verify.result == 'success' &&
+      needs.build-windows.result == 'success' &&
+      (needs.build-macos.result == 'success' || needs.build-macos.result == 'skipped')
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     permissions:
