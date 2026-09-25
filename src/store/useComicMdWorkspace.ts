@@ -10,6 +10,9 @@ function workspaceSignature(workspace: MdWorkspace): string {
     workspace.images.map((image) => `${image.id}:${image.stale ? 1 : 0}:${image.fileAvailable === false ? 0 : 1}`).join("|"),
     workspace.syncPlan?.fingerprint ?? "",
     String(workspace.workVisualProfile?.revision ?? 0),
+    // Without this a saved chapter injection never reached the UI, and the next
+    // render submitted the stale revision and was rejected as a conflict.
+    `${workspace.renderOptions?.revision ?? 0}:${workspace.renderOptions?.promptInjection ?? ""}`,
   ].join("§");
 }
 

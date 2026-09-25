@@ -13,6 +13,7 @@ import { generateImage } from "../lib/generate";
 import { generateVideo } from "../lib/generateVideo";
 import type { GenParams } from "../store/useGenerationStore";
 import type { VideoParams } from "../store/useVideoStore";
+import { useRunStore } from "../store/useRunStore";
 import { logEvent } from "../lib/logger";
 import { getDocumentMeta } from "../lib/documents";
 import { refreshLibraryHistory } from "../lib/dbWrite";
@@ -88,7 +89,8 @@ export default function AssetsPage({ onQueueImport }: { onQueueImport: (entries:
   const [menu, setMenu] = useState<{ x: number; y: number; asset: LibAsset } | null>(null);
   const [preview, setPreview] = useState<LibAsset | null>(null);
   const [comicPreview, setComicPreview] = useState<ComicWorkspaceCatalogEntry | null>(null);
-  const [retrying, setRetrying] = useState<string | null>(null);
+  const retrying = useRunStore((s) => s.retryingTaskId);
+  const setRetrying = (retryingTaskId: string | null) => useRunStore.getState().patch({ retryingTaskId });
   const [refreshing, setRefreshing] = useState(false);
   const [refreshMessage, setRefreshMessage] = useState<string | null>(null);
   const [novelSource, setNovelSource] = useState<{ projectId: string; works: NovelWork[] }>();
@@ -152,7 +154,7 @@ export default function AssetsPage({ onQueueImport }: { onQueueImport: (entries:
     return <div className={`mt-2 flex flex-wrap gap-1.5 ${className}`}><button type="button" onClick={(event) => { event.stopPropagation(); queueEntries(entriesForTarget?.("image") ?? entries, "image", actionFor("image")); }} className="rounded border border-cyan-300/20 px-2 py-1 text-[10px] text-cyan-100 hover:bg-cyan-300/10">用于生图</button><button type="button" onClick={(event) => { event.stopPropagation(); queueEntries(entriesForTarget?.("video") ?? entries, "video", actionFor("video")); }} className="rounded border border-fuchsia-300/20 px-2 py-1 text-[10px] text-fuchsia-100 hover:bg-fuchsia-300/10">用于视频</button></div>;
   };
   const retry = async (task: TaskRecord) => {
-    if (!task.params || retrying) return;
+    if (!task.params || useRunStore.getState().retryingTaskId) return;
     setRetrying(task.id);
     setRefreshMessage(null);
     try {

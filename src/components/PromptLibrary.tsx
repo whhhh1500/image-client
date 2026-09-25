@@ -59,6 +59,10 @@ export default function PromptLibrary({
   // Bumped on every open/close so a slow download+import that finishes after the
   // dialog closed cannot write into the generation form.
   const sessionRef = useRef(0);
+  // An optimize result belongs to the entry it was asked for; opening another
+  // entry meanwhile must not let "save back" overwrite that one with it.
+  const selectedIdRef = useRef<string | undefined>(undefined);
+  selectedIdRef.current = selected?.id;
 
   useEffect(() => {
     sessionRef.current += 1;
@@ -130,6 +134,7 @@ export default function PromptLibrary({
   };
 
   const runOptimize = async () => {
+    const startedFor = selected?.id;
     setBusy("optimize");
     setError(null);
     try {
@@ -141,6 +146,7 @@ export default function PromptLibrary({
         pitfalls: selected?.pitfalls,
         model,
       });
+      if (selectedIdRef.current !== startedFor) return;
       setOptimized(result);
     } catch (e) {
       setError(String(e));

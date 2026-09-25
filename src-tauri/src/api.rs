@@ -368,7 +368,17 @@ fn cors_layer() -> CorsLayer {
         configured
             .split(',')
             .map(str::trim)
-            .filter(|origin| !origin.is_empty())
+            // `AllowOrigin::list` panics on a wildcard, which killed the API
+            // task before it bound; a list entry cannot mean "any" anyway.
+            .filter(|origin| {
+                if *origin == "*" {
+                    crate::logging::warn(
+                        "api.cors.wildcard_ignored",
+                        json!({ "variable": "API_CORS_ORIGINS" }),
+                    );
+                }
+                !origin.is_empty() && *origin != "*"
+            })
             .map(str::to_string),
     );
     let origins: Vec<HeaderValue> = origins
@@ -789,7 +799,9 @@ async fn run_step(
             "文本服务返回不完整结果（可能被截断），未保存文档；请重试或缩短输入".into(),
         ));
     }
-    let raw_result = completion.content;
+    // Same as the in-app agent path: reasoning models inline <think> blocks,
+    // whose markers would fail validation or leak into the saved document.
+    let raw_result = commands::strip_thinking(&completion.content);
     let (result, normalized_reference_shots) = if agent_id == "storyboard" {
         agent_prompts::normalize_storyboard_reference_assets(&raw_result)
     } else {

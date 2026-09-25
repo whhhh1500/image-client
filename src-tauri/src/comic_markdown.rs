@@ -932,13 +932,63 @@ fn headings(md: &str) -> Vec<(String, usize, usize)> {
     }
     result
 }
+/// Page/panel number of a `第N页` / `第N格` heading. Accepts what people and
+/// models actually type: fullwidth digits (`第３页`), simple Chinese numerals
+/// (`第三页`) and a subtitle after the heading (`第3页（高潮）`, `第3页 雨夜`).
+/// An unrecognised page heading used to merge its page into the previous one.
 fn number(title: &str, suffix: char) -> Option<i64> {
-    let t: String = title.chars().filter(|c| !c.is_whitespace()).collect();
-    t.strip_prefix('第')?
-        .strip_suffix(suffix)?
-        .parse::<i64>()
-        .ok()
-        .filter(|n| *n > 0)
+    let (digits, tail) = split_numbered(title, suffix)?;
+    // Text glued on without a separator (`第1页剧情`) is not a heading.
+    let separated = tail.is_empty()
+        || tail.starts_with(|c: char| {
+            c.is_whitespace() || "（(：:·-—|、【[，,".contains(c)
+        });
+    separated.then(|| parse_number(&digits)).flatten()
+}
+/// `第<number>页` split into the normalized number text and what follows it.
+fn split_numbered(title: &str, suffix: char) -> Option<(String, &str)> {
+    let rest = title.trim().strip_prefix('第')?;
+    let end = rest.find(suffix)?;
+    let digits = rest[..end]
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .map(|c| match c {
+            '０'..='９' => char::from_u32(c as u32 - '０' as u32 + '0' as u32).unwrap_or(c),
+            c => c,
+        })
+        .collect();
+    Some((digits, &rest[end + suffix.len_utf8()..]))
+}
+fn parse_number(text: &str) -> Option<i64> {
+    let n = if !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()) {
+        text.parse::<i64>().ok()?
+    } else {
+        chinese_number(text)?
+    };
+    (n > 0).then_some(n)
+}
+/// `一`..`九十九` (also `两`), enough for page and panel numbers.
+fn chinese_number(text: &str) -> Option<i64> {
+    let digit = |c: char| {
+        "零一二三四五六七八九"
+            .chars()
+            .position(|d| d == c)
+            .map(|v| v as i64)
+            .or((c == '两').then_some(2))
+    };
+    match text.chars().collect::<Vec<_>>().as_slice() {
+        ['十'] => Some(10),
+        [c] => digit(*c),
+        ['十', u] => Some(10 + digit(*u)?),
+        [t, '十'] => Some(digit(*t)? * 10),
+        [t, '十', u] => Some(digit(*t)? * 10 + digit(*u)?),
+        _ => None,
+    }
+}
+/// `第…页` whose number part cannot be read, e.g. `第3a页` or `第一百页`.
+fn looks_like_page_heading(title: &str) -> bool {
+    split_numbered(title, '页')
+        .is_some_and(|(digits, _)| digits.chars().count() <= 4 && parse_number(&digits).is_none())
 }
 fn canonical(name: &str) -> &str {
     match name {
@@ -1042,6 +1092,42 @@ mod tests {
         put(c, s, "settings", SETTINGS, None);
         put(c, s, "script", SCRIPT, None);
         put(c, s, "storyboard", BOARD, None);
+    }
+    #[test]
+    fn page_headings_accept_fullwidth_chinese_numerals_and_subtitles() {
+        for (title, expected) in [
+            ("第1页", Some(1)),
+            ("第 12 页", Some(12)),
+            ("第３页", Some(3)),
+            ("第三页", Some(3)),
+            ("第十二页", Some(12)),
+            ("第二十页", Some(20)),
+            ("第3页（高潮）", Some(3)),
+            ("第3页：雨夜", Some(3)),
+            ("第3页 雨夜", Some(3)),
+            ("第1页剧情", None),
+            ("第0页", None),
+            ("第一百页", None),
+        ] {
+            assert_eq!(number(title, '页'), expected, "{title}");
+        }
+        assert_eq!(number("第2格（远景）", '格'), Some(2));
+        assert!(looks_like_page_heading("第3a页"));
+        assert!(!looks_like_page_heading("第1页剧情"));
+        assert!(!looks_like_page_heading("第1格：他翻到第2页"));
+    }
+    #[test]
+    fn a_page_with_a_subtitle_is_not_merged_into_the_previous_page() {
+        let page = |n: &str| {
+            format!("# {n}\n## 本页剧情\n剧情\n## 分镜\n### 第1格\n画面\n## 画面文字\n无\n## 人物状态\n无\n")
+        };
+        let md = format!("{}{}{}", page("第1页"), page("第2页"), page("第３页（高潮）"));
+        assert_eq!(pages(&md).iter().map(|p| p.0).collect::<Vec<_>>(), vec![1, 2, 3]);
+        assert!(validate("storyboard", None, &md).is_empty());
+        let unreadable = format!("{}{}", page("第1页"), page("第2a页"));
+        assert!(validate("storyboard", None, &unreadable)
+            .iter()
+            .any(|issue| issue.contains("无法识别页标题")));
     }
     #[test]
     fn work_visual_profile_is_work_scoped_cas_versioned_and_enters_render_contract() {
@@ -1521,6 +1607,38 @@ mod tests {
             Some("实际提交的完整 Prompt")
         );
         assert!(image.prompt_snapshot_complete);
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn catalog_lists_documents_and_images_of_every_chapter_in_a_work() {
+        let (c, s) = setup();
+        let s2 = Scope {
+            chapter_id: "ch2".into(),
+            ..s.clone()
+        };
+        put(&c, &s, "page_prompt", PROMPT, None);
+        let page2 = put(&c, &s2, "page_prompt", PROMPT, None);
+        let path = std::env::temp_dir().join(format!("comic-md-catalog-ch2-{}.png", id()));
+        std::fs::write(&path, b"chapter two fixture").unwrap();
+        let job = insert_job(&c, &s2, "images", "{}", 1).unwrap();
+        c.execute(
+            "INSERT INTO comic_md_images(id,job_id,document_id,document_revision,page_no,path,created_at,effective_prompt) VALUES('catalog-ch2-image',?,?,?,?,?,?,?)",
+            params![job.id, page2.id, page2.revision, 1, path.display().to_string(), now(), "第二章实际 Prompt"],
+        )
+        .unwrap();
+        let entries = catalog_list(&c, "project").unwrap();
+        let text = entries
+            .iter()
+            .find(|entry| entry.kind == "text" && entry.document_id.as_deref() == Some(page2.id.as_str()))
+            .expect("chapter 2 page prompt must be listed");
+        assert_eq!(text.novel_chapter_id.as_deref(), Some("ch2"));
+        let image = entries
+            .iter()
+            .find(|entry| entry.kind == "image")
+            .unwrap();
+        assert_eq!(image.novel_chapter_id.as_deref(), Some("ch2"));
+        assert_eq!(image.document_kind.as_deref(), Some("page_prompt"));
+        assert_eq!(image.stale, text.stale);
         std::fs::remove_file(path).unwrap();
     }
     #[test]
@@ -2264,6 +2382,17 @@ pub fn validate(kind: &str, page_no: Option<i64>, md: &str) -> Vec<String> {
             if ps.is_empty() {
                 out.push("请使用“# 第1页”等正整数页标题".into());
             }
+            // Only level-1 headings: deeper ones may legitimately mention pages
+            // (`### 第一、二页回顾`) and were never page boundaries by intent.
+            let level_one = |start: usize| {
+                md[start..].trim_start().chars().take_while(|c| *c == '#').count() == 1
+            };
+            for (title, _, _) in headings(md)
+                .iter()
+                .filter(|h| level_one(h.1) && looks_like_page_heading(&h.0))
+            {
+                out.push(format!("无法识别页标题“{title}”，请写成“# 第N页”"));
+            }
             if kind == "page_prompt" && (ps.len() != 1 || ps.first().map(|p| p.0) != page_no) {
                 out.push("页 Prompt 必须只包含与页号一致的一页".into());
             }
@@ -2591,7 +2720,6 @@ pub(crate) fn catalog_list(
         // reach the caller rather than make a project look silently empty.
         source(c, &work_scope)?;
         let book = lineage::Book::load(c, &work_scope)?;
-        let docs = book.documents();
         let profile = work_visual_profile(c, project_id, &work_id)?;
         let profile_snapshot = serde_json::to_string(&profile.references)
             .map_err(|_| "漫画视觉参考快照序列化失败")?;
@@ -2602,6 +2730,7 @@ pub(crate) fn catalog_list(
                 chapter_id: chapter_id.clone(),
             };
             let render_options = render_options(c, &scope)?;
+            let docs = book.documents_for(chapter_id);
             let images =
                 chapter_images(c, &scope, &docs, &render_options, &profile, &profile_snapshot)?;
             for document in &docs {
@@ -3514,8 +3643,19 @@ fn refresh_optimization(
         );
     }
     let mut target = initial.clone();
-    target.dependencies = book.dependencies(&target.document.kind, target.document.page_no);
     let documents = book.documents();
+    // An earlier step of this cascade may have shortened the storyboard; a page
+    // that left the plan must not be paid for and saved as a new version.
+    if documents
+        .iter()
+        .any(|document| document.id == target.document.id && document.out_of_plan)
+    {
+        return Err(format!(
+            "分镜调整后{}已不在当前分镜计划内，未再优化；此前完成的内容已保存",
+            document_label(&target.document)
+        ));
+    }
+    target.dependencies = book.dependencies(&target.document.kind, target.document.page_no);
     let workspace_context =
         optimization_workspace_context(c, &f.scope, &documents, &target.document.id)?;
     target.prompt = format!(

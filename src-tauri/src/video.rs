@@ -651,6 +651,20 @@ async fn create_task(
     Ok(id.to_string())
 }
 
+/// `<video_api_url>/<task_id>[/suffix]`, extending the path so a query string
+/// on the configured address (`…/videos?tenant=x`) stays a query string
+/// instead of swallowing the task id.
+fn task_url(base: &str, task_id: &str, suffix: &str) -> String {
+    match reqwest::Url::parse(base) {
+        Ok(mut url) => {
+            let path = format!("{}/{task_id}{suffix}", url.path().trim_end_matches('/'));
+            url.set_path(&path);
+            url.to_string()
+        }
+        Err(_) => format!("{}/{task_id}{suffix}", base.trim_end_matches('/')),
+    }
+}
+
 /// 轮询任务直到 completed（文档建议先等 3-5 秒，之后 5-10 秒间隔）。
 async fn wait_task(
     client: &reqwest::Client,
@@ -659,7 +673,7 @@ async fn wait_task(
     request_id: &str,
     segment_index: usize,
 ) -> Result<(), String> {
-    let url = format!("{}/{}", cfg.video_api_url.trim_end_matches('/'), task_id);
+    let url = task_url(&cfg.video_api_url, task_id, "");
     tokio::time::sleep(Duration::from_secs(5)).await;
     let deadline = Instant::now() + Duration::from_secs(1800);
     let mut poll_count = 0u32;
@@ -692,9 +706,7 @@ async fn wait_task(
             }
         };
         let status = resp.status();
-        let text = read_limited_text(resp, 1024 * 1024, "视频轮询响应")
-            .await
-            .unwrap_or_default();
+        let body = read_limited_text(resp, 1024 * 1024, "视频轮询响应").await;
         if !status.is_success() {
             if is_transient_poll_status(status) && Instant::now() < deadline {
                 transient_failures += 1;
@@ -706,10 +718,31 @@ async fn wait_task(
                 tokio::time::sleep(Duration::from_secs(delay)).await;
                 continue;
             }
-            return Err(format!("查询任务返回 {status}"));
+            return Err(format!("查询任务返回 {status}（task_id={task_id}）"));
         }
+        // The task exists and is billed; an unreadable 200 (a dropped body, a
+        // proxy's HTML page) says nothing about it, so keep polling instead of
+        // failing the shot and inviting a paid resubmission.
+        let parsed = body
+            .map_err(|error| error.to_string())
+            .and_then(|text| serde_json::from_str::<Value>(&text).map_err(|_| "响应不是 JSON".to_string()));
+        let j = match parsed {
+            Ok(value) => value,
+            Err(reason) if Instant::now() < deadline => {
+                transient_failures += 1;
+                let delay = transient_poll_backoff_seconds(transient_failures);
+                crate::logging::warn(
+                    "video.task.poll_retry",
+                    json!({ "requestId": request_id, "segmentIndex": segment_index, "taskId": task_id, "pollCount": poll_count, "reason": "unreadable", "error": reason, "retryInS": delay }),
+                );
+                tokio::time::sleep(Duration::from_secs(delay)).await;
+                continue;
+            }
+            Err(reason) => {
+                return Err(format!("解析任务状态失败（task_id={task_id}）：{reason}"));
+            }
+        };
         transient_failures = 0;
-        let j: Value = serde_json::from_str(&text).map_err(|_| "解析任务状态失败")?;
         let st = j
             .get("status")
             .and_then(|v| v.as_str())
@@ -795,11 +828,7 @@ async fn download_content(
     request_id: &str,
     segment_index: usize,
 ) -> Result<Vec<u8>, String> {
-    let url = format!(
-        "{}/{}/content",
-        cfg.video_api_url.trim_end_matches('/'),
-        task_id
-    );
+    let url = task_url(&cfg.video_api_url, task_id, "/content");
     let started = Instant::now();
     for attempt in 1..=3u32 {
         let response = client
@@ -819,7 +848,7 @@ async fn download_content(
                 tokio::time::sleep(Duration::from_secs(delay)).await;
                 continue;
             }
-            Err(error) => return Err(format!("下载视频失败: {error}")),
+            Err(error) => return Err(format!("下载视频失败（task_id={task_id}）: {error}")),
         };
         let status = resp.status();
         if !status.is_success() {
@@ -835,7 +864,7 @@ async fn download_content(
                 tokio::time::sleep(Duration::from_secs(delay)).await;
                 continue;
             }
-            return Err(format!("下载视频返回 {status}"));
+            return Err(format!("下载视频返回 {status}（task_id={task_id}）"));
         }
         let bytes = crate::http::read_limited_bytes(resp, MAX_VIDEO_BYTES, "视频内容").await?;
         if !crate::assets::is_valid_mp4_bytes(&bytes) {
@@ -847,7 +876,7 @@ async fn download_content(
         );
         return Ok(bytes);
     }
-    Err("下载视频失败：重试次数耗尽".into())
+    Err(format!("下载视频失败：重试次数耗尽（task_id={task_id}）"))
 }
 
 async fn read_limited_text(
@@ -863,8 +892,9 @@ async fn read_limited_text(
 mod tests {
     use super::{
         create_task, is_transient_poll_status, model_capabilities, provider_asset_id,
-        provider_error_message, redact_data_urls, request_body, transient_poll_backoff_seconds,
-        validate_and_plan, validate_single_duration, VideoGenRequest,
+        provider_error_message, redact_data_urls, request_body, task_url,
+        transient_poll_backoff_seconds, validate_and_plan, validate_single_duration,
+        VideoGenRequest,
     };
     use crate::config::ConfigState;
     use axum::{extract::State, routing::post, Json, Router};
@@ -1122,6 +1152,18 @@ mod tests {
         assert_eq!(
             provider_error_message(&serde_json::json!({ "failure_reason": "参考图无效" })),
             Some("参考图无效".to_string())
+        );
+    }
+
+    #[test]
+    fn task_urls_extend_the_path_and_keep_the_query_string() {
+        assert_eq!(
+            task_url("https://gw.example/v1/videos/", "task-1", ""),
+            "https://gw.example/v1/videos/task-1"
+        );
+        assert_eq!(
+            task_url("https://gw.example/v1/videos?tag=x", "task-1", "/content"),
+            "https://gw.example/v1/videos/task-1/content?tag=x"
         );
     }
 }

@@ -60,7 +60,10 @@ export function emptyProfile(i: number): ConfigProfile {
 }
 
 /** Persist configs + active + output dir + llm, then apply the active config to Rust. */
-export async function saveSettings(s: AppSettings): Promise<ConfigStatus | null> {
+export async function saveSettings(
+  s: AppSettings,
+  options: { clearConnections?: boolean } = {},
+): Promise<ConfigStatus | null> {
   // 密钥输入框默认留空表示“保持不变”。保存其他设置时不能把已持久化的
   // LLM Key 覆盖为空，否则应用重启后会丢失配置。
   const current = await loadSettings();
@@ -73,12 +76,15 @@ export async function saveSettings(s: AppSettings): Promise<ConfigStatus | null>
     [KEY, JSON.stringify(persisted)],
   );
   logEvent("info", "settings.saved", { profileCount: persisted.configs.length, activeId: persisted.activeId, llmModel: persisted.llmModel, outputDir: persisted.outputDir });
-  return applyActive(persisted);
+  return applyActive(persisted, options);
 }
 
 /** Push the active (or first) config + output dir + llm to Rust. Empty values
  * keep whatever the backend already holds. */
-export async function applyActive(s: AppSettings): Promise<ConfigStatus | null> {
+export async function applyActive(
+  s: AppSettings,
+  options: { clearConnections?: boolean } = {},
+): Promise<ConfigStatus | null> {
   const active = s.configs.find((c) => c.id === s.activeId) ?? s.configs[0];
   const req: SaveConfigRequest = {
     imageApiUrl: active?.image.url ?? "",
@@ -91,6 +97,9 @@ export async function applyActive(s: AppSettings): Promise<ConfigStatus | null> 
     llmApiKey: s.llmKey ?? "",
     llmApiModel: s.llmModel ?? "gemini-3.7-flash",
     outputDir: s.outputDir.trim() || DEFAULT_OUTPUT_DIR,
+    // Only when the user removed the last profile: with no profile at all the
+    // backend may legitimately hold credentials from .env or the REST API.
+    clearConnections: Boolean(options.clearConnections && !active),
   };
   return saveConfig(req);
 }

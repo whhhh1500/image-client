@@ -5,6 +5,11 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 const MAX_LLM_RESPONSE_BYTES: usize = 100 * 1024 * 1024;
+/// Ceiling for one whole request. A streamed reply is otherwise bounded only by
+/// `LLM_IDLE_TIMEOUT`, so a long document is not cut off while tokens arrive.
+const LLM_MAX_DURATION: Duration = Duration::from_secs(30 * 60);
+/// Longest silence tolerated while waiting for headers or the next chunk.
+const LLM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone)]
 pub struct ToolCall {
@@ -394,24 +399,23 @@ async fn request_with_client(
     #[cfg(feature = "real-e2e-harness")]
     crate::harness_transport::reserve_llm_post(operation)?;
 
-    let response = client
+    let send = client
         .post(url)
         .bearer_auth(key)
         .json(&body)
-        .timeout(Duration::from_secs(300))
-        .send()
-        .await
-        .map_err(|error| {
-            log_failure(
-                &request_id,
-                operation,
-                model,
-                started,
-                None,
-                &error.to_string(),
-            );
-            format!("请求文本接口失败: {error}")
-        })?;
+        .timeout(LLM_MAX_DURATION)
+        .send();
+    let response = match tokio::time::timeout(LLM_IDLE_TIMEOUT, send).await {
+        Ok(result) => result.map_err(|error| error.to_string()),
+        Err(_) => Err(format!(
+            "等待响应超过 {} 秒",
+            LLM_IDLE_TIMEOUT.as_secs()
+        )),
+    }
+    .map_err(|error| {
+        log_failure(&request_id, operation, model, started, None, &error);
+        format!("请求文本接口失败: {error}")
+    })?;
 
     #[cfg(feature = "real-e2e-harness")]
     crate::harness_transport::mark_llm_http_received(operation)?;
@@ -515,14 +519,23 @@ async fn request_with_client(
     let mut decoder = SseDecoder::default();
     let mut done = false;
     while !done {
-        let Some(chunk) = response.chunk().await.map_err(|error| {
+        // Only silence ends a stream early; total length is bounded by
+        // LLM_MAX_DURATION on the request itself.
+        let chunk = match tokio::time::timeout(LLM_IDLE_TIMEOUT, response.chunk()).await {
+            Ok(result) => result.map_err(|error| error.to_string()),
+            Err(_) => Err(format!(
+                "超过 {} 秒没有收到新数据",
+                LLM_IDLE_TIMEOUT.as_secs()
+            )),
+        };
+        let Some(chunk) = chunk.map_err(|error| {
             log_failure(
                 &request_id,
                 operation,
                 model,
                 started,
                 Some(status.as_u16()),
-                &error.to_string(),
+                &error,
             );
             format!("读取文本流失败: {error}")
         })?
@@ -656,11 +669,13 @@ async fn request_non_stream(
     // harness' exact-one reservation merely by calling this helper directly.
     #[cfg(feature = "real-e2e-harness")]
     crate::harness_transport::reserve_llm_post(operation)?;
+    // The whole body arrives at once here, so a long document needs the full
+    // ceiling rather than the streaming idle timeout.
     let response = client
         .post(url)
         .bearer_auth(key)
         .json(&body)
-        .timeout(Duration::from_secs(300))
+        .timeout(LLM_MAX_DURATION)
         .send()
         .await
         .map_err(|error| {
@@ -767,7 +782,9 @@ fn finish_non_stream(
         .and_then(|choices| choices.first())
         .and_then(|choice| choice.get("finish_reason"))
         .and_then(Value::as_str)
-        .map(|reason| finish_reason_category(reason).to_string());
+        .map(finish_reason_category)
+        .filter(|reason| *reason != "none")
+        .map(str::to_string);
     // A fully parsed non-stream response is the completion envelope. Preserve
     // compatibility with providers omitting finish_reason, but never accept
     // an explicit length/filter/tool stop as a finished text document.
@@ -828,7 +845,9 @@ fn process_sse_value(
         .and_then(Value::as_str)
         .map(finish_reason_category)
         .unwrap_or("none");
-    if finish_reason != "none" {
+    // Some gateways repeat the choice in a trailing usage chunk with an odd or
+    // empty finish_reason; that must not demote an already recorded "stop".
+    if finish_reason != "none" && !(finish_reason == "other" && diagnostics.finish_reason == "stop") {
         diagnostics.finish_reason = finish_reason;
     }
     let Some(delta) = choice.get("delta") else {
@@ -878,12 +897,18 @@ fn process_sse_value(
         || delta.get("tool_calls").is_some()
 }
 
+/// Providers spell the same outcomes differently (Gemini upper-cases them,
+/// TGI reports `eos_token`, Anthropic-style gateways `end_turn`), so normalize
+/// before deciding whether a reply finished normally.
 fn finish_reason_category(value: &str) -> &'static str {
-    match value {
-        "stop" => "stop",
-        "length" => "length",
-        "tool_calls" => "tool_calls",
-        "content_filter" => "content_filter",
+    match value.trim().to_ascii_lowercase().as_str() {
+        "" => "none",
+        "stop" | "end_turn" | "eos" | "eos_token" | "stop_sequence" | "end" => "stop",
+        "length" | "max_tokens" | "max_output_tokens" | "model_length" => "length",
+        "tool_calls" | "function_call" | "tool_use" => "tool_calls",
+        "content_filter" | "safety" | "recitation" | "blocked" | "prohibited_content" => {
+            "content_filter"
+        }
         _ => "other",
     }
 }
@@ -1288,6 +1313,30 @@ mod tests {
         let completion = build_completion(accumulator.content, accumulator.tool_calls, None, false);
         assert_eq!(completion.tool_calls[0].name, "writer");
         assert!(completion.assistant_message.get("tool_calls").is_some());
+    }
+
+    #[test]
+    fn finish_reason_spellings_of_other_providers_count_as_normal_stops() {
+        for reason in ["stop", "STOP", "end_turn", "eos_token", "stop_sequence"] {
+            assert_eq!(finish_reason_category(reason), "stop", "{reason}");
+        }
+        assert_eq!(finish_reason_category("MAX_TOKENS"), "length");
+        assert_eq!(finish_reason_category("SAFETY"), "content_filter");
+        assert_eq!(finish_reason_category(""), "none");
+        assert_eq!(finish_reason_category("mystery"), "other");
+    }
+
+    #[test]
+    fn trailing_usage_chunk_does_not_demote_a_recorded_stop() {
+        let frame = "data: {\"choices\":[{\"delta\":{\"content\":\"完整\"},\"finish_reason\":\"stop\"}]}\n\n\
+            data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"\"}],\"usage\":{\"total_tokens\":3}}\n\n\
+            data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"mystery\"}]}\n\n\
+            data: [DONE]\n\n";
+        let (accumulator, diagnostics, done) = decode_chunks([frame.as_bytes().to_vec()]).unwrap();
+        assert!(done);
+        assert_eq!(accumulator.content, "完整");
+        assert_eq!(diagnostics.finish_reason, "stop");
+        assert!(normal_completion(Some(diagnostics.finish_reason), diagnostics.done_received));
     }
 
     #[test]

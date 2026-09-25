@@ -34,6 +34,8 @@ export interface SaveConfigRequest {
   llmApiKey: string;
   llmApiModel: string;
   outputDir: string;
+  /** Drop the stored image/video endpoints and keys (empty fields otherwise keep them). */
+  clearConnections?: boolean;
 }
 
 export interface AssetIn {

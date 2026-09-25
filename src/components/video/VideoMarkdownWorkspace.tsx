@@ -376,9 +376,11 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
   const videoWorkReferences = videoReferenceIds
     .map((assetId) => assets.find((asset) => asset.asset.id === assetId && asset.projectId === projectId && asset.asset.kind === "video"))
     .filter((asset): asset is LibAsset => Boolean(asset));
-  const saveVideoReferenceIds = (ids: string[]) => {
-    const nextIds = [...new Set(ids)];
+  /** `ids` may be a function of the latest list: an upload awaits, and the
+   * list captured when it started would drop references changed meanwhile. */
+  const saveVideoReferenceIds = (ids: string[] | ((current: string[]) => string[])) => {
     setVideoReferencesByWorkflow((current) => {
+      const nextIds = [...new Set(typeof ids === "function" ? ids(current[workflowId] ?? []) : ids)];
       const next = { ...current, [workflowId]: nextIds };
       try { localStorage.setItem(`video-md:work-video-references:${projectId}`, JSON.stringify(next)); } catch { /* in-memory references remain usable */ }
       return next;
@@ -407,7 +409,7 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
       if (currentProjectIdRef.current !== projectId || currentWorkflowIdRef.current !== workflowId) return;
       const importedIds = imported.filter((asset) => asset.asset.kind === "video").map((asset) => asset.asset.id);
       if (importedIds.length !== imported.length) throw new Error("短剧视频参考仅接受实际视频文件；未关联任何非视频导入项。");
-      saveVideoReferenceIds([...videoReferenceIds, ...importedIds]);
+      saveVideoReferenceIds((current) => [...current, ...importedIds]);
       setMessage(`已导入 ${importedIds.length} 个本地视频作品，并关联到当前短剧工作区。`);
     } catch (cause) {
       setError(`导入视频失败：${String(cause)}`);
@@ -1249,6 +1251,10 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
   const supersededWhileEditing = historical && activeDraft.dependencyMode === "current";
   const needsDependencyChoice = viewingHistoricalVersion || supersededWhileEditing;
   const canEdit = !viewingHistoricalVersion;
+  // Review/generate/optimize write their result back from the draft captured
+  // when they started, so the editors stay read-only until they finish;
+  // edits typed meanwhile were silently overwritten.
+  const editorEditable = canEdit && !busy;
   const canSave = Boolean(activeDraft.text.trim() && dirty && !busy && canEdit && !needsDependencyChoice);
   const generateDisabledReason = busy ? "当前已有操作进行中" : !canEdit ? "历史版本只读，请先选择分支或迁移策略" : contentDirty ? "当前正文有未保存修改" : !dependenciesReady(view) ? `前序阶段未就绪：${blockedDependencies.map((id) => stageSpec(id)?.label).join("、")}` : "";
   const cascadeStart = videoOptimizationCascade.indexOf(view as VideoMarkdownStage);
@@ -1325,13 +1331,13 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
           <section className="mb-3 flex flex-wrap items-center gap-3 rounded-xl border border-cyan-300/15 bg-cyan-300/5 p-3"><ArrowRight size={15} className="text-cyan-200" /><div><div className="text-[10px] uppercase tracking-wider text-cyan-300/70">推荐下一步</div><div className="mt-1 text-sm text-cyan-50">{recommendation}</div></div>{blockedDependencies.length > 0 && <div className="ml-auto flex flex-wrap gap-2">{blockedDependencies.map((id) => <button key={id} className={button} onClick={() => setView(id)}>打开{stageSpec(id)?.label}</button>)}</div>}</section>
           {view === "source" && sourceOutdated && <section role="alert" className="mb-3 flex flex-wrap items-center gap-3 rounded-xl border border-amber-300/20 bg-amber-300/5 p-3 text-xs text-amber-100"><span className="mr-auto">当前视频工作区仍基于旧章节修订；系统不会自动覆盖。载入最新版后请审阅并保存新的原始资料版本。</span><button className={button} onClick={loadLatestChapterRevision}>载入章节最新版</button></section>}
           {!canEdit && <div className="mb-3 rounded-xl border border-amber-300/15 bg-amber-300/5 p-3 text-xs text-amber-100">历史版本当前为只读。选择分支或迁移策略后才能编辑。</div>}
-          <VideoDocumentViews view={currentDocumentView} onViewChange={setDocumentView} stage={view} stageLabel={stageSpec(view)?.label ?? view} text={activeDraft.text} baseline={selectedMeta?.text ?? ""} editable={canEdit} storyboardShots={storyboardShots} storyboardRoundTripSafe={isStoryboardRoundTripSafe(activeDraft.text)} onTextChange={(text) => updateDraft({ text, changeType: activeDraft.changeType === "generated" || activeDraft.changeType === "ai_optimized" ? activeDraft.changeType : "manual" }, true)} onStoryboardChange={setStoryboard} />
+          <VideoDocumentViews view={currentDocumentView} onViewChange={setDocumentView} stage={view} stageLabel={stageSpec(view)?.label ?? view} text={activeDraft.text} baseline={selectedMeta?.text ?? ""} editable={editorEditable} storyboardShots={storyboardShots} storyboardRoundTripSafe={isStoryboardRoundTripSafe(activeDraft.text)} onTextChange={(text) => updateDraft({ text, changeType: activeDraft.changeType === "generated" || activeDraft.changeType === "ai_optimized" ? activeDraft.changeType : "manual" }, true)} onStoryboardChange={setStoryboard} />
           {message && <p role="status" className="mt-3 rounded-lg border border-cyan-300/10 bg-cyan-300/5 p-3 text-xs text-cyan-100">{message}</p>}
           {error && <p role="alert" className="mt-3 rounded-lg border border-rose-300/15 bg-rose-300/5 p-3 text-xs text-rose-200">{error}</p>}
         </main>
 
         <aside className="space-y-4 lg:sticky lg:top-0">
-          {view !== "source" && <section className="rounded-xl border border-cyan-300/15 bg-slate-950/45 p-4"><div className="flex items-center justify-between"><div><h3 className="text-sm font-semibold text-cyan-50">AI 创作助手</h3><p className="mt-1 text-[11px] text-slate-500">生成只进入草稿；AI 优化会直接保存当前及已有下游文字产物。</p></div><Sparkles size={16} className="text-cyan-300" /></div><div className="mt-3 grid grid-cols-2 gap-2"><button title={generateDisabledReason || undefined} className={button} disabled={Boolean(generateDisabledReason)} onClick={() => void generate()}>{busy === "generate" ? <Loader2 size={13} className="mr-1 inline animate-spin" /> : null}AI 生成草稿</button><button title={optimizeDisabledReason || undefined} className={button} disabled={Boolean(optimizeDisabledReason)} onClick={() => void optimize()}>{busy === "optimize" ? <Loader2 size={13} className="mr-1 inline animate-spin" /> : null}AI 优化</button></div>{(generateDisabledReason || optimizeDisabledReason) && <div className="mt-2 space-y-1 text-[10px] leading-4 text-amber-200/80">{generateDisabledReason && <div>生成不可用：{generateDisabledReason}</div>}{optimizeDisabledReason && <div>优化不可用：{optimizeDisabledReason}</div>}</div>}<label className="mt-3 block text-xs text-slate-300">优化要求<textarea aria-label="LLM 优化要求" value={activeDraft.optimizationInstruction} onChange={(event) => updateDraft({ optimizationInstruction: event.target.value })} placeholder={view === "anchors" ? "例如：继承固定外貌，只把本章伤势和换装设为剧情锚点" : "例如：删掉越界续写，增强人物选择与因果，未提及内容保持不变"} className={`${field} mt-1 min-h-24 resize-y`} /></label><p className="mt-2 text-[10px] leading-4 text-slate-500">将按当前阶段 → 后续已有阶段逐个优化和独立审查，全部通过后直接保存新版本。可能调用多次文本模型；图片和视频不会自动重生成。</p><details className="mt-3 border-t border-white/5 pt-3"><summary className="cursor-pointer text-[11px] text-slate-500">本阶段 Agent 设置</summary><button className={`${button} mt-2 w-full`} onClick={() => onEditPrompt(stageSpec(view)?.agentId ?? "")}>查看 / 修改 Agent Prompt</button></details></section>}
+          {view !== "source" && <section className="rounded-xl border border-cyan-300/15 bg-slate-950/45 p-4"><div className="flex items-center justify-between"><div><h3 className="text-sm font-semibold text-cyan-50">AI 创作助手</h3><p className="mt-1 text-[11px] text-slate-500">生成只进入草稿；AI 优化会直接保存当前及已有下游文字产物。</p></div><Sparkles size={16} className="text-cyan-300" /></div><div className="mt-3 grid grid-cols-2 gap-2"><button title={generateDisabledReason || undefined} className={button} disabled={Boolean(generateDisabledReason)} onClick={() => void generate()}>{busy === "generate" ? <Loader2 size={13} className="mr-1 inline animate-spin" /> : null}AI 生成草稿</button><button title={optimizeDisabledReason || undefined} className={button} disabled={Boolean(optimizeDisabledReason)} onClick={() => void optimize()}>{busy === "optimize" ? <Loader2 size={13} className="mr-1 inline animate-spin" /> : null}AI 优化</button></div>{(generateDisabledReason || optimizeDisabledReason) && <div className="mt-2 space-y-1 text-[10px] leading-4 text-amber-200/80">{generateDisabledReason && <div>生成不可用：{generateDisabledReason}</div>}{optimizeDisabledReason && <div>优化不可用：{optimizeDisabledReason}</div>}</div>}<label className="mt-3 block text-xs text-slate-300">优化要求<textarea aria-label="LLM 优化要求" readOnly={!editorEditable} value={activeDraft.optimizationInstruction} onChange={(event) => updateDraft({ optimizationInstruction: event.target.value })} placeholder={view === "anchors" ? "例如：继承固定外貌，只把本章伤势和换装设为剧情锚点" : "例如：删掉越界续写，增强人物选择与因果，未提及内容保持不变"} className={`${field} mt-1 min-h-24 resize-y`} /></label><p className="mt-2 text-[10px] leading-4 text-slate-500">将按当前阶段 → 后续已有阶段逐个优化和独立审查，全部通过后直接保存新版本。可能调用多次文本模型；图片和视频不会自动重生成。</p><details className="mt-3 border-t border-white/5 pt-3"><summary className="cursor-pointer text-[11px] text-slate-500">本阶段 Agent 设置</summary><button className={`${button} mt-2 w-full`} onClick={() => onEditPrompt(stageSpec(view)?.agentId ?? "")}>查看 / 修改 Agent Prompt</button></details></section>}
 
           {view !== "source" && <><VideoQualityReviewCard review={reviewValid ? activeDraft.reviewMarkdown : undefined} status={activeReviewStatus} score={reviewValid ? activeDraft.reviewScore : undefined} busy={busy === "review"} disabled={Boolean(reviewDisabledReason)} onReview={() => void reviewCurrent()} onUseSuggestions={useReviewSuggestions} />{reviewDisabledReason && <p className="-mt-2 text-[10px] text-amber-200/80">审查不可用：{reviewDisabledReason}</p>}</>}
 

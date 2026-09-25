@@ -128,6 +128,47 @@ fn isolated_webview_data_directory(data_root: &Path, label: &str) -> io::Result<
     Ok(data_root.join("webview2").join(label))
 }
 
+enum InstanceLock {
+    Held(#[allow(dead_code)] std::fs::File),
+    AlreadyRunning,
+    /// Locking is not possible here (invalid override, unsupported file
+    /// system); start as before and let setup report directory errors.
+    Unavailable,
+}
+
+/// One process per data directory. Startup marks running comic jobs as
+/// interrupted and deletes their reference snapshots, so a second launch on
+/// the same directory broke the first instance's work in progress. Keyed on
+/// the directory rather than the app identifier, so isolated runs (their own
+/// `IMAGE_CLIENT_DATA_DIR` or `USERPROFILE`) still run side by side. The OS
+/// releases the lock when the process exits, including after a crash.
+fn acquire_instance_lock() -> InstanceLock {
+    match paths::try_data_dir() {
+        Ok(data_dir) => acquire_instance_lock_in(&data_dir),
+        Err(_) => InstanceLock::Unavailable,
+    }
+}
+
+fn acquire_instance_lock_in(data_dir: &Path) -> InstanceLock {
+    if std::fs::create_dir_all(data_dir).is_err() {
+        return InstanceLock::Unavailable;
+    }
+    let file = match std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(data_dir.join(".instance.lock"))
+    {
+        Ok(file) => file,
+        Err(_) => return InstanceLock::Unavailable,
+    };
+    match file.try_lock() {
+        Ok(()) => InstanceLock::Held(file),
+        Err(std::fs::TryLockError::WouldBlock) => InstanceLock::AlreadyRunning,
+        Err(std::fs::TryLockError::Error(_)) => InstanceLock::Unavailable,
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let mut context = tauri::generate_context!();
@@ -143,14 +184,29 @@ pub fn run() {
             std::process::exit(2);
         }
     }
+    // Held until the process exits; see `acquire_instance_lock`.
+    let instance_lock = acquire_instance_lock();
+    let already_running = matches!(instance_lock, InstanceLock::AlreadyRunning);
     let isolated_windows = take_auto_created_windows_for_isolation(
         &mut context.config_mut().app.windows,
-        std::env::var_os(DATA_DIR_OVERRIDE).is_some() || real_e2e_requested,
+        std::env::var_os(DATA_DIR_OVERRIDE).is_some() || real_e2e_requested || already_running,
     );
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
+            if already_running {
+                // No window was created and nothing was initialised: tell the
+                // user why nothing opened, then leave the running instance alone.
+                use tauri_plugin_dialog::DialogExt;
+                let handle = app.handle().clone();
+                app.dialog()
+                    .message("Image-Client 已在运行，请切换到已打开的窗口。
+同时打开两个会中断正在进行的生成任务。")
+                    .title("Image-Client")
+                    .show(move |_| handle.exit(0));
+                return Ok(());
+            }
             // Ensure the fixed data directory + assets dir exist.
             paths::ensure_data_dirs()
                 .map_err(|error| std::io::Error::other(format!("创建应用目录失败: {error}")))?;
@@ -346,9 +402,22 @@ mod tests {
     use tauri::utils::config::WindowConfig;
 
     use super::{
-        api_server_exit_action, claim_application_exit_log, isolated_webview_data_directory,
-        take_auto_created_windows_for_isolation,
+        acquire_instance_lock_in, api_server_exit_action, claim_application_exit_log,
+        isolated_webview_data_directory, take_auto_created_windows_for_isolation, InstanceLock,
     };
+
+    #[test]
+    fn a_data_directory_admits_one_instance_until_it_exits() {
+        let dir = std::env::temp_dir().join(format!("image-client-lock-{}", uuid::Uuid::new_v4()));
+        let first = acquire_instance_lock_in(&dir);
+        assert!(matches!(first, InstanceLock::Held(_)));
+        assert!(matches!(acquire_instance_lock_in(&dir), InstanceLock::AlreadyRunning));
+        let other = dir.join("isolated");
+        assert!(matches!(acquire_instance_lock_in(&other), InstanceLock::Held(_)));
+        drop(first);
+        assert!(matches!(acquire_instance_lock_in(&dir), InstanceLock::Held(_)));
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     fn window_config(label: &str, create: bool) -> WindowConfig {
         let mut config = WindowConfig::default();

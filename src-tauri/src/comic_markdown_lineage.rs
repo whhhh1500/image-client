@@ -530,9 +530,15 @@ impl Book {
             .map(|h| hash(&h.markdown))
     }
     pub(super) fn documents(&self) -> Vec<Document> {
+        self.documents_for(&self.scope.chapter_id)
+    }
+    /// Work settings plus one chapter's documents. The book holds the whole
+    /// work, so callers iterating several chapters of one work load it once
+    /// and pick each chapter here instead of reusing the load scope's chapter.
+    pub(super) fn documents_for(&self, chapter_id: &str) -> Vec<Document> {
         self.raw
             .iter()
-            .filter(|r| r.chapter == self.scope.chapter_id || r.document.kind == "settings")
+            .filter(|r| r.chapter == chapter_id || r.document.kind == "settings")
             .map(|r| r.document.clone())
             .collect()
     }

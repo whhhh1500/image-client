@@ -6,6 +6,7 @@ import { persistAssets, persistTask } from "../lib/dbWrite";
 import { useGenerationStore } from "../store/useGenerationStore";
 import { useLibraryStore } from "../store/useLibraryStore";
 import { useProjectStore } from "../store/useProjectStore";
+import { useRunStore } from "../store/useRunStore";
 import GeneratePanel from "./GeneratePanel";
 
 vi.mock("@tauri-apps/api/core", () => ({ convertFileSrc: (path: string) => path }));
@@ -24,6 +25,7 @@ beforeEach(() => {
   vi.mocked(persistTask).mockResolvedValue(undefined);
   useGenerationStore.getState().reset();
   useLibraryStore.setState({ assets: [], tasks: [] });
+  useRunStore.setState({ imageBusy: false, imageError: null, imageBatchIds: [] });
   useProjectStore.setState({
     activeId: "p1",
     projects: [{
@@ -109,6 +111,26 @@ describe("GeneratePanel model switcher", () => {
     for (const asset of batch) {
       await waitFor(() => expect(useLibraryStore.getState().assets.some((item) => item.asset.id === asset.id)).toBe(true));
     }
+  });
+
+  it("keeps the button locked after a remount while the paid request is still running", async () => {
+    let finish: (value: { assets: { id: string; kind: "image"; path: string }[] }) => void = () => {};
+    vi.mocked(runNode).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    useGenerationStore.getState().set({ prompt: "一只猫", count: 1 });
+    render(<GeneratePanel />);
+    fireEvent.click(screen.getByRole("button", { name: "生成" }));
+    await waitFor(() => expect(runNode).toHaveBeenCalledTimes(1));
+
+    // Switching tabs unmounts the panel; coming back must not re-enable it.
+    cleanup();
+    render(<GeneratePanel />);
+    const locked = screen.getByRole("button", { name: "生成中…" }) as HTMLButtonElement;
+    expect(locked.disabled).toBe(true);
+    fireEvent.click(locked);
+    expect(runNode).toHaveBeenCalledTimes(1);
+
+    finish({ assets: [{ id: "asset_late", kind: "image", path: "C:/late.png" }] });
+    await waitFor(() => expect((screen.getByRole("button", { name: "生成" }) as HTMLButtonElement).disabled).toBe(false));
   });
 
   it("keeps a single-image run on the classic preview", async () => {

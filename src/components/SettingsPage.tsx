@@ -223,11 +223,14 @@ export default function SettingsPage({
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
+  // A profile was deleted since the last save; see saveSettings' clearConnections.
+  const [profileRemoved, setProfileRemoved] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setMessage(null);
     setDirty(false);
+    setProfileRemoved(false);
     setOutputDir("");
     setLlmUrl("");
     setLlmModel(status?.llmModel ?? "gemini-3.7-flash");
@@ -263,14 +266,25 @@ export default function SettingsPage({
   const isGlobalSelected = selectedId === "global" || (selectedId === null && configs.length === 0);
   const selected = isGlobalSelected ? null : configs.find((c) => c.id === selectedId) ?? null;
 
+  /** Blank keeps the stored key only if the backend holds one for this profile's address. */
+  const backendHoldsKey = (profile: NonNullable<typeof selected>, kind: "image" | "video") => {
+    const ready = kind === "image" ? status?.imageReady : status?.videoReady;
+    const url = kind === "image" ? status?.imageApiUrl : status?.videoApiUrl;
+    return profile.id === activeId && Boolean(ready) && url === profile[kind].url.trim();
+  };
+
   const persist = async (nextActiveId = activeId) => {
     setBusy(true);
     setMessage(null);
     try {
-      const st = await saveSettings({ configs, activeId: nextActiveId, outputDir, llmUrl, llmKey, llmModel });
+      const st = await saveSettings(
+        { configs, activeId: nextActiveId, outputDir, llmUrl, llmKey, llmModel },
+        { clearConnections: profileRemoved },
+      );
       if (st) onSaved(st);
       setMessage("已保存");
       setDirty(false);
+      setProfileRemoved(false);
     } catch (e) {
       setMessage(`保存失败: ${e}`);
     } finally {
@@ -292,6 +306,7 @@ export default function SettingsPage({
     if (!(await confirmAction(`确定删除接口配置“${current?.name ?? "未命名"}”吗？保存设置后生效。`))) return;
     const next = configs.filter((c) => c.id !== id);
     setConfigs(next);
+    setProfileRemoved(true);
     if (activeId === id) setActiveId(next[0]?.id ?? null);
     if (selectedId === id) setSelectedId(next[0]?.id ?? "global");
     setDirty(true);
@@ -512,7 +527,7 @@ export default function SettingsPage({
                     conn={selected.image}
                     models={catalogs.image.options}
                     onUpdate={(p) => updateSelected({ image: p })}
-                    ready={!selected.image.key}
+                    ready={backendHoldsKey(selected, "image")}
                     catalogStatus={catalogStatus(catalogs.image)}
                     fetchingModels={catalogs.image.loading}
                     onFetchModels={() => fetchCatalog("image")}
@@ -523,7 +538,7 @@ export default function SettingsPage({
                     conn={selected.video}
                     models={catalogs.video.options}
                     onUpdate={(p) => updateSelected({ video: p })}
-                    ready={!selected.video.key}
+                    ready={backendHoldsKey(selected, "video")}
                     catalogStatus={catalogStatus(catalogs.video)}
                     fetchingModels={catalogs.video.loading}
                     onFetchModels={() => fetchCatalog("video")}

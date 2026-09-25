@@ -15,6 +15,7 @@ use crate::model::{AssetRef, RunNodeRequest};
 use crate::util::{get_str, get_u32};
 use uuid::Uuid;
 
+/// Per requested image: four inline 4K PNGs exceed a flat 100 MiB cap.
 const MAX_IMAGE_RESPONSE_BYTES: usize = 100 * 1024 * 1024;
 const MAX_DOWNLOADED_IMAGE_BYTES: usize = 50 * 1024 * 1024;
 const MAX_REFERENCE_IMAGES: usize = 8;
@@ -402,9 +403,12 @@ async fn generate_image_with_clients(
                 .part("image", part);
             if grok_contract {
                 // Grok takes aspect_ratio/resolution and rejects size/background.
+                // Inline data like the text-to-image body: a URL result would
+                // need a second download that can expire.
                 form = form
                     .text("aspect_ratio", grok_aspect_ratio(&selection))
-                    .text("resolution", grok_resolution(&selection));
+                    .text("resolution", grok_resolution(&selection))
+                    .text("response_format", "b64_json");
             } else if !size.is_empty() {
                 form = form.text("size", size.clone());
             }
@@ -444,7 +448,7 @@ async fn generate_image_with_clients(
             .await?;
         }
         finish_request(
-            parse_and_save(resp, &asset_download_client, out_dir).await,
+            parse_and_save(resp, &asset_download_client, out_dir, count).await,
             &request_id,
             started,
         )
@@ -479,7 +483,7 @@ async fn generate_image_with_clients(
             .await?;
         }
         finish_request(
-            parse_and_save(resp, &asset_download_client, out_dir).await,
+            parse_and_save(resp, &asset_download_client, out_dir, count).await,
             &request_id,
             started,
         )
@@ -803,6 +807,7 @@ async fn parse_and_save(
     resp: reqwest::Response,
     client: &reqwest::Client,
     out_dir: &Path,
+    count: u32,
 ) -> Result<Vec<AssetRef>, String> {
     if !resp.status().is_success() {
         let status = resp.status();
@@ -818,7 +823,8 @@ async fn parse_and_save(
         ));
     }
 
-    let response_bytes = read_limited(resp, MAX_IMAGE_RESPONSE_BYTES, "图像接口响应").await?;
+    let response_limit = MAX_IMAGE_RESPONSE_BYTES * count.clamp(1, MAX_IMAGE_BATCH) as usize;
+    let response_bytes = read_limited(resp, response_limit, "图像接口响应").await?;
     let json: serde_json::Value =
         serde_json::from_slice(&response_bytes).map_err(|e| format!("解析图像响应失败: {e}"))?;
 
@@ -828,27 +834,42 @@ async fn parse_and_save(
         .filter(|items| !items.is_empty())
         .ok_or("图像响应缺少 data")?;
 
-    // Decode every returned image before writing anything, so a malformed
-    // entry cannot leave a half-saved batch behind.
-    let mut payloads: Vec<Vec<u8>> = Vec::with_capacity(entries.len().min(MAX_IMAGE_BATCH as usize));
-    for entry in entries.iter().take(MAX_IMAGE_BATCH as usize) {
-        payloads.push(decode_image_entry(entry, client).await?);
+    // Every entry is already paid for, so one bad entry (moderated, expired
+    // URL, unknown format) must not discard the others. Decode all of them
+    // before writing, and fail only when none is usable.
+    let mut payloads: Vec<(Vec<u8>, String)> = Vec::with_capacity(entries.len().min(MAX_IMAGE_BATCH as usize));
+    let mut failures = Vec::new();
+    for (index, entry) in entries.iter().take(MAX_IMAGE_BATCH as usize).enumerate() {
+        let decoded = decode_image_entry(entry, client).await.and_then(|bytes| {
+            let format = assets::detect_format_checked(&bytes)
+                .ok_or("图像接口返回的内容不是支持的图片格式")?
+                .to_string();
+            Ok((bytes, format))
+        });
+        match decoded {
+            Ok(payload) => payloads.push(payload),
+            Err(error) => failures.push((index, error)),
+        }
     }
     if payloads.is_empty() {
-        return Err("模型未返回图像数据".into());
+        return Err(failures
+            .into_iter()
+            .next()
+            .map(|(_, error)| error)
+            .unwrap_or_else(|| "模型未返回图像数据".into()));
     }
-
-    let mut formats = Vec::with_capacity(payloads.len());
-    for bytes in &payloads {
-        formats.push(
-            assets::detect_format_checked(bytes)
-                .ok_or("图像接口返回的内容不是支持的图片格式")?
-                .to_string(),
+    if !failures.is_empty() {
+        crate::logging::warn(
+            "image.response.partial",
+            serde_json::json!({
+                "saved": payloads.len(),
+                "failed": failures.iter().map(|(index, error)| serde_json::json!({ "index": index, "error": error })).collect::<Vec<_>>(),
+            }),
         );
     }
 
     let mut saved = Vec::with_capacity(payloads.len());
-    for (bytes, format) in payloads.into_iter().zip(formats) {
+    for (bytes, format) in payloads {
         saved.push(assets::save_bytes(out_dir, "image", &bytes, &format)?);
     }
     Ok(saved)
@@ -893,26 +914,9 @@ async fn read_limited(
     limit: usize,
     label: &str,
 ) -> Result<Vec<u8>, String> {
-    if response
-        .content_length()
-        .is_some_and(|length| length > limit as u64)
-    {
-        return Err(format!(
-            "{label}超过大小限制（{} MiB）",
-            limit / 1024 / 1024
-        ));
-    }
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|error| format!("读取{label}失败: {error}"))?;
-    if bytes.len() > limit {
-        return Err(format!(
-            "{label}超过大小限制（{} MiB）",
-            limit / 1024 / 1024
-        ));
-    }
-    Ok(bytes.to_vec())
+    // Streams with a running size check; buffering the whole body first let a
+    // chunked response without Content-Length bypass the limit.
+    crate::http::read_limited_bytes(response, limit, label).await
 }
 
 fn edits_endpoint(api_url: &str) -> Result<String, String> {
@@ -1528,6 +1532,47 @@ mod tests {
         let (_requests, bodies) = server.finish_with_bodies().await;
         let posted: serde_json::Value = serde_json::from_str(bodies[0].trim()).unwrap();
         assert_eq!(posted["n"], 3);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn one_unusable_entry_does_not_discard_the_rest_of_a_paid_batch() {
+        let root = temp_root();
+        let png = png_bytes([7, 8, 9, 255]);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&png);
+        let body = json!({
+            "data": [
+                { "b64_json": encoded },
+                { "b64_json": "" },
+                { "b64_json": encoded },
+            ]
+        })
+        .to_string();
+        let server = GatewayLoopback::start_with(png, 1, vec![(200, body)]).await;
+        let mut cfg = test_config(&root);
+        cfg.image_api_url = server.url.clone();
+        cfg.image_api_key = "local-test-key".into();
+
+        let result = timeout(
+            Duration::from_secs(3),
+            generate_image_with_clients(
+                &cfg,
+                &RunNodeRequest {
+                    node_type: "image".into(),
+                    category: "generate".into(),
+                    config: json!({ "prompt": "三张", "model": "gpt-image-2", "n": 3 }),
+                    input_assets: Vec::new(),
+                },
+                &root.join("output"),
+                &loopback_client(),
+                &loopback_client(),
+            ),
+        )
+        .await
+        .expect("loopback image generation must return promptly")
+        .unwrap();
+        assert_eq!(result.len(), 2, "the two usable images must still be saved");
+        let _ = server.finish_with_bodies().await;
         let _ = std::fs::remove_dir_all(root);
     }
 

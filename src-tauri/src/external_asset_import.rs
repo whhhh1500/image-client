@@ -309,9 +309,24 @@ fn persist_import(
     prepared: PreparedImport,
     destination: &Path,
 ) -> Result<Vec<ImportedLibraryAsset>, String> {
-    let PreparedImport { input, params, pending } = prepared;
-    verify_project(connection, &input.project_id)?;
+    verify_project(connection, &prepared.input.project_id)?;
+    register_import(connection, write_import_files(prepared, destination)?)
+}
 
+/// Files written to the library but not yet registered in the database.
+struct WrittenImport {
+    input: AssetImportFilesInput,
+    params: Value,
+    written: Vec<(AssetRef, String)>,
+}
+
+/// Writes the import's files. Runs without the database lock: holding it while
+/// writing up to 512 MiB stalled every other command waiting on the database.
+fn write_import_files(
+    prepared: PreparedImport,
+    destination: &Path,
+) -> Result<WrittenImport, String> {
+    let PreparedImport { input, params, pending } = prepared;
     let mut written: Vec<(AssetRef, String)> = Vec::with_capacity(pending.len());
     for item in pending {
         let folder = destination.join(if item.kind == "video" {
@@ -329,9 +344,18 @@ fn persist_import(
             }
         }
     }
+    Ok(WrittenImport { input, params, written })
+}
 
+/// Registers written files in one transaction, removing them again if the
+/// project was deleted since it was checked or the insert fails.
+fn register_import(
+    connection: &mut Connection,
+    import: WrittenImport,
+) -> Result<Vec<ImportedLibraryAsset>, String> {
+    let WrittenImport { input, params, written } = import;
     let created_at = chrono::Utc::now().timestamp_millis();
-    let persisted = (|| {
+    let persisted = verify_project(connection, &input.project_id).and_then(|()| {
         let transaction = connection
             .transaction()
             .map_err(|error| format!("开始外部资产导入事务失败：{error}"))?;
@@ -357,7 +381,7 @@ fn persist_import(
         transaction
             .commit()
             .map_err(|error| format!("提交外部资产导入事务失败：{error}"))
-    })();
+    });
     if let Err(error) = persisted {
         for (asset, _) in &written {
             let _ = std::fs::remove_file(&asset.path);
@@ -400,9 +424,13 @@ pub async fn asset_import_files(
         let destination = crate::paths::assets_dir().join("外部导入");
         let prepared = prepare_import(input, &destination)?;
         let db_state: tauri::State<'_, db::DbState> = app.state();
-        db::with_connection_mut(&db_state, |connection| {
-            persist_import(connection, prepared, &destination)
-        })
+        // Reject an unknown project before writing anything, but write the
+        // files themselves without holding the connection lock.
+        db::with_connection(&db_state, |connection| {
+            verify_project(connection, &prepared.input.project_id)
+        })?;
+        let written = write_import_files(prepared, &destination)?;
+        db::with_connection_mut(&db_state, |connection| register_import(connection, written))
     })
     .await
     .map_err(|error| format!("导入资产任务失败: {error}"))?;

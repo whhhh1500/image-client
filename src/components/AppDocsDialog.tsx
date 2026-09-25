@@ -33,7 +33,7 @@ function GuideContent() {
           <li>逐镜参考计数包含本地图片和托管 URL。仅有一张图片且模型支持时会使用首帧模式；可在镜头卡中单独移除本地图片或托管 URL。重新打开历史任务会恢复已保存的逐镜引用。</li>
           <li>短剧 Agent 的 AI 优化会从当前阶段开始，依次更新已有的剧本、锚点、分镜和 QC；全部审查通过后直接保存新版本。</li>
           <li>AI 优化不会自动重新生成视频；确认新分镜后再进入视频工作区生成，拼接也必须主动点击。</li>
-          <li>提交后请等待任务完成；切换页面不会删除已保存的历史结果。</li>
+          <li>提交后请等待任务完成；生成进行中切换页面，生成按钮会保持锁定直到本次请求结束，避免重复计费；已保存的历史结果不受影响。</li>
           <li>提示词应明确主体、环境、构图和风格，避免互相冲突的要求。</li>
         </ul>
       </section>
@@ -44,7 +44,7 @@ function GuideContent() {
           <li>通过“共享小说原文管理器”创建小说，新增、编辑章节并保存。每次保存会发布该章节当前修订为当前项目的小说文本资产，供漫画和短剧选择。</li>
           <li>漫画工作区选择章节后独立维护作品设定、剧本、分镜、页 Prompt 与页图；它不会与短剧工作区混合或互相覆盖。</li>
           <li>在章节顶部上传或选择最多 8 张作品画风图，可由多模态文本模型提取并人工审核整部小说共享的视觉宪法。</li>
-          <li>依次检查作品设定、本章剧本、分镜和每页 Prompt。</li>
+          <li>依次检查作品设定、本章剧本、分镜和每页 Prompt。分镜用“# 第1页”这样的一级标题分页，也可写成“第３页”“第三页”或“第3页（副标题）”；无法识别的页标题会在检查中提示。</li>
           <li>产物底部的 AI 优化会读取本章全部已保存产物，并从当前产物开始直接更新已有下游文字版本。</li>
           <li>优化页 Prompt 时默认更新当前页及后续页；勾选后可包含本章前面的有效页。</li>
           <li>确认内容后生成漫画；保存的本章 Prompt 注入统一用于本章新生成和重画，单页重画可另填补充注入。历史会保留实际提交的完整 Prompt，便于核对，而不是只显示页 Prompt Markdown。</li>
@@ -87,6 +87,72 @@ function GuideContent() {
 function ChangelogContent() {
   return (
     <div className="space-y-3">
+      <section className={sectionClass}>
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h3 className="text-sm font-semibold text-slate-100">v0.2.8</h3>
+          <time dateTime="2026-09-25" className="text-[11px] text-slate-500">2026-09-25</time>
+        </div>
+        <div className="space-y-3 pt-1">
+          <div>
+            <h4 className="text-[11px] font-medium text-cyan-100/80">生成与计费</h4>
+            <ul className={`${copyClass} mt-1 list-disc space-y-1 pl-4`}>
+              <li>生成进行中切换页面，按钮保持锁定，失败原因和整批结果回来后仍可见，避免重复提交造成重复计费。</li>
+              <li>一次生成多张图时单张失败不再丢弃整批；长文档不再在 5 分钟处被截断，各家网关的正常结束也不再被误判为截断。</li>
+              <li>视频轮询遇到异常响应会继续等待而不是判失败；视频模型名逐字输入时不再强制降低分辨率和时长。</li>
+            </ul>
+          </div>
+          <div>
+            <h4 className="text-[11px] font-medium text-cyan-100/80">漫画与文档</h4>
+            <ul className={`${copyClass} mt-1 list-disc space-y-1 pl-4`}>
+              <li>修复资产库中漫画第 2 章起缺少文字资料、图片被误标「已过期」的问题。</li>
+              <li>分页标题支持全角数字、中文数字和副标题；保存本章注入后界面即时刷新，不再导致出图版本冲突。</li>
+              <li>自定义 Agent 提示词重启后正常生效，不再在下次保存时覆盖旧版本；从历史版本编辑保存不再报冲突。</li>
+            </ul>
+          </div>
+          <div>
+            <h4 className="text-[11px] font-medium text-cyan-100/80">稳定性</h4>
+            <ul className={`${copyClass} mt-1 list-disc space-y-1 pl-4`}>
+              <li>重复打开应用会提示已在运行，不再中断正在进行的漫画任务；大数据库升级时不再因备份超时无法启动。</li>
+              <li>修复正式版视频拼接失败；删除全部接口配置后后端不再沿用已删除的地址和 Key。</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section className={sectionClass}>
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h3 className="text-sm font-semibold text-slate-100">v0.2.7</h3>
+          <time dateTime="2026-09-13" className="text-[11px] text-slate-500">2026-09-13</time>
+        </div>
+        <ul className={`${copyClass} list-disc space-y-1 pl-4 pt-1`}>
+          <li>模型选择处新增「获取模型」，可读取网关模型列表，也可直接手填模型名。</li>
+          <li>Grok 图像模型改用比例 + 分辨率提交；生图支持一次 1–4 张并整批展示；取消提示词长度限制。</li>
+          <li>修复状态栏 GitHub 入口无反应；发布默认只构建 Windows 便携版。</li>
+        </ul>
+      </section>
+
+      <section className={sectionClass}>
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h3 className="text-sm font-semibold text-slate-100">v0.2.6</h3>
+          <time dateTime="2026-09-12" className="text-[11px] text-slate-500">2026-09-12</time>
+        </div>
+        <ul className={`${copyClass} list-disc space-y-1 pl-4 pt-1`}>
+          <li>底部状态栏新增 GitHub 仓库快捷入口。</li>
+        </ul>
+      </section>
+
+      <section className={sectionClass}>
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h3 className="text-sm font-semibold text-slate-100">v0.2.5</h3>
+          <time dateTime="2026-09-11" className="text-[11px] text-slate-500">2026-09-11</time>
+        </div>
+        <ul className={`${copyClass} list-disc space-y-1 pl-4 pt-1`}>
+          <li>资产导入支持未归属资源；视频分镜逐镜参考支持托管视频并修复从图生退回文生时的校验死锁。</li>
+          <li>全局通用设置独立于接口配置，没有接口配置时也能保存输出目录和文本模型；项目生产档案打开时不再误报未保存。</li>
+          <li>漫画工作区的画风参考与视觉宪法可折叠，按步骤自动展开或收起。</li>
+        </ul>
+      </section>
+
       <section className={sectionClass}>
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <h3 className="text-sm font-semibold text-slate-100">v0.2.4</h3>

@@ -260,25 +260,45 @@ const serialize = <T,>(task: () => Promise<T>): Promise<T> => {
 
 interface AgentStore {
   versions: Record<string, AgentVersion[]>;
+  /** True once the saved versions were read; writes before that would overwrite them. */
+  loaded: boolean;
   load: () => Promise<void>;
   addVersion: (id: string, system: string) => Promise<void>;
   setEnabled: (id: string, v: number, enabled: boolean) => Promise<void>;
 }
 
-export const useAgentStore = create<AgentStore>((set, get) => ({
+// One in-flight read at a time, so a late startup load cannot land after a
+// save and drop the version that was just added from memory.
+let loading: Promise<void> | null = null;
+
+export const useAgentStore = create<AgentStore>((set, get) => {
+  // Every write persists the whole map, so it must start from the saved one.
+  const ensureLoaded = async () => {
+    if (get().loaded) return;
+    await get().load();
+    if (!get().loaded) throw new Error("Agent 提示词尚未加载成功，已阻止保存以免覆盖已有版本，请稍后重试");
+  };
+  return {
   versions: {},
-  load: async () => {
-    try {
-      const rows = await dbSelect<{ value: string }[]>("SELECT value FROM settings WHERE key = ?", [KEY]);
-      const v: Record<string, AgentVersion[]> = rows.length ? (JSON.parse(rows[0].value) ?? {}) : {};
-      // 内置的不用写入数据库；只保留修改过的版本。确保每个已存在 agent 有数组。
-      for (const a of AGENT_DEFAULTS) if (!v[a.id]) v[a.id] = [];
-      set({ versions: v });
-    } catch (error) {
-      logEvent("error", "agent_prompts.load_failed", { error: String(error) });
-    }
+  loaded: false,
+  load: () => {
+    loading ??= (async () => {
+      try {
+        const rows = await dbSelect<{ value: string }[]>("SELECT value FROM settings WHERE key = ?", [KEY]);
+        const v: Record<string, AgentVersion[]> = rows.length ? (JSON.parse(rows[0].value) ?? {}) : {};
+        // 内置的不用写入数据库；只保留修改过的版本。确保每个已存在 agent 有数组。
+        for (const a of AGENT_DEFAULTS) if (!v[a.id]) v[a.id] = [];
+        set({ versions: v, loaded: true });
+      } catch (error) {
+        logEvent("error", "agent_prompts.load_failed", { error: String(error) });
+      } finally {
+        loading = null;
+      }
+    })();
+    return loading;
   },
   addVersion: async (id, system) => {
+    await ensureLoaded();
     const list = get().versions[id] ?? [];
     const maxV = list.reduce((m, x) => Math.max(m, x.v), 0);
     const next: AgentVersion = { v: maxV + 1, system, enabled: true, updatedAt: Date.now() };
@@ -297,6 +317,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     }
   },
   setEnabled: async (id, v, enabled) => {
+    await ensureLoaded();
     set((state) => ({ versions: { ...state.versions, [id]: (state.versions[id] ?? []).map((x) => (x.v === v ? { ...x, enabled } : x)) } }));
     try {
       await serialize(() => persist(get().versions));
@@ -310,7 +331,8 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       throw error;
     }
   },
-}));
+  };
+});
 
 export const PIPELINE_AGENT_IDS = ["director", "writer", "consistency", "storyboard", "qc"] as const;
 

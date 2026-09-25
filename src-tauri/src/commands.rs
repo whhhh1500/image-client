@@ -89,6 +89,14 @@ fn import_ref_image_inner(src: &str) -> Result<String, String> {
     if !src_path.exists() {
         return Err(format!("文件不存在: {src}"));
     }
+    // Check the size before reading: a multi-GB file picked by mistake would
+    // otherwise be loaded into memory whole just to be rejected.
+    let size = std::fs::metadata(src_path)
+        .map_err(|e| format!("读取失败: {e}"))?
+        .len();
+    if size > MAX_REFERENCE_IMAGE_BYTES as u64 {
+        return Err("参考图超过 50 MiB 大小限制".into());
+    }
     let bytes = std::fs::read(src_path).map_err(|e| format!("读取失败: {e}"))?;
     if bytes.len() > MAX_REFERENCE_IMAGE_BYTES {
         return Err("参考图超过 50 MiB 大小限制".into());
@@ -678,6 +686,10 @@ pub struct SaveConfigRequest {
     llm_api_key: String,
     llm_api_model: String,
     output_dir: String,
+    /// Empty fields keep the stored value, so deleting the last API profile
+    /// needs an explicit request to drop the image/video endpoints and keys.
+    #[serde(default)]
+    clear_connections: bool,
 }
 
 pub fn validate_save_config(config: &SaveConfigRequest) -> Result<(), String> {
@@ -727,6 +739,12 @@ pub fn merge_config(
     new: &mut crate::config::ConfigState,
     config: &SaveConfigRequest,
 ) -> Result<(), String> {
+    if config.clear_connections {
+        new.image_api_url.clear();
+        new.image_api_key.clear();
+        new.video_api_url.clear();
+        new.video_api_key.clear();
+    }
     for (name, incoming_url, stored_url, stored_key, incoming_key) in [
         ("image_api_url", &config.image_api_url, &new.image_api_url, &new.image_api_key, &config.image_api_key),
         ("video_api_url", &config.video_api_url, &new.video_api_url, &new.video_api_key, &config.video_api_key),
@@ -816,7 +834,7 @@ pub async fn llm_chat(
     llm_once(&url_clone, &key_clone, &model, &system, &user).await
 }
 
-fn strip_thinking(text: &str) -> String {
+pub(crate) fn strip_thinking(text: &str) -> String {
     let mut remaining = text;
     let mut output = String::new();
     loop {
@@ -1434,7 +1452,9 @@ fn original_stem(file_stem: &str) -> String {
     if parts.len() >= 3 {
         let last = *parts.last().unwrap_or(&"");
         let grade = parts[parts.len() - 2];
-        if last.len() == 14
+        // Variants are stamped `%Y%m%d%H%M%S%3f` (17 digits); older files have
+        // the 14-digit stamp without milliseconds.
+        if matches!(last.len(), 14 | 17)
             && last.chars().all(|c| c.is_ascii_digit())
             && matches!(
                 grade,
@@ -1854,6 +1874,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn clearing_connections_drops_image_and_video_credentials_only() {
+        let root = std::env::temp_dir();
+        let mut cfg = test_config(&root);
+        cfg.image_api_url = "https://img.example/v1/images/generations".into();
+        cfg.image_api_key = "img-key".into();
+        cfg.video_api_url = "https://vid.example/v1/videos".into();
+        cfg.video_api_key = "vid-key".into();
+        cfg.llm_api_key = "llm-key".into();
+        let blank = |clear: bool| -> super::SaveConfigRequest {
+            serde_json::from_value(json!({
+                "imageApiUrl": "", "imageApiKey": "", "imageApiModel": "",
+                "videoApiUrl": "", "videoApiKey": "", "videoApiModel": "",
+                "llmApiUrl": "", "llmApiKey": "", "llmApiModel": "",
+                "outputDir": "", "clearConnections": clear,
+            }))
+            .unwrap()
+        };
+        super::merge_config(&mut cfg, &blank(false)).unwrap();
+        assert_eq!(cfg.image_api_key, "img-key", "empty fields keep stored values");
+        super::merge_config(&mut cfg, &blank(true)).unwrap();
+        assert!(cfg.image_api_url.is_empty() && cfg.image_api_key.is_empty());
+        assert!(cfg.video_api_url.is_empty() && cfg.video_api_key.is_empty());
+        assert_eq!(cfg.llm_api_key, "llm-key");
+    }
+
     fn document_request(
         document_id: &str,
         text: &str,
@@ -1948,6 +1994,7 @@ mod tests {
         assert_eq!(original_stem("hero-q80-20260901010101"), "hero");
         assert_eq!(original_stem("hero-q60-20260901010101"), "hero");
         assert_eq!(original_stem("hero-png-20260901010101"), "hero");
+        assert_eq!(original_stem("hero-q80-20260925123456789"), "hero");
     }
 
     #[test]

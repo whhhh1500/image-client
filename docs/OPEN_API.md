@@ -6,11 +6,11 @@
 
 按要求不做鉴权。默认只监听 `127.0.0.1`，不要在不可信网络中修改 `API_HOST`。
 
-- REST 不做鉴权。浏览器 CORS 默认只允许 Tauri 与本地开发来源；可通过逗号分隔的 `API_CORS_ORIGINS` 显式增加可信来源。PowerShell、Python、curl 等非浏览器客户端不受 CORS 影响。
+- REST 不做鉴权。浏览器 CORS 默认只允许 Tauri 与本地开发来源；可通过逗号分隔的 `API_CORS_ORIGINS` 显式增加可信来源；不支持通配符，`*` 会被忽略并记录警告。PowerShell、Python、curl 等非浏览器客户端不受 CORS 影响。
 - 每个响应包含 `x-request-id`，可与 JSONL 日志关联。
 - 单次请求体上限 64 MiB。
 - 生成用 `prompt` 不做长度限制（只要求非空），由上游模型决定能否接受；模型名、标签等结构化字段仍有长度限制；媒体接口会校验容器格式。
-- `PUT /system/config` 会持久化后端配置快照，重启后仍可恢复。
+- `PUT /system/config` 会持久化后端配置快照，重启后仍可恢复。空字段表示保留原值；需要清除图像/视频接口地址与 Key 时，显式传 `"clearConnections": true`（文本 LLM 配置不受影响）。
 - `GET/PUT /system/llm` 是文本 Agent 专用配置接口。PUT 请求为 `{ "url": "https://.../v1", "key": "...", "model": "..." }`，只更新 LLM；GET 不返回 Key。
 - Agent、图像、视频、文本资产和媒体资产接口成功后，产物会登记进统一 SQLite 历史，并向桌面前台触发 `history://changed` 事件。
 - 前台收到事件后立即刷新历史，不做定时轮询；用户也可以使用顶栏或资产库中的“刷新历史”按钮主动重读数据库。

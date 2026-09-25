@@ -48,7 +48,7 @@ describe("App primary navigation", () => {
 
   it("hands Markdown storyboard shots to the isolated video workspace", () => {
     expect(appSource).toContain("buildReviewedVideoHandoff(shots");
-    expect(appSource).toContain("useVideoStore.getState().set(handoff)");
+    expect(appSource).toContain("useVideoStore.getState().set({ importedSources: [], ...handoff })");
     expect(appSource).toContain("approvedResolution: string");
     expect(appSource).toContain('setMode("video")');
     expect(appSource).toContain("onSendToVideo={sendStoryboardToVideo}");

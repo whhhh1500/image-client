@@ -1,5 +1,5 @@
 import { confirmAction } from "../lib/confirm";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { Copy, FilePenLine, Image as ImageIcon, Loader2, Save, Sparkles, Video, X } from "lucide-react";
 import { llmChat, readTextAsset } from "../lib/ipc";
@@ -146,6 +146,14 @@ export default function AssetDetailModal({
   const [mediaInstruction, setMediaInstruction] = useState("增强画面主体、动作、镜头、光线和氛围描述，保持原意，输出一段可直接生成的提示词。");
   const [revisionInstruction, setRevisionInstruction] = useState<string | undefined>();
   const [mediaChangeType, setMediaChangeType] = useState<"manual" | "ai_optimized">("manual");
+  // Newest version of the document when this version was opened. A save must
+  // expect that head, not the selected version: saving an edit of an older
+  // version was otherwise always rejected as a version conflict.
+  const [headAtOpen, setHeadAtOpen] = useState<string | undefined>();
+  // An AI result belongs to the version it was asked for; switching versions
+  // while it runs must not turn it into the other version's draft.
+  const selectedIdRef = useRef(selected?.asset.id);
+  selectedIdRef.current = selected?.asset.id;
 
   useEffect(() => setSelected(asset), [asset]);
 
@@ -163,6 +171,9 @@ export default function AssetDetailModal({
     let cancelled = false;
     if (!selected) return;
     const meta = getDocumentMeta(selected);
+    setHeadAtOpen(meta
+      ? getDocumentVersions(selected, useLibraryStore.getState().assets).find((version) => version.params?.videoBranch !== true)?.asset.id
+      : undefined);
     setError(null);
     setEditing(false);
     setDraftChangeType("manual");
@@ -227,6 +238,7 @@ export default function AssetDetailModal({
         projectId: selected.projectId ?? projectId,
         documentType: documentMeta.documentType,
         parent: selected,
+        expectedHeadAssetId: headAtOpen,
         changeType,
         agentId: documentMeta.agentId,
         revisionInstruction,
@@ -246,6 +258,7 @@ export default function AssetDetailModal({
 
   const optimize = async () => {
     if (!documentMeta || !draft.trim()) return;
+    const startedFor = selected.asset.id;
     setBusy("optimize");
     setError(null);
     try {
@@ -254,6 +267,7 @@ export default function AssetDetailModal({
         : "只返回优化后的完整正文，不输出分析过程。";
       const system = `你是专业的${documentTypeLabel(documentMeta.documentType)}编辑器。${storyboardRule}`;
       const result = stripThinking(await llmChat(system, `【优化要求】\n${instruction}\n\n【原内容】\n${draft}`, model));
+      if (selectedIdRef.current !== startedFor) return;
       if (documentMeta.documentType === "storyboard") {
         const parsed = parseStoryboardShots(result);
         if (!parsed.length) throw new Error("模型返回的分镜不是有效 JSON，请调整要求后重试");
@@ -274,6 +288,7 @@ export default function AssetDetailModal({
 
   const optimizeMediaPrompt = async () => {
     if (!mediaPrompt.trim()) return;
+    const startedFor = selected.asset.id;
     setBusy("optimize");
     setError(null);
     try {
@@ -283,6 +298,7 @@ export default function AssetDetailModal({
         `【优化要求】\n${mediaInstruction}\n\n【原提示词】\n${mediaPrompt}`,
         model,
       ));
+      if (selectedIdRef.current !== startedFor) return;
       setMediaPrompt(result);
       setMediaChangeType("ai_optimized");
       setDirty(true);

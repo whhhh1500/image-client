@@ -54,7 +54,9 @@ const MAX_BIND_STRING_BYTES: usize = 32 * 1024 * 1024;
 const MAX_RESULT_ROWS: usize = 200_000;
 const BACKUP_PAGE_COUNT: i32 = 100;
 const BACKUP_RETRY_DELAY: Duration = Duration::from_millis(25);
-const BACKUP_TOTAL_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long the backup may wait for a lock without copying anything. Only
+/// waiting counts: a large database on a slow disk legitimately takes longer.
+const BACKUP_LOCK_TIMEOUT: Duration = Duration::from_secs(3);
 const BACKUP_RETENTION_COUNT: usize = 3;
 
 pub struct DbState {
@@ -407,7 +409,7 @@ fn create_migration_backup(
 }
 
 fn run_backup_to_completion(backup: &Backup<'_, '_>) -> Result<(), String> {
-    let deadline = Instant::now() + BACKUP_TOTAL_TIMEOUT;
+    let mut deadline = Instant::now() + BACKUP_LOCK_TIMEOUT;
     loop {
         if Instant::now() >= deadline {
             return Err("SQLite 迁移前备份在 3 秒内未获得可用锁".to_string());
@@ -417,7 +419,9 @@ fn run_backup_to_completion(backup: &Backup<'_, '_>) -> Result<(), String> {
             .map_err(|error| format!("执行 SQLite Online Backup 失败: {error}"))?
         {
             StepResult::Done => return Ok(()),
-            StepResult::More => {}
+            // Progress: the deadline guards lock waits, not total copy time,
+            // which previously aborted startup for large databases.
+            StepResult::More => deadline = Instant::now() + BACKUP_LOCK_TIMEOUT,
             StepResult::Busy | StepResult::Locked => std::thread::sleep(BACKUP_RETRY_DELAY),
             _ => return Err("SQLite Online Backup 返回了不支持的步骤状态".to_string()),
         }

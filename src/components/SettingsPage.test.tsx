@@ -61,11 +61,13 @@ describe("SettingsPage", () => {
     fireEvent.click(saveButton);
 
     await waitFor(() => {
+      // Nothing was deleted: with no profile the backend may hold .env/REST
+      // credentials, which a plain save must not clear.
       expect(saveSpy).toHaveBeenCalledWith(expect.objectContaining({
         outputDir: "D:/new/assets",
         llmUrl: "https://api.initial/v1",
         configs: [],
-      }));
+      }), { clearConnections: false });
     });
     expect(onSaved).toHaveBeenCalled();
   });
@@ -145,7 +147,7 @@ describe("SettingsPage", () => {
         configs: [expect.objectContaining({
           image: expect.objectContaining({ model: "自填模型-v9" }),
         })],
-      }));
+      }), { clearConnections: false });
     });
   });
 

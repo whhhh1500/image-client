@@ -169,7 +169,8 @@ pub(super) fn apply(
     tx.commit().map_err(sql)?;
     Ok(guard)
 }
-#[tauri::command]
+// async: loads and hashes the whole work, which must not run on the UI thread.
+#[tauri::command(async)]
 pub fn comic_md_sync(
     app: tauri::AppHandle,
     db: tauri::State<'_, DbState>,

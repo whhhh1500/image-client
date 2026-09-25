@@ -22,6 +22,8 @@ import { loadHistory, refreshLibraryHistory } from "./lib/dbWrite";
 import { useLibraryStore, type LibAsset } from "./store/useLibraryStore";
 import { useProjectStore } from "./store/useProjectStore";
 import { usePromptlibStore } from "./store/usePromptlibStore";
+import { useAgentStore } from "./store/useAgentStore";
+import { useRunStore } from "./store/useRunStore";
 import { useGenerationStore } from "./store/useGenerationStore";
 import { useVideoStore } from "./store/useVideoStore";
 import { applyProjectProfile } from "./lib/projectProfile";
@@ -71,12 +73,13 @@ function App() {
     getDb()
       .then(async () => {
         const s = await loadSettings();
-        // These four steps are independent; running them in parallel removes
-        // three serial IPC+SQL round-trips from cold start.
-        const [st, , , hist] = await Promise.all([
+        // These steps are independent; running them in parallel removes
+        // serial IPC+SQL round-trips from cold start.
+        const [st, , , , hist] = await Promise.all([
           applyActive(s).catch(() => null),
           usePromptlibStore.getState().load(),
           useProjectStore.getState().load(),
+          useAgentStore.getState().load(),
           loadHistory().catch(() => ({ assets: [], tasks: [] })),
         ]);
         if (st && !cancelled) setCfgStatus(st);
@@ -156,7 +159,9 @@ function App() {
   const sendStoryboardToVideo = (shots: StoryboardShot[], source: LibAsset, approval: { anchorAssetId?: string; qcAssetId?: string; approvedModel: string; approvedAspectRatio: string; approvedResolution: string }) => {
     const handoff = buildReviewedVideoHandoff(shots, useLibraryStore.getState().assets, source, approval);
     if (!handoff.shots?.length) return;
-    useVideoStore.getState().set(handoff);
+    // The handoff replaces every shot; imports recorded for the previous shots
+    // would otherwise be attributed to the reviewed shots with the same ids.
+    useVideoStore.getState().set({ importedSources: [], ...handoff });
     setMode("video");
     setTab("generate");
   };
@@ -175,6 +180,8 @@ function App() {
       mode: "text",
     });
     useGenerationImportQueue.getState().discard();
+    // The last run's batch preview and error belong to the previous project.
+    useRunStore.getState().clearFinished();
   };
 
   const switchProject = async (id: string) => {

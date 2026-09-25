@@ -31,6 +31,7 @@ import { isPublicHttpsUrl } from "../lib/video/referenceUrl";
 import { importExternalAssets } from "../lib/externalAssetImport";
 import { comicMdCatalogList } from "../lib/comic/markdownApi";
 import { useGenerationImportQueue } from "../store/useGenerationImportQueue";
+import { useRunStore, type VideoRunPhase } from "../store/useRunStore";
 import {
   createImportRecord,
   importEntryAssetId,
@@ -54,7 +55,7 @@ const MODE_LABELS: Record<VideoGenerationMode, string> = {
 };
 
 type MaterialKind = "images" | "videos";
-type WorkflowPhase = "idle" | "submitting" | "processing" | "completed" | "failed";
+type WorkflowPhase = VideoRunPhase;
 
 function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
   return (
@@ -71,6 +72,8 @@ function Field({ label, children, hint }: { label: string; children: React.React
 function parseUrls(value: string): string[] {
   return [...new Set(value.split(/[\n,]/).map((url) => url.trim()).filter(Boolean))];
 }
+
+const MODEL_CONVERGE_DELAY_MS = 600;
 
 function fallbackCapability(model: string): VideoModelCapability {
   return {
@@ -270,10 +273,13 @@ export default function VideoPanel() {
   const vid = useVideoStore();
   const [capabilities, setCapabilities] = useState<VideoModelCapability[]>([]);
   const videoCatalog = useModelCatalog("video", []);
-  const [busy, setBusy] = useState(false);
+  const busy = useRunStore((s) => s.videoBusy);
+  // Kept in the run store so a run that fails after a remount still reports it.
+  const runError = useRunStore((s) => s.videoError);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [phase, setPhase] = useState<WorkflowPhase>("idle");
+  const phase = useRunStore((s) => s.videoPhase);
+  const setPhase = (videoPhase: WorkflowPhase) => useRunStore.getState().patch({ videoPhase });
   const [selectedVideoIds, setSelectedVideoIds] = useState<string[]>([]);
   const [joining, setJoining] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number; asset: LibAsset } | null>(null);
@@ -290,6 +296,8 @@ export default function VideoPanel() {
   const publishedMedia = useRef(new Map<string, { url: string; sha256?: string }>());
   const pickerSession = useRef(0);
   const processingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const modelConvergeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (modelConvergeTimer.current) clearTimeout(modelConvergeTimer.current); }, []);
 
   const projects = useProjectStore((s) => s.projects);
   const activeId = useProjectStore((s) => s.activeId);
@@ -422,20 +430,39 @@ export default function VideoPanel() {
     return null;
   }, [activeId, allAssets, capabilities.length, capability, defaultId, hasMaterials, images, knownCapability, shots, vid.aspectRatio, vid.audios, vid.mode, vid.model, vid.productionManifest, vid.resolution, vid.storyboardSourceAssetId, vid.videos]);
 
-  const selectModel = (model: string) => {
-    const next = capabilities.find((item) => item.id === model) ?? fallbackCapability(model);
-    const mode = chooseSupported(vid.mode, next.modes, "text");
-    vid.set({
+  /** Clamp mode, shot durations, resolution and aspect ratio to what `capability` supports. */
+  const convergeToModel = (model: string, capability: VideoModelCapability) => {
+    const current = useVideoStore.getState();
+    const mode = chooseSupported(current.mode, capability.modes, "text");
+    current.set({
       model,
       mode,
-      shots: shots.map((shot) => {
-        const supportedDurations = durationOptionsFor(next, shot.referenceStrategy ?? mode);
-        return { ...shot, durationS: chooseSupported(shot.durationS, supportedDurations, supportedDurations[0] ?? next.minDurationS) };
+      shots: current.shots.map((shot) => {
+        const supportedDurations = durationOptionsFor(capability, shot.referenceStrategy ?? mode);
+        return { ...shot, durationS: chooseSupported(shot.durationS, supportedDurations, supportedDurations[0] ?? capability.minDurationS) };
       }),
-      resolution: chooseSupported(vid.resolution, next.resolutions, "720p"),
-      aspectRatio: chooseSupported(vid.aspectRatio, next.aspectRatios, "16:9"),
+      resolution: chooseSupported(current.resolution, capability.resolutions, "720p"),
+      aspectRatio: chooseSupported(current.aspectRatio, capability.aspectRatios, "16:9"),
     });
+  };
+
+  const selectModel = (model: string) => {
+    if (modelConvergeTimer.current) clearTimeout(modelConvergeTimer.current);
+    modelConvergeTimer.current = null;
     setError(null);
+    const known = capabilities.find((item) => item.id === model);
+    if (known) {
+      convergeToModel(model, known);
+      return;
+    }
+    // The combobox reports every keystroke. Clamping to fallback limits on a
+    // half-typed name (e.g. "kling-video-v3-" on the way to "…-omni") was never
+    // undone, so only a name that is still unknown once typing pauses gets them.
+    vid.set({ model });
+    modelConvergeTimer.current = setTimeout(() => {
+      modelConvergeTimer.current = null;
+      if (useVideoStore.getState().model === model) convergeToModel(model, fallbackCapability(model));
+    }, MODEL_CONVERGE_DELAY_MS);
   };
 
   const selectMode = (mode: VideoGenerationMode) => {
@@ -755,8 +782,8 @@ export default function VideoPanel() {
   };
 
   const run = async () => {
-    if (validationError || busy) return;
-    setBusy(true);
+    if (validationError || useRunStore.getState().videoBusy) return;
+    useRunStore.getState().patch({ videoBusy: true, videoError: null });
     setError(null);
     setPhase("submitting");
     processingTimer.current = setTimeout(() => setPhase("processing"), 350);
@@ -777,11 +804,11 @@ export default function VideoPanel() {
       setPhase("completed");
     } catch (cause) {
       setPhase("failed");
-      setError(String(cause));
+      useRunStore.getState().patch({ videoError: String(cause) });
     } finally {
       if (processingTimer.current) clearTimeout(processingTimer.current);
       processingTimer.current = null;
-      setBusy(false);
+      useRunStore.getState().patch({ videoBusy: false });
     }
   };
 
@@ -816,6 +843,7 @@ export default function VideoPanel() {
     setGuideAsset(null);
     setVideoGuideAsset(null);
     setError(null);
+    useRunStore.getState().patch({ videoError: null });
     setPhase("idle");
   };
 
@@ -949,7 +977,7 @@ export default function VideoPanel() {
           <div className="rounded-xl border border-slate-800 bg-slate-950/25 px-3 py-2 text-[10px] leading-relaxed text-slate-500">声音、音频参考与字幕暂不处理；不会添加配音、混音、口型或字幕。</div>
           {vid.productionManifest && <div className="rounded-xl border border-cyan-300/15 bg-cyan-300/[0.05] px-3 py-2 text-xs text-cyan-100"><div className="font-medium">已加载审查通过的生产清单</div><div className="mt-1 text-[10px] text-cyan-100/70">模型 {vid.productionManifest.approvedModel} · 画幅 {vid.productionManifest.approvedAspectRatio} · 分辨率 {vid.productionManifest.approvedResolution} · 分镜 {vid.productionManifest.storyboardAssetId}</div><button type="button" className="mt-2 text-[10px] text-amber-200 hover:text-amber-100" onClick={() => vid.set({ productionManifest: undefined })}>解除审查清单，转为普通未审查视频任务</button></div>}
 
-          {error && <div className="rounded-lg border border-rose-300/15 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">{error}</div>}
+          {(error ?? runError) && <div className="rounded-lg border border-rose-300/15 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">{error ?? runError}</div>}
           {notice && <div role="status" className="rounded-lg border border-cyan-300/15 bg-cyan-300/[0.06] px-3 py-2 text-xs text-cyan-100">{notice}</div>}
           {validationError && <div className="rounded-lg border border-amber-300/15 bg-amber-300/[0.06] px-3 py-2 text-xs text-amber-100">{validationError}</div>}
 

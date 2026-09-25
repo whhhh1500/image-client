@@ -23,6 +23,7 @@ import { imageHistoryMenu } from "../lib/historyMenu";
 import { isCompressedAsset } from "../lib/imageCompress";
 import { importExternalAssets } from "../lib/externalAssetImport";
 import { useGenerationImportQueue } from "../store/useGenerationImportQueue";
+import { useRunStore } from "../store/useRunStore";
 import { comicMdCatalogList } from "../lib/comic/markdownApi";
 import {
   createImportRecord,
@@ -147,13 +148,15 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
   const hasPrompt = useGenerationStore((s) => s.prompt.trim().length > 0);
   const setGen = useGenerationStore((s) => s.set);
   const loadGen = useGenerationStore((s) => s.load);
-  const [busy, setBusy] = useState(false);
+  const busy = useRunStore((s) => s.imageBusy);
+  // Kept in the run store so a run that fails after a remount still reports it.
+  const runError = useRunStore((s) => s.imageError);
   const [error, setError] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; asset: LibAsset } | null>(null);
   const [previewAsset, setPreviewAsset] = useState<LibAsset | null>(null);
   // Assets produced by the most recent run, so a multi-image request is shown
   // as one batch instead of leaving only the newest file visible.
-  const [lastBatchIds, setLastBatchIds] = useState<string[]>([]);
+  const lastBatchIds = useRunStore((s) => s.imageBatchIds);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerPreset, setPickerPreset] = useState<{ entries: ImportEntry[]; action: "prompt" | "merge_prompt" | "reference" } | null>(null);
   const [libraryOpen, setLibraryOpen] = useState(false);
@@ -296,11 +299,12 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
   }, [pendingImport?.requestId]);
 
   const run = async () => {
-    if (!canRun) return;
+    const runs = useRunStore.getState();
+    if (!canRun || runs.imageBusy) return;
     // Read the live values at click time: this panel no longer subscribes to the
     // prompt string, and the user may have typed after the last render.
     const current = useGenerationStore.getState();
-    setBusy(true);
+    runs.patch({ imageBusy: true, imageError: null });
     setError(null);
     try {
       const template = promptlibId ? promptlibEntry : undefined;
@@ -330,12 +334,12 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
         parentAssetIds: [...new Set((current.importedSources ?? []).flatMap((item) => item.assetIds))],
       }).then((created) => {
         // Remember this run's assets so the preview shows the whole batch.
-        setLastBatchIds(created.map((asset) => asset.id));
+        useRunStore.getState().patch({ imageBatchIds: created.map((asset) => asset.id) });
       });
     } catch (e) {
-      setError(String(e));
+      useRunStore.getState().patch({ imageError: String(e) });
     } finally {
-      setBusy(false);
+      useRunStore.getState().patch({ imageBusy: false });
     }
   };
 
@@ -468,7 +472,7 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
           </select>
         </Field>
 
-        {error && <div className="rounded-lg bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{error}</div>}
+        {(error ?? runError) && <div className="rounded-lg bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{error ?? runError}</div>}
 
         <button
           onClick={run}

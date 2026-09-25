@@ -122,6 +122,11 @@ fn configured_data_dir() -> std::io::Result<PathBuf> {
 /// Fixed, predictable data root: `<home>/ImageClient` — sibling to `.ssh`.
 /// `IMAGE_CLIENT_DATA_DIR` may instead provide an absolute, non-root directory.
 /// Windows: C:\Users\<user>\ImageClient ; macOS/Linux: ~/ImageClient
+/// The data directory, or the override's validation error instead of a panic.
+pub fn try_data_dir() -> std::io::Result<PathBuf> {
+    configured_data_dir()
+}
+
 pub fn data_dir() -> PathBuf {
     configured_data_dir().unwrap_or_else(|error| {
         panic!("invalid {DATA_DIR_OVERRIDE}: {error}");
