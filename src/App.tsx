@@ -4,6 +4,7 @@ import { BookOpen, Clapperboard, FolderCog, Image as ImageIcon, Images, Plus, Re
 import StatusBar, { openLogsFolder } from "./components/StatusBar";
 import AppDocsDialog, { type AppDocsView } from "./components/AppDocsDialog";
 import SettingsPage from "./components/SettingsPage";
+import Toaster from "./components/Toaster";
 import PromptManager from "./components/PromptManager";
 import ProjectSettingsPage from "./components/ProjectSettingsPage";
 import {
@@ -371,6 +372,7 @@ function App() {
       <AppDocsDialog view={docsView} onClose={() => setDocsView(null)} />
 
       <SettingsPage open={settingsOpen} onClose={() => setSettingsOpen(false)} onSaved={setCfgStatus} status={cfgStatus} />
+      <Toaster />
 
       <PromptManager open={promptMgrOpen} onClose={() => setPromptMgrOpen(false)} initialAgent={promptAgent} />
 

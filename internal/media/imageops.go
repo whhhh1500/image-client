@@ -167,35 +167,38 @@ func (s *Service) inspectImage(path string) (imageFileInfo, error) {
 	return result, nil
 }
 
-// readSourceImage loads and decodes an image for re-encoding.
-func readSourceImage(path string) (image.Image, string, error) {
+// readSourceImage loads and decodes an image for re-encoding; size is the
+// file's length in bytes.
+func readSourceImage(path string) (img image.Image, format string, size int, err error) {
 	info, err := os.Stat(path)
 	if err != nil {
-		return nil, "", fmt.Errorf("读取原图失败：%w", err)
+		return nil, "", 0, fmt.Errorf("读取原图失败：%w", err)
 	}
 	if info.Size() > MaxMediaAssetBytes {
-		return nil, "", errors.New("图片超过 512 MiB 大小限制")
+		return nil, "", 0, errors.New("图片超过 512 MiB 大小限制")
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, "", fmt.Errorf("读取原图失败：%w", err)
+		return nil, "", 0, fmt.Errorf("读取原图失败：%w", err)
 	}
 	if len(data) > MaxMediaAssetBytes {
-		return nil, "", errors.New("图片超过 512 MiB 大小限制")
+		return nil, "", 0, errors.New("图片超过 512 MiB 大小限制")
 	}
-	format := DetectImageFormat(data)
+	format = DetectImageFormat(data)
 	if format == "" {
-		return nil, "", errors.New("不支持的图片格式")
+		return nil, "", 0, errors.New("不支持的图片格式")
 	}
-	img, _, err := DecodeImage(data)
+	img, _, err = DecodeImage(data)
 	if err != nil {
-		return nil, "", err
+		return nil, "", 0, err
 	}
-	return img, format, nil
+	return img, format, len(data), nil
 }
 
-// compressImage writes a compressed variant: lossless keeps PNG/WebP (GIF and
-// BMP become PNG, JPEG is re-encoded at quality 95); q80/q60 are JPEG.
+// compressImage writes a compressed variant: lossless keeps PNG/WebP and
+// turns GIF and BMP into PNG; q80/q60 are JPEG. JPEG has no lossless
+// re-encoding, and a result that is not smaller than the original is not
+// written, so 「压缩」 never produces a bigger file.
 func (s *Service) compressImage(path, level string) (store.AssetRef, error) {
 	canonical, err := s.imagePath(path)
 	if err != nil {
@@ -204,13 +207,16 @@ func (s *Service) compressImage(path, level string) (store.AssetRef, error) {
 	if level != "lossless" && level != "q80" && level != "q60" {
 		return store.AssetRef{}, errors.New("未知压缩等级")
 	}
-	img, format, err := readSourceImage(canonical)
+	img, format, size, err := readSourceImage(canonical)
 	if err != nil {
 		return store.AssetRef{}, err
 	}
 	encoded, ext, err := encodeCompressed(img, format, level)
 	if err != nil {
 		return store.AssetRef{}, err
+	}
+	if len(encoded) >= size {
+		return store.AssetRef{}, fmt.Errorf("压缩后不会更小（原图 %s，压缩后 %s），未生成新文件", sizeText(size), sizeText(len(encoded)))
 	}
 	out, err := writeVariant(canonical, level, ext, encoded, "写入压缩图失败")
 	if err != nil {
@@ -234,7 +240,7 @@ func (s *Service) convertImage(path, format string) (store.AssetRef, error) {
 	default:
 		return store.AssetRef{}, errors.New("不支持的目标格式")
 	}
-	img, _, err := readSourceImage(canonical)
+	img, _, _, err := readSourceImage(canonical)
 	if err != nil {
 		return store.AssetRef{}, err
 	}
@@ -271,8 +277,8 @@ func encodeCompressed(img image.Image, format, level string) ([]byte, string, er
 		data, err := encodePNG(img)
 		return wrapEncode(data, "png", err, "PNG 无损编码失败")
 	case level == "lossless" && (format == "jpg" || format == "jpeg"):
-		data, err := encodeJPEG(img, 95)
-		return wrapEncode(data, "jpg", err, "JPEG 近无损编码失败")
+		// Re-encoding a JPEG loses detail and usually grows the file.
+		return nil, "", errors.New("JPEG 无法无损压缩，请选择有损压缩 80% 或 60%")
 	case level == "lossless" && format == "webp":
 		data, err := encodeWebPLossless(img)
 		return wrapEncode(data, "webp", err, "WebP 编码失败")
@@ -335,14 +341,22 @@ func encodeConverted(img image.Image, format string) ([]byte, error) {
 
 func encodePNG(img image.Image) ([]byte, error) {
 	var buf bytes.Buffer
-	err := png.Encode(&buf, img)
+	err := (&png.Encoder{CompressionLevel: png.BestCompression}).Encode(&buf, img)
 	return buf.Bytes(), err
 }
 
 func encodeJPEG(img image.Image, quality int) ([]byte, error) {
 	var buf bytes.Buffer
-	err := jpeg.Encode(&buf, dropAlpha(img), &jpeg.Options{Quality: quality})
+	err := jpeg.Encode(&buf, flattenOnWhite(img), &jpeg.Options{Quality: quality})
 	return buf.Bytes(), err
+}
+
+// sizeText is a byte count as the UI shows it: KB below 1 MB, MB above.
+func sizeText(n int) string {
+	if n < 1<<20 {
+		return fmt.Sprintf("%.0f KB", math.Ceil(float64(n)/1024))
+	}
+	return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
 }
 
 // encodeGIF quantises to the Plan 9 palette with dithering. Pixels that are
@@ -361,7 +375,7 @@ func encodeGIF(img image.Image) ([]byte, error) {
 	bounds := img.Bounds()
 	colours := append(color.Palette{}, palette.Plan9[:255]...)
 	out := image.NewPaletted(bounds, append(colours, color.Transparent))
-	draw.FloydSteinberg.Draw(out, bounds, dropAlpha(img), bounds.Min)
+	draw.FloydSteinberg.Draw(out, bounds, flattenOnWhite(img), bounds.Min)
 	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
 		for x := bounds.Min.X; x < bounds.Max.X; x++ {
 			if _, _, _, a := img.At(x, y).RGBA(); a < 0x8000 {
@@ -373,39 +387,16 @@ func encodeGIF(img image.Image) ([]byte, error) {
 	return buf.Bytes(), err
 }
 
-// dropAlpha discards the alpha channel without blending, as JPEG output
-// always did: a transparent pixel keeps its stored colour rather than
-// turning black.
-func dropAlpha(img image.Image) image.Image {
+// flattenOnWhite composites img over white, the way image viewers show a
+// transparent background; JPEG has no alpha channel, and the colour stored
+// under a transparent pixel is arbitrary.
+func flattenOnWhite(img image.Image) image.Image {
 	if opaque, ok := img.(interface{ Opaque() bool }); ok && opaque.Opaque() {
 		return img
 	}
 	bounds := img.Bounds()
 	out := image.NewRGBA(bounds)
-	switch src := img.(type) {
-	case *image.NRGBA:
-		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-			row := src.Pix[src.PixOffset(bounds.Min.X, y):]
-			dst := out.Pix[out.PixOffset(bounds.Min.X, y):]
-			for x := 0; x < bounds.Dx()*4; x += 4 {
-				dst[x], dst[x+1], dst[x+2], dst[x+3] = row[x], row[x+1], row[x+2], 0xFF
-			}
-		}
-	case *image.NRGBA64:
-		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-			row := src.Pix[src.PixOffset(bounds.Min.X, y):]
-			dst := out.Pix[out.PixOffset(bounds.Min.X, y):]
-			for x := 0; x < bounds.Dx(); x++ {
-				dst[x*4], dst[x*4+1], dst[x*4+2], dst[x*4+3] = row[x*8], row[x*8+2], row[x*8+4], 0xFF
-			}
-		}
-	default:
-		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-			for x := bounds.Min.X; x < bounds.Max.X; x++ {
-				c := color.NRGBAModel.Convert(img.At(x, y)).(color.NRGBA)
-				out.SetRGBA(x, y, color.RGBA{R: c.R, G: c.G, B: c.B, A: 0xFF})
-			}
-		}
-	}
+	draw.Draw(out, bounds, image.NewUniform(color.White), image.Point{}, draw.Src)
+	draw.Draw(out, bounds, img, bounds.Min, draw.Over)
 	return out
 }

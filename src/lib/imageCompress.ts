@@ -43,11 +43,28 @@ export function latestDisplayPath(info: ImageFileInfo): string {
   return info.displayPath || info.path;
 }
 
-export async function compressHistoryImage(asset: LibAsset, level: CompressLevel): Promise<LibAsset> {
+/** A size as the UI shows it: KB below 1 MB, MB above (as the backend words it). */
+export function formatBytes(bytes: number): string {
+  return bytes < 1024 * 1024 ? `${Math.ceil(bytes / 1024)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/** A written variant, with the original's and the variant's sizes when known. */
+export interface ImageWriteResult {
+  asset: LibAsset;
+  fromBytes?: number;
+  toBytes?: number;
+}
+
+function writeResult(created: LibAsset, info: ImageFileInfo): ImageWriteResult {
+  const variant = info.variants.find((item) => item.path === created.asset.path);
+  return { asset: created, fromBytes: info.bytes, toBytes: variant?.bytes };
+}
+
+export async function compressHistoryImage(asset: LibAsset, level: CompressLevel): Promise<ImageWriteResult> {
   const started = performance.now();
   logEvent("info", "image.compress.start", { path: asset.asset.path, level });
   const result = await compressImageFile(asset.asset.path, level);
-  await refreshImageInfo(asset.asset.path);
+  const info = await refreshImageInfo(asset.asset.path);
   const meta = {
     model: asset.model,
     projectId: asset.projectId,
@@ -66,14 +83,14 @@ export async function compressHistoryImage(asset: LibAsset, level: CompressLevel
     durationMs: performance.now() - started,
   });
   const created = useLibraryStore.getState().assets.find((item) => item.asset.id === result.id);
-  return created ?? { asset: result, source, model: asset.model, projectId: asset.projectId, params: meta.params, createdAt: Date.now() };
+  return writeResult(created ?? { asset: result, source, model: asset.model, projectId: asset.projectId, params: meta.params, createdAt: Date.now() }, info);
 }
 
-export async function convertHistoryImage(asset: LibAsset, format: ConvertFormat): Promise<LibAsset> {
+export async function convertHistoryImage(asset: LibAsset, format: ConvertFormat): Promise<ImageWriteResult> {
   const started = performance.now();
   logEvent("info", "image.convert.start", { path: asset.asset.path, format });
   const result = await convertImageFile(asset.asset.path, format);
-  await refreshImageInfo(asset.asset.path);
+  const info = await refreshImageInfo(asset.asset.path);
   const meta = {
     model: asset.model,
     projectId: asset.projectId,
@@ -92,7 +109,7 @@ export async function convertHistoryImage(asset: LibAsset, format: ConvertFormat
     durationMs: performance.now() - started,
   });
   const created = useLibraryStore.getState().assets.find((item) => item.asset.id === result.id);
-  return created ?? { asset: result, source, model: asset.model, projectId: asset.projectId, params: meta.params, createdAt: Date.now() };
+  return writeResult(created ?? { asset: result, source, model: asset.model, projectId: asset.projectId, params: meta.params, createdAt: Date.now() }, info);
 }
 
 export function isCompressedAsset(asset: LibAsset): boolean {

@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"image/gif"
 	"image/jpeg"
+	"image/png"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -107,18 +108,44 @@ func encodeAs(t *testing.T, img image.Image, format string) []byte {
 	return buf.Bytes()
 }
 
+// photoImage is an opaque gradient with fine noise, like a photo: lossless
+// formats shrink it a little and every JPEG level shrinks it a lot.
+func photoImage(w, h int) *image.NRGBA {
+	img := image.NewNRGBA(image.Rect(0, 0, w, h))
+	for y := range h {
+		for x := range w {
+			n := uint8((x*7919 + y*104729) % 8)
+			img.SetNRGBA(x, y, color.NRGBA{R: uint8(x*2) + n, G: uint8(y*3) + n, B: 128 + n, A: 255})
+		}
+	}
+	return img
+}
+
+// rawPNG stores img without deflate, so a lossless re-encode is smaller.
+func rawPNG(t *testing.T, img image.Image) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := (&png.Encoder{CompressionLevel: png.NoCompression}).Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
 func TestCompressWritesVariantsNextToTheOriginal(t *testing.T) {
 	env := newTestEnv(t)
-	img := testImage(40, 30)
+	img := photoImage(96, 64)
+	var maxJPEG bytes.Buffer
+	if err := jpeg.Encode(&maxJPEG, img, &jpeg.Options{Quality: 100}); err != nil {
+		t.Fatal(err)
+	}
+	sources := map[string][]byte{"png": rawPNG(t, img), "bmp": encodeAs(t, img, "bmp"), "jpg": maxJPEG.Bytes()}
 	wantExt := map[string]map[string]string{
-		"png":  {"lossless": "png", "q80": "jpg", "q60": "jpg"},
-		"jpg":  {"lossless": "jpg", "q80": "jpg", "q60": "jpg"},
-		"webp": {"lossless": "webp", "q80": "jpg", "q60": "jpg"},
-		"gif":  {"lossless": "png", "q80": "jpg", "q60": "jpg"},
-		"bmp":  {"lossless": "png", "q80": "jpg", "q60": "jpg"},
+		"png": {"lossless": "png", "q80": "jpg", "q60": "jpg"},
+		"bmp": {"lossless": "png", "q80": "jpg", "q60": "jpg"},
+		"jpg": {"q80": "jpg", "q60": "jpg"},
 	}
 	for format, levels := range wantExt {
-		original := writeFile(t, filepath.Join(env.output, "图片", "run", "hero_"+format+"."+format), encodeAs(t, img, format))
+		original := writeFile(t, filepath.Join(env.output, "图片", "run", "hero_"+format+"."+format), sources[format])
 		for level, ext := range levels {
 			asset, err := env.svc.compressImage(original, level)
 			if err != nil {
@@ -133,19 +160,58 @@ func TestCompressWritesVariantsNextToTheOriginal(t *testing.T) {
 			}
 			data, _ := os.ReadFile(asset.Path)
 			decoded, _, err := DecodeImage(data)
-			if err != nil || decoded.Bounds().Dx() != 40 || decoded.Bounds().Dy() != 30 || *asset.Width != 40 || *asset.Height != 30 {
+			if err != nil || decoded.Bounds().Dx() != 96 || decoded.Bounds().Dy() != 64 || *asset.Width != 96 || *asset.Height != 64 {
 				t.Fatalf("%s/%s: decoded %v %v", format, level, decoded.Bounds(), err)
 			}
-			if DetectImageFormat(data) != ext {
-				t.Fatalf("%s/%s: wrote %s data", format, level, DetectImageFormat(data))
+			if DetectImageFormat(data) != ext || len(data) >= len(sources[format]) {
+				t.Fatalf("%s/%s: wrote %d bytes of %s data from %d", format, level, len(data), DetectImageFormat(data), len(sources[format]))
 			}
 		}
 	}
 }
 
+func TestCompressionChoosesTheOutputFormatBySource(t *testing.T) {
+	img := testImage(20, 10)
+	for _, c := range []struct{ format, level, ext string }{
+		{"png", "lossless", "png"}, {"webp", "lossless", "webp"}, {"gif", "lossless", "png"}, {"bmp", "lossless", "png"},
+		{"png", "q80", "jpg"}, {"webp", "q60", "jpg"}, {"gif", "q80", "jpg"}, {"jpg", "q60", "jpg"},
+	} {
+		if _, ext, err := encodeCompressed(img, c.format, c.level); err != nil || ext != c.ext {
+			t.Errorf("%s/%s: ext %q, err %v; want %s", c.format, c.level, ext, err, c.ext)
+		}
+	}
+}
+
+func TestCompressionNeverWritesALargerFile(t *testing.T) {
+	env := newTestEnv(t)
+	dir := filepath.Join(env.output, "图片")
+	webp, err := encodeWebPLossless(photoImage(96, 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Our own lossless WebP re-encodes to the same bytes: nothing to gain.
+	original := writeFile(t, filepath.Join(dir, "same.webp"), webp)
+	if _, err := env.svc.compressImage(original, "lossless"); !strings.HasPrefix(errText(err), "压缩后不会更小（原图 ") || !strings.HasSuffix(errText(err), "），未生成新文件") {
+		t.Fatalf("lossless webp: %v", err)
+	}
+	// A tiny PNG is smaller than any JPEG header.
+	tiny := writeFile(t, filepath.Join(dir, "tiny.png"), pngBytes(t, testImage(4, 4)))
+	if _, err := env.svc.compressImage(tiny, "q60"); !strings.HasPrefix(errText(err), "压缩后不会更小") {
+		t.Fatalf("tiny png: %v", err)
+	}
+	jpg := writeFile(t, filepath.Join(dir, "photo.jpg"), encodeAs(t, photoImage(96, 64), "jpg"))
+	if _, err := env.svc.compressImage(jpg, "lossless"); errText(err) != "JPEG 无法无损压缩，请选择有损压缩 80% 或 60%" {
+		t.Fatalf("lossless jpeg: %v", err)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 3 {
+		t.Fatalf("refused compressions left files behind: %d entries", len(entries))
+	}
+}
+
 func TestCompressingAVariantKeepsTheOriginalStem(t *testing.T) {
 	env := newTestEnv(t)
-	variant := writeFile(t, filepath.Join(env.output, "hero-q80-20260901010101123.png"), pngBytes(t, testImage(4, 4)))
+	variant := writeFile(t, filepath.Join(env.output, "hero-q80-20260901010101123.png"), rawPNG(t, photoImage(64, 48)))
 	asset, err := env.svc.compressImage(variant, "q60")
 	if err != nil {
 		t.Fatal(err)
@@ -230,7 +296,7 @@ func TestImageCommandsRejectBadInput(t *testing.T) {
 
 func TestInspectImageReportsVariantsAndTheLatestDisplayPath(t *testing.T) {
 	env := newTestEnv(t)
-	original := writeFile(t, filepath.Join(env.output, "图片", "shot.PNG"), pngBytes(t, testImage(12, 8)))
+	original := writeFile(t, filepath.Join(env.output, "图片", "shot.PNG"), rawPNG(t, photoImage(64, 48)))
 	old := time.Now().Add(-time.Hour)
 	os.Chtimes(original, old, old)
 	variant, err := env.svc.compressImage(original, "q80")
@@ -246,7 +312,7 @@ func TestInspectImageReportsVariantsAndTheLatestDisplayPath(t *testing.T) {
 		if info.DisplayPath != variant.Path || len(info.Variants) != 2 || info.Variants[1].Level != "original" {
 			t.Fatalf("inspect %s: %+v", filepath.Base(path), info)
 		}
-		if info.Directory != filepath.Dir(original) || info.FileName != filepath.Base(path) || info.Width == nil || *info.Width != 12 || *info.Height != 8 {
+		if info.Directory != filepath.Dir(original) || info.FileName != filepath.Base(path) || info.Width == nil || *info.Width != 64 || *info.Height != 48 {
 			t.Fatalf("inspect %s: %+v", filepath.Base(path), info)
 		}
 	}
@@ -269,10 +335,16 @@ func TestInspectImageReportsVariantsAndTheLatestDisplayPath(t *testing.T) {
 	}
 }
 
-func TestJPEGOutputDropsAlphaWithoutBlackening(t *testing.T) {
-	img := image.NewNRGBA(image.Rect(0, 0, 8, 8))
-	for i := 0; i < len(img.Pix); i += 4 {
-		copy(img.Pix[i:], []byte{200, 40, 40, 0}) // fully transparent red
+func TestJPEGOutputFlattensTransparencyOntoWhite(t *testing.T) {
+	img := image.NewNRGBA(image.Rect(0, 0, 16, 8))
+	for y := range 8 {
+		for x := range 16 {
+			c := color.NRGBA{R: 200, G: 40, B: 40, A: 0} // fully transparent red
+			if x >= 8 {
+				c = color.NRGBA{A: 128} // half-transparent black
+			}
+			img.SetNRGBA(x, y, c)
+		}
 	}
 	data, err := encodeJPEG(img, 95)
 	if err != nil {
@@ -282,9 +354,11 @@ func TestJPEGOutputDropsAlphaWithoutBlackening(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r, g, _, _ := decoded.At(4, 4).RGBA()
-	if r>>8 < 180 || g>>8 > 70 {
-		t.Fatalf("transparent red became %d,%d", r>>8, g>>8)
+	if r, g, b, _ := decoded.At(3, 4).RGBA(); r>>8 < 245 || g>>8 < 245 || b>>8 < 245 {
+		t.Fatalf("transparent pixel became %d,%d,%d, want white", r>>8, g>>8, b>>8)
+	}
+	if r, _, _, _ := decoded.At(12, 4).RGBA(); r>>8 < 115 || r>>8 > 140 {
+		t.Fatalf("half-transparent black became %d, want mid grey", r>>8)
 	}
 }
 

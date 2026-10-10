@@ -10,11 +10,18 @@ export default function HistoryImageCard({
   onOpen,
   onMenu,
   tall = false,
+  showLatestVariant = false,
 }: {
   asset: LibAsset;
   onOpen: (displayPath?: string) => void;
   onMenu: (x: number, y: number) => void;
   tall?: boolean;
+  /**
+   * Show the newest compressed/converted variant in place of this image. Only
+   * for lists of originals (the generate page's history); the asset library
+   * lists every variant as its own card, which must show its own file.
+   */
+  showLatestVariant?: boolean;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const [info, setInfo] = useState<ImageFileInfo | null>(null);
@@ -57,8 +64,8 @@ export default function HistoryImageCard({
     };
   }, [asset.asset.path, visible]);
 
-  const displayPath = info ? latestDisplayPath(info) : asset.asset.path;
-  const shown = info?.variants.find((item) => item.path === displayPath) ?? info?.variants[0];
+  const displayPath = info && showLatestVariant ? latestDisplayPath(info) : asset.asset.path;
+  const shown = info?.variants.find((item) => item.path === (showLatestVariant ? displayPath : info.path)) ?? info?.variants[0];
   const variants = info?.variants.filter((item) => item.level !== "original") ?? [];
 
   return (
@@ -94,7 +101,7 @@ export default function HistoryImageCard({
           <div className="truncate text-slate-400">{info.directory}</div>
           <div>{shown?.kb ?? info.kb} KB{info.width && info.height ? ` · ${info.width}×${info.height}` : ""}</div>
           <div className="truncate text-slate-400">{generationParamsSummary({ ...(asset.params ?? {}), model: asset.model })}</div>
-          <div className="mt-1 text-slate-500">同目录产物 {info.variants.length} 个，展示最新</div>
+          <div className="mt-1 text-slate-500">同目录产物 {info.variants.length} 个{showLatestVariant ? "，展示最新" : ""}</div>
           {variants.slice(0, 3).map((item) => (
             <div key={item.path} className="truncate text-slate-500">{item.fileName} · {item.kb} KB</div>
           ))}

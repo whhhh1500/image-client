@@ -68,4 +68,23 @@ describe("HistoryImageCard", () => {
     expect(inspect).toHaveBeenCalledTimes(1);
     expect(disconnect).toHaveBeenCalled();
   });
+  it("shows its own file in the asset library and the newest variant only where asked", async () => {
+    const variants = [
+      { path: "C:/a-webp-20261011000000000.webp", fileName: "a-webp-20261011000000000.webp", level: "webp", bytes: 2048, kb: 2, modifiedAt: 2 },
+      { path: "C:/a.png", fileName: "a.png", level: "original", bytes: 4096, kb: 4, modifiedAt: 1 },
+    ];
+    inspect.mockResolvedValue({ path: "C:/a.png", directory: "C:/", fileName: "a.png", bytes: 4096, kb: 4, displayPath: variants[0].path, variants });
+
+    const library = render(<HistoryImageCard asset={asset} onOpen={vi.fn()} onMenu={vi.fn()} />);
+    await act(async () => {});
+    expect(screen.getByAltText("历史图").getAttribute("src")).toBe("C:/a.png");
+    library.unmount();
+
+    const onOpen = vi.fn();
+    render(<HistoryImageCard asset={asset} onOpen={onOpen} onMenu={vi.fn()} showLatestVariant />);
+    await act(async () => {});
+    expect(screen.getByAltText("历史图").getAttribute("src")).toBe(variants[0].path);
+    screen.getByRole("button").click();
+    expect(onOpen).toHaveBeenCalledWith(variants[0].path);
+  });
 });

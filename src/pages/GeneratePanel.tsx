@@ -640,6 +640,7 @@ export default function GeneratePanel({ llmModel, defaultImageModel }: {
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                 {previewBatch.map((item) => (
                   <HistoryImageCard
+                    showLatestVariant
                     key={item.asset.id}
                     asset={item}
                     onOpen={() => setPreviewAsset(item)}
@@ -651,6 +652,7 @@ export default function GeneratePanel({ llmModel, defaultImageModel }: {
               <div className="flex min-h-[320px] items-center justify-center rounded-xl border border-dashed border-slate-700 bg-slate-800/30">
                 {previewSingle ? (
                   <HistoryImageCard
+                    showLatestVariant
                     asset={previewSingle}
                     tall
                     onOpen={() => setPreviewAsset(previewSingle)}
@@ -674,6 +676,7 @@ export default function GeneratePanel({ llmModel, defaultImageModel }: {
               <div className="grid grid-cols-3 gap-3 sm:grid-cols-4 lg:grid-cols-6">
                 {originals.map((a) => (
                   <HistoryImageCard
+                    showLatestVariant
                     key={a.asset.id}
                     asset={a}
                     onOpen={() => setPreviewAsset(a)}

@@ -72,14 +72,14 @@ describe("GeneratePanel single-asset reference actions", () => {
     render(<GeneratePanel />);
 
     fireEvent.contextMenu(screen.getByAltText("历史图 added"));
-    fireEvent.click(screen.getByRole("button", { name: "添加为参考图" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "添加为参考图" }));
 
     expect(referencePaths()).toEqual(["C:/existing.png", "C:/added.png"]);
     expect(useGenerationStore.getState().referencePath).toBe("C:/existing.png");
     expect(useGenerationStore.getState().importedSources).toEqual([expect.objectContaining({ action: "reference", assetIds: ["added"] })]);
 
     fireEvent.contextMenu(screen.getByAltText("历史图 added"));
-    fireEvent.click(screen.getByRole("button", { name: "添加为参考图" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "添加为参考图" }));
 
     expect(referencePaths()).toEqual(["C:/existing.png", "C:/added.png"]);
     expect(useGenerationStore.getState().importedSources).toHaveLength(1);
