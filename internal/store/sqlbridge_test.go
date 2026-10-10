@@ -62,19 +62,24 @@ func TestFrontendInsertSetsLastInsertID(t *testing.T) {
 	}
 }
 
-func TestFrontendDeleteFromAssetsWithForeignKeyChildren(t *testing.T) {
+// Deleting assets with SQL needs reads of the tables that reference them for
+// the foreign-key check; those tables are not the frontend's, so the
+// authorizer refuses. The frontend never deletes assets with SQL, and the row
+// must survive the refused statement.
+func TestFrontendDeleteFromAssetsIsRefused(t *testing.T) {
 	db, _ := openTestDB(t)
-	t.Skip("Kept as in the Tauri build: the authorizer denies the foreign-key reads a DELETE on assets needs, and the frontend never deletes assets with SQL")
-	// Expected: an unreferenced asset row is deleted and reported as one row affected.
 	ctx := context.Background()
 	if _, err := db.FrontendExec(ctx,
 		"INSERT INTO assets (id, kind, path, created_at) VALUES (?, ?, ?, ?)",
 		binds(`"a-1"`, `"image"`, `"/tmp/a.png"`, `1700000000000`)); err != nil {
 		t.Fatal(err)
 	}
-	del, err := db.FrontendExec(ctx, "DELETE FROM assets WHERE id = ?", binds(`"a-1"`))
-	if err != nil || del.RowsAffected != 1 {
-		t.Fatalf("delete = %+v, %v; want 1 row affected", del, err)
+	if _, err := db.FrontendExec(ctx, "DELETE FROM assets WHERE id = ?", binds(`"a-1"`)); err == nil {
+		t.Fatal("delete from assets succeeded; want the authorizer to refuse it")
+	}
+	rows, err := db.FrontendSelect(ctx, "SELECT id FROM assets WHERE id = ?", binds(`"a-1"`))
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows = %v, %v; want the asset kept", rows, err)
 	}
 }
 

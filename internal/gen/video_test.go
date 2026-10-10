@@ -412,7 +412,9 @@ func TestVideoFailuresSurfaceTheProviderReason(t *testing.T) {
 		content postResponse
 		want    string
 	}{
-		{postResponse{500, "x"}, nil, postResponse{}, "创建视频任务返回 500 Internal Server Error"},
+		{postResponse{500, "x"}, nil, postResponse{}, "创建视频任务返回 500 Internal Server Error: x"},
+		{postResponse{502, `{"error":{"message":"上游渠道不可用","type":"upstream_error"}}`}, nil, postResponse{}, "创建视频任务返回 502 Bad Gateway: 上游渠道不可用"},
+		{postResponse{502, ""}, nil, postResponse{}, "创建视频任务返回 502 Bad Gateway"},
 		{postResponse{200, "nope"}, nil, postResponse{}, "解析创建响应失败"},
 		{postResponse{200, `{"id":7}`}, nil, postResponse{}, "创建响应缺少任务 id"},
 		{postResponse{200, `{"id":"a/b"}`}, nil, postResponse{}, "创建响应中的任务 id 格式无效"},

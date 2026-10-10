@@ -356,5 +356,3 @@ func (e *testEnv) wantNothingRecorded() {
 		e.t.Fatalf("events = %+v, want none", events)
 	}
 }
-
-func ptr[T any](v T) *T { return &v }

@@ -168,7 +168,7 @@ func (s *Service) Chat(ctx context.Context, r ChatRequest) (Completion, error) {
 			return c.nonStream(ctx, body)
 		}
 		c.fail(status, text)
-		return Completion{}, fmt.Errorf("文本接口返回 %s: %s", statusLine(status), truncateRunes(text, 400))
+		return Completion{}, fmt.Errorf("文本接口返回 %s: %s", statusLine(status), providerErrorText(text))
 	}
 	defer resp.Body.Close()
 
@@ -224,7 +224,7 @@ func (c *chatCall) nonStream(ctx context.Context, body map[string]any) (Completi
 	if !isSuccess(resp) {
 		text := readErrorText(resp)
 		c.fail(resp.StatusCode, text)
-		return Completion{}, fmt.Errorf("文本接口返回 %s: %s", statusLine(resp.StatusCode), truncateRunes(text, 400))
+		return Completion{}, fmt.Errorf("文本接口返回 %s: %s", statusLine(resp.StatusCode), providerErrorText(text))
 	}
 	raw, err := readBody(resp, maxLLMResponseBytes, "文本接口响应", nil)
 	if err != nil {

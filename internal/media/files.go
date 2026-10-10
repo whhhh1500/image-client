@@ -5,18 +5,13 @@ package media
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"image"
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
-	"io"
 	"os"
 	"path/filepath"
-	"sync"
-	"time"
 
 	"github.com/google/uuid"
 	_ "golang.org/x/image/bmp"
@@ -52,7 +47,7 @@ const (
 
 // DecodeImage decodes b after checking its declared size.
 func DecodeImage(b []byte) (image.Image, string, error) {
-	cfg, format, err := image.DecodeConfig(bytes.NewReader(b))
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(b))
 	if err != nil {
 		return nil, "", fmt.Errorf("识别图片格式失败: %w", err)
 	}
@@ -96,44 +91,4 @@ func SaveBytes(dir, kind string, data []byte, format string) (store.AssetRef, er
 		return store.AssetRef{}, fmt.Errorf("写入资产失败: %w", err)
 	}
 	return store.AssetRef{ID: id, Kind: kind, Path: path, Format: format}, nil
-}
-
-type hashEntry struct {
-	modTime time.Time
-	size    int64
-	digest  string
-}
-
-var (
-	hashMu    sync.Mutex
-	hashCache = map[string]hashEntry{}
-)
-
-// FileSHA256 returns the lowercase hex SHA-256 of a regular file no larger
-// than maxBytes, cached while its size and modification time are unchanged.
-func FileSHA256(path string, maxBytes int64) (string, bool) {
-	info, err := os.Stat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > maxBytes {
-		return "", false
-	}
-	hashMu.Lock()
-	cached, ok := hashCache[path]
-	hashMu.Unlock()
-	if ok && cached.size == info.Size() && cached.modTime.Equal(info.ModTime()) {
-		return cached.digest, true
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return "", false
-	}
-	defer file.Close()
-	sum := sha256.New()
-	if n, err := io.Copy(sum, io.LimitReader(file, maxBytes+1)); err != nil || n > maxBytes {
-		return "", false
-	}
-	digest := hex.EncodeToString(sum.Sum(nil))
-	hashMu.Lock()
-	hashCache[path] = hashEntry{info.ModTime(), info.Size(), digest}
-	hashMu.Unlock()
-	return digest, true
 }

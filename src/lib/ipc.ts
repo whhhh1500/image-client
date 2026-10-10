@@ -69,9 +69,6 @@ export const configStatus = (): Promise<ConfigStatus> =>
 export const saveConfig = (config: SaveConfigRequest): Promise<ConfigStatus> =>
   loggedInvoke<ConfigStatus>("save_config", { config });
 
-export const listImageModels = (): Promise<string[]> =>
-  loggedInvoke<string[]>("list_image_models");
-
 export const listVideoModels = (): Promise<string[]> =>
   loggedInvoke<string[]>("list_video_models");
 
@@ -124,18 +121,12 @@ export const listVideoModelCapabilities = (): Promise<VideoModelCapability[]> =>
 export const listProviders = (): Promise<ProviderInfo[]> =>
   loggedInvoke<ProviderInfo[]>("list_providers");
 
-export const setActiveProvider = (id: string): Promise<ProviderInfo[]> =>
-  loggedInvoke<ProviderInfo[]>("set_active_provider", { id });
-
 /** With `progressId`, the backend reports each step as an `image://progress` event. */
 export const runNode = (req: RunNodeRequest, progressId?: string): Promise<RunResult> =>
   loggedInvoke<RunResult>("run_node", progressId ? { req, progressId } : { req });
 
 export const runVideo = (req: RunNodeRequest): Promise<RunResult> =>
   loggedInvoke<RunResult>("run_video", { req });
-
-export const importRefImage = (src: string): Promise<string> =>
-  loggedInvoke<string>("import_ref_image", { src });
 
 export type ExternalAssetImportEntry =
   | "image_reference"
@@ -213,22 +204,6 @@ export const assetPublishMedia = (input: { projectId: string; expectedEndpoint: 
 export const llmChat = (system: string, user: string, model?: string): Promise<string> =>
   loggedInvoke<string>("llm_chat", { system, user, model });
 
-export interface AgentToolDef {
-  name: string;
-  description: string;
-  system: string;
-}
-
-export const agentRun = (
-  system: string,
-  user: string,
-  model: string | undefined,
-  tools: AgentToolDef[],
-): Promise<string> => loggedInvoke<string>("agent_run", { system, user, model, tools });
-
-export const saveText = (label: string, text: string, model?: string): Promise<AssetRef> =>
-  loggedInvoke<AssetRef>("save_text", { label, text, model });
-
 /** Persist a produced batch of assets in a single transaction. */
 export const persistAssetsBatch = (
   assets: AssetRef[],
@@ -304,15 +279,6 @@ export type ConvertFormat = "jpg" | "png" | "webp" | "bmp" | "gif";
 
 export const convertImageFile = (path: string, format: ConvertFormat): Promise<AssetRef> =>
   loggedInvoke<AssetRef>("convert_image_file", { path, format });
-
-export interface CleanupResult {
-  removed: number;
-  skipped: number;
-  failed: number;
-}
-
-export const cleanupVideoSegments = (paths: string[]): Promise<CleanupResult> =>
-  loggedInvoke<CleanupResult>("cleanup_video_segments", { paths });
 
 export const logsDir = (): Promise<string> => loggedInvoke<string>("logs_dir");
 

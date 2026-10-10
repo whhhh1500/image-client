@@ -551,6 +551,9 @@ func (t *videoTask) create(ctx context.Context, req VideoRequest) error {
 	slog.Info("video.task.create_response", "requestId", t.requestID, "segmentIndex", segmentIndex,
 		"status", resp.StatusCode, "durationMs", time.Since(started).Milliseconds())
 	if !isSuccess(resp) {
+		if reason := providerErrorText(string(text)); reason != "" {
+			return fmt.Errorf("创建视频任务返回 %s: %s", statusLine(resp.StatusCode), reason)
+		}
 		return fmt.Errorf("创建视频任务返回 %s", statusLine(resp.StatusCode))
 	}
 	created, err := decodeJSON(text)

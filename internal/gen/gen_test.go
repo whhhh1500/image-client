@@ -306,3 +306,21 @@ func TestRunNodeChecksTheConnectionBeforeTheConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestProviderErrorTextShowsTheGatewayReason(t *testing.T) {
+	cases := []struct{ body, want string }{
+		{`{"error":{"message":"模型请求失败，请稍后重试或更换模型。","type":"upstream_error","code":null}}`, "模型请求失败，请稍后重试或更换模型。"},
+		{`{"error":{"code":"","message":"无权访问 补贴分组-Gemini 分组","type":"new_api_error"}}`, "无权访问 补贴分组-Gemini 分组"},
+		{`{"error":"quota exhausted"}`, "quota exhausted"},
+		{`{"message":"  rate limited  "}`, "rate limited"},
+		{`{"error":{"code":"x"}}`, `{"error":{"code":"x"}}`}, // no reason: the body as it is
+		{"<html>Bad Gateway</html>", "<html>Bad Gateway</html>"},
+		{"", ""},
+		{strings.Repeat("错", 500), strings.Repeat("错", 400)},
+	}
+	for _, c := range cases {
+		if got := providerErrorText(c.body); got != c.want {
+			t.Errorf("providerErrorText(%q) = %q, want %q", c.body, got, c.want)
+		}
+	}
+}

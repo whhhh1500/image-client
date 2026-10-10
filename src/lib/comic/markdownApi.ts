@@ -21,7 +21,6 @@ export interface MdHistory { revision: number; markdown: string; optimizationIns
 const call = <T>(command: string, input: unknown) => loggedInvoke<T>(command, { input });
 export const comicMdWorkspaceGet = (input: MdScope) => call<MdWorkspace>("comic_md_workspace_get", input);
 export const comicMdCatalogList = (input: { projectId: string }) => call<ComicCatalogEntry[]>("comic_md_catalog_list", input);
-export const comicMdWorkVisualGet = (input: Pick<MdScope, "projectId" | "novelWorkId">) => call<MdWorkVisualProfile>("comic_md_work_visual_get", input);
 export const comicMdWorkVisualSave = (input: Pick<MdScope, "projectId" | "novelWorkId"> & { constitutionMarkdown: string; references: { assetId: string; role: string; weight: number; sortOrder: number; note?: string }[]; expectedRevision: number }) => call<MdWorkVisualProfile>("comic_md_work_visual_save", input);
 export const comicMdWorkVisualExtract = (input: Pick<MdScope, "projectId" | "novelWorkId"> & { expectedRevision: number; instruction?: string }) => call<{ constitutionMarkdown: string; profileRevision: number; referenceAssetIds: string[] }>("comic_md_work_visual_extract", input);
 export const comicMdWorkVisualImport = (input: Pick<MdScope, "projectId" | "novelWorkId"> & { paths: string[] }) => call<{ id: string; kind: "image"; path: string; format?: string }[]>("comic_md_work_visual_import", input);

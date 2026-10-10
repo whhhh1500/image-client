@@ -49,7 +49,9 @@ func Open(path string) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("打开 SQLite 失败: %w", err)
 	}
-	if err := prepareConn(conn); err == nil {
+	// Each step runs only if the previous one succeeded; the first error wins.
+	err = prepareConn(conn)
+	if err == nil {
 		err = sqlitex.ExecuteTransient(conn, "PRAGMA journal_mode = WAL", nil)
 	}
 	if err == nil {

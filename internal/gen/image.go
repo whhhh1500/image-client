@@ -573,7 +573,7 @@ func (j *imageJob) finish(assets []store.AssetRef, err error) ([]store.AssetRef,
 func (j *imageJob) collect(ctx context.Context, resp *http.Response) ([]store.AssetRef, error) {
 	if !isSuccess(resp) {
 		text := readErrorText(resp)
-		return nil, fmt.Errorf("图像接口返回 %s: %s", statusLine(resp.StatusCode), truncateRunes(text, 400))
+		return nil, fmt.Errorf("图像接口返回 %s: %s", statusLine(resp.StatusCode), providerErrorText(text))
 	}
 	onBytes := j.progress.transfer(ImageProgress{Stage: "receiving", Message: "模型已返回，正在接收结果", TotalBytes: contentLength(resp)})
 	raw, err := readBody(resp, int64(maxImageResponseBytes)*int64(j.count), "图像接口响应", onBytes)

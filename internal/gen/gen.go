@@ -377,6 +377,33 @@ func readErrorText(resp *http.Response) string {
 	return strings.ToValidUTF8(string(body), "\uFFFD")
 }
 
+// providerErrorText is what users see of an error response. OpenAI-compatible
+// gateways wrap the reason in JSON ({"error":{"message":…}}, {"error":"…"} or
+// {"message":…}); showing just that reads far better than the raw body,
+// which the request logs keep in full. Other bodies are shown as they are.
+func providerErrorText(text string) string {
+	var body struct {
+		Error   json.RawMessage `json:"error"`
+		Message string          `json:"message"`
+	}
+	if json.Unmarshal([]byte(text), &body) == nil {
+		var nested struct {
+			Message string `json:"message"`
+		}
+		var plain string
+		for _, candidate := range []string{
+			func() string { json.Unmarshal(body.Error, &nested); return nested.Message }(),
+			func() string { json.Unmarshal(body.Error, &plain); return plain }(),
+			body.Message,
+		} {
+			if candidate = strings.TrimSpace(candidate); candidate != "" {
+				return truncateRunes(candidate, 400)
+			}
+		}
+	}
+	return truncateRunes(text, 400)
+}
+
 // drain discards the rest of a body so the connection can be reused.
 func drain(resp *http.Response) {
 	io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
