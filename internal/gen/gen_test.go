@@ -71,8 +71,10 @@ func newTestService(t *testing.T, mutate func(*config.Settings)) *testEnv {
 	s.catalogTimeout = 5 * time.Second
 	s.videoTiming = videoTiming{
 		firstPoll: time.Millisecond, pollInterval: 5 * time.Millisecond, pollDeadline: 5 * time.Second,
-		backoffUnit: 5 * time.Millisecond, create: 5 * time.Second, poll: 5 * time.Second, download: 5 * time.Second,
+		backoffUnit: 5 * time.Millisecond, create: 5 * time.Second, poll: 5 * time.Second,
 	}
+	s.videoDownload = fastDownloadPolicy
+	s.videoDownload.Limit, s.videoDownload.Label = maxVideoBytes, "视频"
 	if err := os.MkdirAll(output, 0o755); err != nil {
 		t.Fatal(err)
 	}

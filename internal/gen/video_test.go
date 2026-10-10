@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"image/color"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -423,8 +425,8 @@ func TestVideoFailuresSurfaceTheProviderReason(t *testing.T) {
 			"视频任务失败（failed）: bad [已隐藏本地图片数据]"},
 		{postResponse{200, `{"id":"t"}`}, []postResponse{{200, `{"status":"expired"}`}}, postResponse{}, "视频任务失败（expired）: 服务端未返回失败原因"},
 		{postResponse{200, `{"id":"t"}`}, []postResponse{{200, `{"status":"succeeded"}`}}, postResponse{200, "not a video"}, "视频接口返回的内容不是有效 MP4"},
-		{postResponse{200, `{"id":"t"}`}, []postResponse{{200, `{"status":"success"}`}}, postResponse{403, ""}, "下载视频返回 403 Forbidden（task_id=t）"},
-		{postResponse{200, `{"id":"t"}`}, []postResponse{{200, `{"status":"success"}`}}, postResponse{502, ""}, "下载视频返回 502 Bad Gateway（task_id=t）"},
+		{postResponse{200, `{"id":"t"}`}, []postResponse{{200, `{"status":"success"}`}}, postResponse{403, ""}, "下载视频失败: 403 Forbidden（task_id=t）"},
+		{postResponse{200, `{"id":"t"}`}, []postResponse{{200, `{"status":"success"}`}}, postResponse{502, ""}, "下载视频失败（已尝试 4 次）: 502 Bad Gateway（task_id=t）"},
 	}
 	for _, c := range cases {
 		gw := startVideoGateway(t, c.create, c.polls, c.content)
@@ -433,6 +435,53 @@ func TestVideoFailuresSurfaceTheProviderReason(t *testing.T) {
 		if err == nil || err.Error() != c.want {
 			t.Errorf("err = %v, want %s", err, c.want)
 		}
+	}
+}
+
+func TestVideoDownloadResumesAfterADroppedConnection(t *testing.T) {
+	video := mp4Bytes() + strings.Repeat("v", 64<<10)
+	var mu sync.Mutex
+	var ranges, auth []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost:
+			io.WriteString(w, `{"id":"t"}`)
+		case !strings.HasSuffix(r.URL.Path, "/content"):
+			io.WriteString(w, `{"status":"completed"}`)
+		default:
+			mu.Lock()
+			ranges, auth = append(ranges, r.Header.Get("Range")), append(auth, r.Header.Get("Authorization"))
+			first := len(ranges) == 1
+			mu.Unlock()
+			if first {
+				// Promise the whole video, send half, then drop the connection.
+				w.Header().Set("Content-Length", strconv.Itoa(len(video)))
+				io.WriteString(w, video[:len(video)/2])
+				w.(http.Flusher).Flush()
+				conn, _, _ := w.(http.Hijacker).Hijack()
+				conn.Close()
+				return
+			}
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", len(video)/2, len(video)-1, len(video)))
+			w.WriteHeader(http.StatusPartialContent)
+			io.WriteString(w, video[len(video)/2:])
+		}
+	}))
+	t.Cleanup(server.Close)
+	env := newTestService(t, func(s *config.Settings) { s.VideoAPIURL, s.VideoAPIKey = server.URL, "k" })
+
+	assets, err := env.s.GenerateVideo(context.Background(), VideoRequest{Model: "kling-video-v3", Prompt: "p", DurationS: 5}, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := os.ReadFile(assets[0].Path); string(data) != video {
+		t.Fatalf("video has %d bytes, want %d", len(data), len(video))
+	}
+	if want := []string{"", fmt.Sprintf("bytes=%d-", len(video)/2)}; !reflect.DeepEqual(ranges, want) {
+		t.Fatalf("ranges = %q, want %q", ranges, want)
+	}
+	if !reflect.DeepEqual(auth, []string{"Bearer k", "Bearer k"}) {
+		t.Fatalf("authorization = %q", auth)
 	}
 }
 

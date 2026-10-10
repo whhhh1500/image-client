@@ -19,6 +19,7 @@ type DownloadPolicy struct {
 	RetryDelay time.Duration // doubles after every failed attempt
 	Limit      int64
 	Label      string
+	Header     http.Header // sent with every attempt, e.g. Authorization
 }
 
 // DownloadEvent reports progress. Retry is set when an attempt failed and the
@@ -88,6 +89,9 @@ func downloadAttempt(ctx context.Context, client *http.Client, url string, p Dow
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return fatalError{err}
+	}
+	if p.Header != nil {
+		req.Header = p.Header.Clone()
 	}
 	resuming := len(*body) > 0
 	if resuming {

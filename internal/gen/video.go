@@ -44,7 +44,6 @@ type videoTiming struct {
 	backoffUnit  time.Duration // transient failures wait 1..6 units
 	create       time.Duration
 	poll         time.Duration
-	download     time.Duration
 }
 
 var defaultVideoTiming = videoTiming{
@@ -54,7 +53,16 @@ var defaultVideoTiming = videoTiming{
 	backoffUnit:  5 * time.Second,
 	create:       120 * time.Second,
 	poll:         60 * time.Second,
-	download:     600 * time.Second,
+}
+
+// defaultVideoDownload fetches a finished, already billed video: a stalled or
+// dropped connection resumes from the bytes received instead of losing them.
+var defaultVideoDownload = platform.DownloadPolicy{
+	Attempts:   4,
+	Timeouts:   platform.Timeouts{Header: 60 * time.Second, Idle: 60 * time.Second, Total: 20 * time.Minute},
+	RetryDelay: 5 * time.Second,
+	Limit:      maxVideoBytes,
+	Label:      "视频",
 }
 
 // VideoModelCapability is what the client knows a video model accepts.
@@ -687,52 +695,21 @@ func (t *videoTask) wait(ctx context.Context) error {
 	}
 }
 
-// download fetches the finished video from /content, retrying transient
-// failures twice.
+// download fetches the finished video from /content.
 func (t *videoTask) download(ctx context.Context) ([]byte, error) {
-	timing := t.s.videoTiming
-	target := taskURL(t.endpoint, t.id, "/content")
+	policy := t.s.videoDownload
+	policy.Header = http.Header{"Authorization": {"Bearer " + t.key}}
 	started := time.Now()
-	const attempts = 3
-	for attempt := 1; attempt <= attempts; attempt++ {
-		resp, err := t.send(ctx, http.MethodGet, target, nil, timing.download)
-		if err != nil {
-			if attempt < attempts && ctx.Err() == nil {
-				steps := backoffSteps(attempt)
-				slog.Warn("video.download.retry", "requestId", t.requestID, "segmentIndex", segmentIndex, "taskId", t.id,
-					"attempt", attempt, "reason", "network", "retryInS", steps*5, "error", platform.ErrorText(err))
-				if err := sleep(ctx, time.Duration(steps)*timing.backoffUnit); err != nil {
-					return nil, err
-				}
-				continue
-			}
-			return nil, fmt.Errorf("下载视频失败（task_id=%s）: %v", t.id, err)
-		}
-		if !isSuccess(resp) {
-			drain(resp)
-			if attempt < attempts && isTransientStatus(resp.StatusCode) {
-				steps := backoffSteps(attempt)
-				slog.Warn("video.download.retry", "requestId", t.requestID, "segmentIndex", segmentIndex, "taskId", t.id,
-					"attempt", attempt, "reason", "http", "httpStatus", resp.StatusCode, "retryInS", steps*5)
-				if err := sleep(ctx, time.Duration(steps)*timing.backoffUnit); err != nil {
-					return nil, err
-				}
-				continue
-			}
-			return nil, fmt.Errorf("下载视频返回 %s（task_id=%s）", statusLine(resp.StatusCode), t.id)
-		}
-		data, err := readBody(resp, maxVideoBytes, "视频内容", nil)
-		if err != nil {
-			return nil, err
-		}
-		if !media.ValidVideo(data, "mp4") {
-			return nil, errors.New("视频接口返回的内容不是有效 MP4")
-		}
-		slog.Info("video.download", "requestId", t.requestID, "segmentIndex", segmentIndex, "taskId", t.id,
-			"attempt", attempt, "durationMs", time.Since(started).Milliseconds(), "bytes", len(data))
-		return data, nil
+	data, err := platform.Download(ctx, t.s.clientFor(t.endpoint), taskURL(t.endpoint, t.id, "/content"), policy, nil)
+	if err != nil {
+		return nil, fmt.Errorf("%w（task_id=%s）", err, t.id)
 	}
-	return nil, fmt.Errorf("下载视频失败：重试次数耗尽（task_id=%s）", t.id)
+	if !media.ValidVideo(data, "mp4") {
+		return nil, errors.New("视频接口返回的内容不是有效 MP4")
+	}
+	slog.Info("video.download", "requestId", t.requestID, "segmentIndex", segmentIndex, "taskId", t.id,
+		"durationMs", time.Since(started).Milliseconds(), "bytes", len(data))
+	return data, nil
 }
 
 func isTransientStatus(status int) bool {

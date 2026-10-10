@@ -60,6 +60,7 @@ type Service struct {
 	llmTimeouts    platform.Timeouts
 	catalogTimeout time.Duration
 	videoTiming    videoTiming
+	videoDownload  platform.DownloadPolicy
 }
 
 // New builds the service.
@@ -81,6 +82,7 @@ func New(d Deps) *Service {
 		llmTimeouts:    defaultLLMTimeouts,
 		catalogTimeout: 20 * time.Second,
 		videoTiming:    defaultVideoTiming,
+		videoDownload:  defaultVideoDownload,
 	}
 }
 
