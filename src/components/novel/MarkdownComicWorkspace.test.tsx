@@ -7,8 +7,7 @@ const api = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), workspace: vi.fn(),
 const manager = vi.hoisted(() => ({ props: null as unknown }));
 vi.mock("../../store/useProjectStore", () => ({ useProjectStore: (selector: (state: { activeId: string }) => unknown) => selector({ activeId: "p" }) }));
 vi.mock("../../lib/novel/api", () => ({ novelWorkList: api.list, novelWorkGet: api.get }));
-vi.mock("@tauri-apps/api/core", () => ({ convertFileSrc: (path: string) => path }));
-vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: vi.fn(), revealItemInDir: vi.fn() }));
+vi.mock("../../lib/desktop", () => ({ fileSrc: (path: string) => path, openPath: vi.fn(), revealItemInDir: vi.fn() }));
 vi.mock("../../lib/comic/markdownApi", async (original) => ({ ...await original<typeof import("../../lib/comic/markdownApi")>(), comicMdWorkspaceGet: api.workspace, comicMdDocumentSave: api.save, comicMdGenerate: api.generate, comicMdRender: api.render, comicMdDocumentHistory: api.history, comicMdExport: api.export, comicMdOptimize: api.optimize, comicMdRenderOptionsSave: api.options, comicMdSync: api.sync, comicMdWorkVisualSave: api.visualSave, comicMdWorkVisualExtract: api.visualExtract }));
 vi.mock("./NovelAssetManager", () => ({ default: (props: { open: boolean; mode: string }) => { manager.props = props; return props.open ? <div role="dialog" aria-label="共享小说原文管理器">{props.mode}</div> : null; } }));
 import MarkdownComicWorkspace from "./MarkdownComicWorkspace";

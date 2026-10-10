@@ -5,14 +5,16 @@ import process from "node:process";
 
 const root = resolve(import.meta.dirname, "..");
 
-// Keep every child-process scratch file on the same drive as the repository.
-// cargo, rustc, link.exe and vite all honour TEMP/TMP, and a full release
-// build otherwise leaves gigabytes behind in the system temp directory.
+// Keep child-process scratch on the repository's drive. Go and the linker
+// honour TEMP/TMP/GOTMPDIR; the Go build cache follows unless the developer
+// already chose a location.
 const scratchRoot = resolve(root, ".test-tmp");
 mkdirSync(scratchRoot, { recursive: true });
 process.env.TEMP = scratchRoot;
 process.env.TMP = scratchRoot;
 process.env.TMPDIR = scratchRoot;
+process.env.GOTMPDIR = scratchRoot;
+process.env.GOCACHE ??= resolve(scratchRoot, "go-build");
 
 const args = new Set(process.argv.slice(2));
 const tagIndex = process.argv.indexOf("--tag");
@@ -20,12 +22,6 @@ const releaseTag = tagIndex >= 0 ? process.argv[tagIndex + 1] : undefined;
 
 function readJson(path) {
   return JSON.parse(readFileSync(resolve(root, path), "utf8"));
-}
-
-function cargoVersion() {
-  const cargo = readFileSync(resolve(root, "src-tauri/Cargo.toml"), "utf8");
-  const packageBlock = cargo.match(/\[package\]([\s\S]*?)(?:\n\[|$)/)?.[1] ?? "";
-  return packageBlock.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
 }
 
 function checkIcon(path) {
@@ -54,41 +50,37 @@ function runPnpm(commandArgs) {
   run("pnpm", commandArgs);
 }
 
+// package.json is the frontend version, wails.json the one embedded in the
+// executable; a release must not disagree with itself.
 const packageJson = readJson("package.json");
-const tauriConfig = readJson("src-tauri/tauri.conf.json");
-const versions = [packageJson.version, cargoVersion(), tauriConfig.version];
+const wailsJson = readJson("wails.json");
+const versions = [packageJson.version, wailsJson.info?.productVersion];
 if (versions.some((version) => version !== versions[0])) {
-  throw new Error(`版本号不一致：package=${versions[0]} cargo=${versions[1]} tauri=${versions[2]}`);
+  throw new Error(`版本号不一致：package=${versions[0]} wails=${versions[1]}`);
 }
 if (releaseTag && releaseTag !== `v${versions[0]}`) {
   throw new Error(`标签 ${releaseTag} 与应用版本 v${versions[0]} 不一致`);
 }
 
-checkIcon("src-tauri/icons/app-icon-source.png");
-for (const icon of tauriConfig.bundle.icon) {
-  if (!existsSync(resolve(root, "src-tauri", icon))) throw new Error(`缺少打包图标：src-tauri/${icon}`);
-}
+checkIcon("build/appicon.png");
+if (!existsSync(resolve(root, "build/windows/icon.ico"))) throw new Error("缺少打包图标：build/windows/icon.ico");
 
 console.log(`发布检查通过：Image-Client v${versions[0]}`);
 if (args.has("--check-only")) process.exit(0);
 
 runPnpm(["test"]);
-run("cargo", ["test", "--locked", "--manifest-path", "src-tauri/Cargo.toml"]);
+run("go", ["test", "./internal/..."]);
 
 const localPlatform = process.platform === "win32" && process.arch === "x64"
   ? "windows-x64"
   : process.platform === "darwin" && process.arch === "arm64"
     ? "macos-arm64"
-    : process.platform === "linux" && process.arch === "x64"
-      ? "linux-x64"
-      : undefined;
+    : undefined;
 if (!localPlatform) {
-  throw new Error("release:build 仅支持 Windows x64、macOS Apple Silicon 或 Linux x64；其他架构当前不作为发布目标");
+  throw new Error("release:build 仅支持 Windows x64 或 macOS Apple Silicon；其他平台当前不作为发布目标");
 }
-const bundleArgs = localPlatform === "windows-x64"
-  ? ["build", "--ci", "--no-bundle"]
-  : localPlatform === "macos-arm64"
-    ? ["build", "--ci", "--bundles", "app"]
-    : ["build", "--ci", "--bundles", "appimage"];
-runPnpm(["tauri", ...bundleArgs]);
+const wailsPlatform = localPlatform === "windows-x64" ? "windows/amd64" : "darwin/arm64";
+// The frontend is built by wails via `frontend:build`; bindings are not used
+// (the frontend calls one generic bridge method).
+run("wails", ["build", "-clean", "-skipbindings", "-platform", wailsPlatform]);
 run(process.execPath, ["scripts/package-release.mjs", "--platform", localPlatform]);

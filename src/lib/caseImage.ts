@@ -1,4 +1,4 @@
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { fileSrc } from "./desktop";
 import { cachePromptlibImage, listCachedPromptlibImages } from "./ipc";
 import { logEvent } from "./logger";
 import { caseImageUrl, type PromptlibEntry } from "./promptlib";
@@ -78,7 +78,7 @@ export async function cachedCaseImagePath(image: string): Promise<string> {
 
 export async function cachedCaseImageSrc(image: string): Promise<string> {
   try {
-    return convertFileSrc(await cachedCaseImagePath(image));
+    return fileSrc(await cachedCaseImagePath(image));
   } catch (error) {
     logEvent("warn", "promptlib.case_image_cache_failed", { image, error: String(error) });
     return caseImageUrl(image);

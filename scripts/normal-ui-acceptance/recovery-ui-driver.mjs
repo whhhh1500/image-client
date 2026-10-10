@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Provider-free recovery export acceptance. It only drives visible UI and
 // verifies the Rust-owned default export receipt; it never opens a native
-// folder chooser, invokes Tauri commands directly, or changes a candidate.
+// folder chooser, invokes Wails commands directly, or changes a candidate.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -40,7 +40,7 @@ async function target(port) {
   for (let until = Date.now() + 30_000; Date.now() < until; await sleep(200)) {
     try {
       const entries = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-      const page = entries.find((entry) => entry.type === "page" && entry.webSocketDebuggerUrl && /^(tauri:|http:\/\/tauri\.localhost)/.test(entry.url));
+      const page = entries.find((entry) => entry.type === "page" && entry.webSocketDebuggerUrl && /^(wails:|http:\/\/wails\.localhost)/.test(entry.url));
       if (page) return page;
     } catch { /* wait for this isolated application's CDP endpoint */ }
   }

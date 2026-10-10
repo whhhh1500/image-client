@@ -23,13 +23,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  CARGO_INCREMENTAL: "0"
-  # CI-only optimization trade: fat LTO with one codegen unit is the slowest
-  # possible release build (~10 min per platform). Thin LTO parallelises the
-  # same work and is what makes the tag run affordable; delete these two lines
-  # to ship byte-identical-optimization binaries to the local release build.
-  CARGO_PROFILE_RELEASE_LTO: thin
-  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+  WAILS_VERSION: v2.16.0
 
 jobs:
   # Verification and native packaging intentionally start together. Bundles are
@@ -37,6 +31,26 @@ jobs:
   # can never publish a partial GitHub Release.
   verify:
     runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: pnpm install --frozen-lockfile
+      - run: node scripts/build-release.mjs --check-only --tag "${{ github.ref_name }}"
+      - run: pnpm test
+      - run: go test ./internal/...
+
+  build-windows:
+    runs-on: windows-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -47,46 +61,13 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-go@v6
         with:
-          workspaces: src-tauri
-          shared-key: verify-target-linux-x64
-          add-job-id-key: false
-          save-if: false
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
-      - run: pnpm install --frozen-lockfile
-      - run: node scripts/build-release.mjs --check-only --tag "${{ github.ref_name }}"
-      - run: pnpm test
-      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
-
-  build-windows:
-    runs-on: windows-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-          cache: pnpm
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-          shared-key: release-target-windows-x64
-          add-job-id-key: false
-          # Release builds are rare; saving here is what makes the *next* tag
-          # fast (a restored dependency cache is worth several minutes).
-          save-if: true
+          go-version-file: go.mod
+      - run: go install github.com/wailsapp/wails/v2/cmd/wails@${{ env.WAILS_VERSION }}
       - run: pnpm install --frozen-lockfile
       - name: Build portable executable
-        run: pnpm tauri build --ci --no-bundle
+        run: wails build -clean -skipbindings -platform windows/amd64
       - name: Prepare one portable release file
         shell: bash
         run: |
@@ -104,7 +85,7 @@ jobs:
   build-macos:
     if: github.event_name == 'workflow_dispatch' && inputs.macos
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v4
@@ -114,25 +95,22 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-go@v6
         with:
-          targets: aarch64-apple-darwin
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-          shared-key: release-target-macos-arm64
-          add-job-id-key: false
-          save-if: true
+          go-version-file: go.mod
+      - run: go install github.com/wailsapp/wails/v2/cmd/wails@${{ env.WAILS_VERSION }}
       - run: pnpm install --frozen-lockfile
-      - name: Configure unsigned macOS bundle
-        run: echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
       - name: Build native bundle
-        run: pnpm tauri build --ci --target aarch64-apple-darwin --bundles app
+        run: wails build -clean -skipbindings -platform darwin/arm64
+      # Apple Silicon refuses to run unsigned code; an ad-hoc signature lets
+      # the unsigned release open after the usual Gatekeeper prompt.
+      - name: Ad-hoc sign the app bundle
+        run: codesign --force --deep --sign - build/bin/Image-Client.app
       - name: Prepare one portable release file
         shell: bash
         run: |
           version="$(node -p "require('./package.json').version")"
-          node scripts/package-release.mjs --platform macos-arm64 --target aarch64-apple-darwin --version "$version" --output-dir "release-exe/${{ github.ref_name }}"
+          node scripts/package-release.mjs --platform macos-arm64 --version "$version" --output-dir "release-exe/${{ github.ref_name }}"
       - name: Upload native bundle
         uses: actions/upload-artifact@v7
         with:
@@ -181,7 +159,6 @@ jobs:
             case "$(basename "$file")" in
               *_x64_portable.exe) platforms="${platforms}windows-x64," ;;
               *_aarch64.app.tar.gz) platforms="${platforms}macos-arm64," ;;
-              *_amd64.AppImage) platforms="${platforms}linux-x64," ;;
             esac
           done < <(find release-artifacts -type f | sort)
           platforms="${platforms%,}"

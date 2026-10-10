@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./desktop";
 import { initClientLogging, loggedInvoke, redactSensitiveText, summarizeForLog } from "./logger";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("./desktop", () => ({ invoke: vi.fn() }));
 
 afterEach(() => {
   vi.useRealTimers();

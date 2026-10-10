@@ -44,7 +44,7 @@ async function evaluate(expression) {
   if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.exception?.value ?? result.exceptionDetails.text);
   return result.result.value;
 }
-const invoke = (command, args) => evaluate(`window.__TAURI_INTERNALS__.invoke(${JSON.stringify(command)}, ${JSON.stringify(args)})`);
+const invoke = (command, args) => evaluate(`window.go.app.Bridge.Invoke(${JSON.stringify(command)}, ${JSON.stringify(args)})`);
 const check = (name, evidence = true) => { report.checks.push({ name, evidence }); console.log(`PASS ${name}`); };
 async function rejects(command, args, description) {
   let error;
@@ -291,7 +291,7 @@ async function inspectCopyUi(expectedMarkdown) {
   await writeFile(path.join(auditRoot, `markdown-ui-${phase}.png`), Buffer.from(screenshot.data, 'base64'));
 }
 try {
-  await eventually(() => evaluate(`Boolean(window.__TAURI_INTERNALS__?.invoke && document.querySelector('#root')?.children.length)`), 'frontend hydration');
+  await eventually(() => evaluate(`Boolean(window.go?.app?.Bridge?.Invoke && document.querySelector('#root')?.children.length)`), 'frontend hydration');
   await pause(1200);
   if (phase === 'restore') {
     const saved = JSON.parse(await readFile(path.join(auditRoot, 'checkpoint.json'), 'utf8'));

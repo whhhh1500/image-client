@@ -1,6 +1,5 @@
 import { Component, lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { fileSrc, openDialog } from "../lib/desktop";
 import { FileInput, Image as ImageIcon, Library, Loader2, Sparkles, Upload, Wand2, X } from "lucide-react";
 import { useLibraryStore, type LibAsset } from "../store/useLibraryStore";
 import { useProjectStore } from "../store/useProjectStore";
@@ -493,7 +492,7 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
           {activeReferences.length ? (
             <>
             <div className="relative overflow-hidden rounded-lg border border-slate-700 bg-slate-800">
-              <img src={convertFileSrc(activeReferences[0].path)} alt="ref" className="h-40 w-full object-contain" />
+              <img src={fileSrc(activeReferences[0].path)} alt="ref" className="h-40 w-full object-contain" />
               <div className="flex items-center justify-between gap-2 bg-slate-900/80 px-2 py-1.5">
                 <span className="truncate text-[10px] text-slate-400">
                   {activeReferences.length} 项参考资源 · {activeReferences[0].path.split(/[\\/]/).pop()}
@@ -513,7 +512,7 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
             </div>
             <div aria-label="已选参考图" className="mt-2 flex max-h-24 flex-wrap gap-1 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950/40 p-1.5">
               {activeReferences.map((reference, index) => <div key={`${reference.path}:${index}`} className="group relative h-14 w-14 overflow-hidden rounded border border-slate-700 bg-slate-900">
-                <img src={convertFileSrc(reference.path)} alt={`参考图 ${index + 1}`} className="h-full w-full object-cover" />
+                <img src={fileSrc(reference.path)} alt={`参考图 ${index + 1}`} className="h-full w-full object-cover" />
                 <button type="button" aria-label={`移除参考图 ${index + 1}`} onClick={() => removeReferenceAt(index)} className="absolute right-0 top-0 hidden h-5 w-5 items-center justify-center bg-slate-950/85 text-[12px] text-rose-200 group-hover:flex focus:flex">×</button>
                 <span className="absolute bottom-0 left-0 bg-slate-950/75 px-1 text-[9px] text-slate-300">{index + 1}</span>
               </div>)}

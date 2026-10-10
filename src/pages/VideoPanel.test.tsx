@@ -9,8 +9,7 @@ import { productionManifestMismatch, useVideoStore } from "../store/useVideoStor
 import type { VideoModelCapability } from "../lib/ipc";
 import { isPublicHttpsUrl } from "../lib/video/referenceUrl";
 
-vi.mock("@tauri-apps/api/core", () => ({ convertFileSrc: (path: string) => path }));
-vi.mock("@tauri-apps/plugin-opener", () => ({ revealItemInDir: vi.fn() }));
+vi.mock("../lib/desktop", () => ({ fileSrc: (path: string) => path, revealItemInDir: vi.fn() }));
 const videoApi = vi.hoisted(() => ({ concatVideoAssets: vi.fn(), generateVideo: vi.fn().mockResolvedValue([]) }));
 vi.mock("../lib/generateVideo", () => videoApi);
 const mediaHosting = vi.hoisted(() => ({

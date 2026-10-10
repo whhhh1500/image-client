@@ -1,0 +1,21 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "Image-Client",
+  "outputfilename": "image-client",
+  "frontend:dir": ".",
+  "frontend:install": "pnpm install",
+  "frontend:build": "pnpm build",
+  "frontend:dev:watcher": "pnpm dev",
+  "frontend:dev:serverUrl": "http://localhost:1420",
+  "wailsjsdir": "./build/wailsjs",
+  "author": {
+    "name": "whhhh1500"
+  },
+  "info": {
+    "companyName": "Image-Client",
+    "productName": "Image-Client",
+    "productVersion": "0.2.8",
+    "copyright": "Copyright © Image-Client",
+    "comments": "Image-Client desktop"
+  }
+}

@@ -4,7 +4,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import StatusBar, { GITHUB_REPO_URL, ZZONE_INVITE_URL } from "./StatusBar";
 
 const opener = vi.hoisted(() => ({ openPath: vi.fn(), openUrl: vi.fn() }));
-vi.mock("@tauri-apps/plugin-opener", () => opener);
+vi.mock("../lib/desktop", () => opener);
 vi.mock("../lib/ipc", async (importOriginal) => {
   const original = await importOriginal<typeof import("../lib/ipc")>();
   return { ...original, logsDir: vi.fn() };

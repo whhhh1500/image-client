@@ -1,40 +1,38 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { isTauri } from "@tauri-apps/api/core";
-import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
+import { confirmDialog, isDesktop } from "./desktop";
 import { confirmAction } from "./confirm";
 import { logEvent } from "./logger";
 
-vi.mock("@tauri-apps/api/core", () => ({ isTauri: vi.fn() }));
+vi.mock("./desktop", () => ({ isDesktop: vi.fn(), confirmDialog: vi.fn() }));
 vi.mock("./logger", () => ({ logEvent: vi.fn() }));
 
-const invoke = vi.fn();
-beforeEach(() => { vi.mocked(isTauri).mockReturnValue(true); mockIPC(invoke); });
-afterEach(() => { clearMocks(); vi.restoreAllMocks(); vi.resetAllMocks(); });
+beforeEach(() => { vi.mocked(isDesktop).mockReturnValue(true); });
+afterEach(() => { vi.restoreAllMocks(); vi.resetAllMocks(); });
 
 describe("confirmAction", () => {
-  it("uses the message command supported by the installed dialog plugin", async () => {
-    vi.mocked(invoke).mockResolvedValue("确定");
+  it("shows the native confirm dialog with the message", async () => {
+    vi.mocked(confirmDialog).mockResolvedValue(true);
     await expect(confirmAction("继续？")).resolves.toBe(true);
-    expect(invoke).toHaveBeenCalledWith("plugin:dialog|message", expect.objectContaining({ message: "继续？" }));
+    expect(confirmDialog).toHaveBeenCalledWith("继续？", expect.objectContaining({ title: "确认操作", okLabel: "确定", cancelLabel: "取消" }));
   });
 
   it("returns false when the native dialog is cancelled", async () => {
-    vi.mocked(invoke).mockResolvedValue("取消");
+    vi.mocked(confirmDialog).mockResolvedValue(false);
     await expect(confirmAction("继续？")).resolves.toBe(false);
   });
 
   it("blocks the action and records a dialog failure", async () => {
-    vi.mocked(invoke).mockRejectedValue(new Error("not allowed by ACL"));
+    vi.mocked(confirmDialog).mockRejectedValue(new Error("not allowed by ACL"));
     await expect(confirmAction("继续？")).resolves.toBe(false);
     expect(logEvent).toHaveBeenCalledWith("error", "dialog.confirm_failed", expect.any(Object));
   });
 
   it("preserves browser preview confirmation", async () => {
-    vi.mocked(isTauri).mockReturnValue(false);
+    vi.mocked(isDesktop).mockReturnValue(false);
     const browserConfirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     await expect(confirmAction("继续？")).resolves.toBe(false);
     expect(browserConfirm).toHaveBeenCalledWith("继续？");
-    expect(invoke).not.toHaveBeenCalled();
+    expect(confirmDialog).not.toHaveBeenCalled();
   });
 });

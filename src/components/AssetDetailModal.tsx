@@ -1,6 +1,6 @@
 import { confirmAction } from "../lib/confirm";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { fileSrc } from "../lib/desktop";
 import { Copy, FilePenLine, Image as ImageIcon, Loader2, Save, Sparkles, Video, X } from "lucide-react";
 import { llmChat, readTextAsset } from "../lib/ipc";
 import { LLM_MODELS } from "../lib/models";
@@ -44,7 +44,7 @@ function assetPrompt(asset: LibAsset): string {
 
 function sourcePreview(material: SourceMaterialSnapshot) {
   if (!material.path || (material.kind !== "image" && material.kind !== "video")) return null;
-  const src = /^https?:\/\//i.test(material.path) ? material.path : convertFileSrc(material.path);
+  const src = /^https?:\/\//i.test(material.path) ? material.path : fileSrc(material.path);
   return material.kind === "video"
     ? <video src={src} controls className="mt-2 max-h-52 w-full rounded-lg bg-black object-contain" />
     : <img src={src} alt={material.label} className="mt-2 max-h-52 w-full rounded-lg bg-black/20 object-contain" />;
@@ -434,7 +434,7 @@ export default function AssetDetailModal({
               </div>
             ) : selected.asset.kind === "video" ? (
               <div className="space-y-4">
-                <video src={convertFileSrc(selected.asset.path)} controls className="max-h-[68vh] w-full rounded-xl border border-white/5 bg-black object-contain" />
+                <video src={fileSrc(selected.asset.path)} controls className="max-h-[68vh] w-full rounded-xl border border-white/5 bg-black object-contain" />
                 <label><span className="mb-1 block text-[10px] text-slate-500">资源标题（可修改）</span><input value={title} onChange={(event) => { setTitle(event.target.value); setDirty(true); }} className={inputCls} /></label>
                 <div className="grid gap-3 md:grid-cols-[1fr_220px]">
                   <label><span className="mb-1 block text-[10px] text-slate-500">视频提示词（可修改）</span><textarea value={mediaPrompt} onChange={(event) => { setMediaPrompt(event.target.value); setMediaChangeType("manual"); setDirty(true); }} className={`${inputCls} min-h-28 resize-y text-xs`} /></label>
@@ -445,7 +445,7 @@ export default function AssetDetailModal({
               </div>
             ) : (
               <div className="space-y-4">
-                <img src={convertFileSrc(selected.asset.path)} alt={selected.source} className="max-h-[68vh] w-full rounded-xl border border-white/5 bg-black/20 object-contain" />
+                <img src={fileSrc(selected.asset.path)} alt={selected.source} className="max-h-[68vh] w-full rounded-xl border border-white/5 bg-black/20 object-contain" />
                 <label><span className="mb-1 block text-[10px] text-slate-500">资源标题（可修改）</span><input value={title} onChange={(event) => { setTitle(event.target.value); setDirty(true); }} className={inputCls} /></label>
                 <div className="grid gap-3 md:grid-cols-[1fr_220px]">
                   <label><span className="mb-1 block text-[10px] text-slate-500">图片提示词（可修改）</span><textarea value={mediaPrompt} onChange={(event) => { setMediaPrompt(event.target.value); setMediaChangeType("manual"); setDirty(true); }} className={`${inputCls} min-h-28 resize-y text-xs`} /></label>

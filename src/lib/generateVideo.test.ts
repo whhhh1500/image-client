@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@tauri-apps/api/core", () => ({ convertFileSrc: (path: string) => path }));
+vi.mock("./desktop", () => ({ fileSrc: (path: string) => path }));
 vi.mock("./ipc", () => ({ runVideo: vi.fn(), saveMediaAsset: vi.fn() }));
 vi.mock("./dbWrite", () => ({ persistAssets: vi.fn(), persistTask: vi.fn() }));
 vi.mock("./logger", () => ({ logEvent: vi.fn() }));

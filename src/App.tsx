@@ -28,7 +28,7 @@ import { useGenerationStore } from "./store/useGenerationStore";
 import { useVideoStore } from "./store/useVideoStore";
 import { applyProjectProfile } from "./lib/projectProfile";
 import { logEvent } from "./lib/logger";
-import { listen } from "@tauri-apps/api/event";
+import { listen } from "./lib/desktop";
 import type { StoryboardShot } from "./lib/video/storyboard";
 import { buildReviewedVideoHandoff } from "./lib/video/handoff";
 import type { ImportEntry } from "./lib/assetImport";

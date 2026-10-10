@@ -9,9 +9,7 @@ vi.mock("../lib/novel/api", () => ({ novelWorkList: api.novels }));
 vi.mock("../lib/comic/markdownApi", () => ({ comicMdCatalogList: api.comics }));
 vi.mock("../components/novel/NovelAssetManager", () => ({ default: () => null }));
 vi.mock("../lib/dbWrite", () => ({ refreshLibraryHistory: vi.fn().mockResolvedValue({ assets: [], tasks: [] }) }));
-vi.mock("@tauri-apps/api/core", () => ({ convertFileSrc: (path: string) => path }));
-vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
-vi.mock("@tauri-apps/plugin-opener", () => ({ revealItemInDir: vi.fn() }));
+vi.mock("../lib/desktop", () => ({ fileSrc: (path: string) => path, openDialog: vi.fn(), revealItemInDir: vi.fn() }));
 
 import AssetsPage from "./AssetsPage";
 

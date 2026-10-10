@@ -9,9 +9,10 @@ import { useProjectStore } from "../store/useProjectStore";
 import { useRunStore } from "../store/useRunStore";
 import GeneratePanel from "./GeneratePanel";
 
-vi.mock("@tauri-apps/api/core", () => ({ convertFileSrc: (path: string) => path }));
 const progressListeners = vi.hoisted(() => new Set<(event: { payload: unknown }) => void>());
-vi.mock("@tauri-apps/api/event", () => ({
+vi.mock("../lib/desktop", () => ({
+  fileSrc: (path: string) => path,
+  openDialog: vi.fn(),
   listen: vi.fn(async (_name: string, handler: (event: { payload: unknown }) => void) => {
     progressListeners.add(handler);
     return () => progressListeners.delete(handler);
@@ -23,7 +24,6 @@ function emitProgress(payload: Record<string, unknown>) {
   const progressId = calls[calls.length - 1]?.[1];
   for (const handler of progressListeners) handler({ payload: { progressId, ...payload } });
 }
-vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("../lib/ipc", () => ({
   fetchModels: vi.fn(),
   runNode: vi.fn(),

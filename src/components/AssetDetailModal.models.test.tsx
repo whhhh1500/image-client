@@ -5,7 +5,7 @@ import { fetchModels } from "../lib/ipc";
 import AssetDetailModal from "./AssetDetailModal";
 import { useLibraryStore, type LibAsset } from "../store/useLibraryStore";
 
-vi.mock("@tauri-apps/api/core", () => ({ convertFileSrc: (path: string) => path }));
+vi.mock("../lib/desktop", () => ({ fileSrc: (path: string) => path }));
 vi.mock("../lib/ipc", () => ({ fetchModels: vi.fn(), llmChat: vi.fn(), readTextAsset: vi.fn() }));
 vi.mock("../lib/dbWrite", () => ({ updateAssetMetadata: vi.fn() }));
 

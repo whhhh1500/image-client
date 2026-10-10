@@ -31,7 +31,7 @@ await new Promise((resolve, reject) => {
   socket.addEventListener("open", resolve, { once: true });
   socket.addEventListener("error", reject, { once: true });
 });
-await waitFor("Boolean(window.__TAURI_INTERNALS__) && document.body.innerText.includes('数据库 就绪')", "application startup");
+await waitFor("Boolean(window.go?.app?.Bridge) && document.body.innerText.includes('数据库 就绪')", "application startup");
 
 const storyboard = `# 视频分镜
 
@@ -160,7 +160,7 @@ text
 承接上一镜，保持白色小狗外观、海滩环境和清晨光线一致，小狗在浅水边停下并抬头看向海面，镜头从侧面缓慢环绕，无字幕无文字。`;
 
 await evaluate(`(async () => {
-  const invoke = window.__TAURI_INTERNALS__.invoke;
+  const invoke = window.go?.app?.Bridge.invoke;
   const projectRows = await invoke('db_select', { query: 'SELECT value FROM settings WHERE key = ?', bindValues: ['projects'] });
   const projectId = JSON.parse(projectRows[0].value)[0].id;
   const text = ${JSON.stringify(storyboard)};

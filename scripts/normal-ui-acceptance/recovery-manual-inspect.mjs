@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Opens the owned world_facts editor through visible UI and records only form
-// structure. It never reads values, types, saves, invokes Tauri, or calls AI.
+// structure. It never reads values, types, saves, invokes Wails, or calls AI.
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 const here=dirname(fileURLToPath(import.meta.url)),sleep=n=>new Promise(r=>setTimeout(r,n)),die=x=>{throw new Error(x)};
 if(process.argv.length!==4||process.argv[2]!=="--status")die("RECOVERY_INSPECT_USAGE");let status;
 function stop(){if(!status)return;spawnSync("pwsh.exe",["-NoProfile","-File",status.stopScriptPath,"-Stop","-RuntimeRoot",status.runtimeRoot],{windowsHide:true})}
-async function target(){for(let u=Date.now()+30000;Date.now()<u;await sleep(150)){try{const xs=await(await fetch(`http://127.0.0.1:${status.cdpPort}/json/list`)).json(),x=xs.find(v=>v.type==="page"&&v.webSocketDebuggerUrl&&/^(tauri:|http:\/\/tauri\.localhost)/.test(v.url));if(x)return x}catch{}}die("RECOVERY_INSPECT_CDP")}
+async function target(){for(let u=Date.now()+30000;Date.now()<u;await sleep(150)){try{const xs=await(await fetch(`http://127.0.0.1:${status.cdpPort}/json/list`)).json(),x=xs.find(v=>v.type==="page"&&v.webSocketDebuggerUrl&&/^(wails:|http:\/\/wails\.localhost)/.test(v.url));if(x)return x}catch{}}die("RECOVERY_INSPECT_CDP")}
 function cdp(t,f){return new Promise((y,n)=>{const w=new WebSocket(t.webSocketDebuggerUrl),q=new Map();let i=1;w.onopen=async()=>{const s=(m,p={})=>new Promise((a,b)=>{const id=i++;q.set(id,{a,b});w.send(JSON.stringify({id,method:m,params:p}))});try{y(await f(s))}catch(e){n(e)}finally{w.close()}};w.onmessage=({data})=>{const x=JSON.parse(data),p=q.get(x.id);if(!p)return;q.delete(x.id);x.error?p.b(new Error(x.error.message)):p.a(x.result)}})}
 async function ns(s,q){const{root}=await s("DOM.getDocument",{depth:-1});return(await s("DOM.querySelectorAll",{nodeId:root.nodeId,selector:q})).nodeIds}async function html(s,n){return(await s("DOM.getOuterHTML",{nodeId:n})).outerHTML}async function tx(s,n){return(await html(s,n)).replace(/<[^>]+>/g,"").trim()}async function click(s,n){await s("DOM.scrollIntoViewIfNeeded",{nodeId:n});const q=(await s("DOM.getBoxModel",{nodeId:n})).model.content,p={x:(q[0]+q[2]+q[4]+q[6])/4,y:(q[1]+q[3]+q[5]+q[7])/4};await s("Input.dispatchMouseEvent",{type:"mousePressed",...p,button:"left",clickCount:1});await s("Input.dispatchMouseEvent",{type:"mouseReleased",...p,button:"left",clickCount:1})}
 async function one(s,sel,pred,code){for(let u=Date.now()+10000;Date.now()<u;await sleep(150)){const a=[];for(const n of await ns(s,sel))try{if(await pred(n)){await s("DOM.getBoxModel",{nodeId:n});a.push(n)}}catch{}if(a.length===1)return a[0];if(a.length>1)die(code+"_AMBIGUOUS")}die(code+"_MISSING")}

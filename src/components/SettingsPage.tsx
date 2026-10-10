@@ -1,6 +1,6 @@
 import { confirmAction } from "../lib/confirm";
 import { useEffect, useState } from "react";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { openDialog } from "../lib/desktop";
 import {
   FolderOpen,
   KeyRound,

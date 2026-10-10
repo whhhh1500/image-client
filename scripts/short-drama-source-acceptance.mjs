@@ -107,8 +107,8 @@ const selectControl = async (selector, value) => {
   }
 };
 const selectSourceRow = async () => evaluate(`(async () => {
-  const invoke = window.__TAURI_INTERNALS__?.invoke;
-  if (!invoke) throw new Error('TAURI_BRIDGE_UNAVAILABLE');
+  const invoke = window.go?.app?.Bridge?.Invoke;
+  if (!invoke) throw new Error('WAILS_BRIDGE_UNAVAILABLE');
   const rows = await invoke('db_select', { query: "SELECT id, metadata FROM assets WHERE kind='text' ORDER BY created_at DESC", bindValues: [] });
   for (const row of rows) {
     const metadata = JSON.parse(row.metadata ?? '{}');
@@ -120,8 +120,8 @@ const selectSourceRow = async () => evaluate(`(async () => {
   return null;
 })()`);
 const readChapterRows = async (workId, projectId) => evaluate(`(async () => {
-  const invoke = window.__TAURI_INTERNALS__?.invoke;
-  if (!invoke) throw new Error('TAURI_BRIDGE_UNAVAILABLE');
+  const invoke = window.go?.app?.Bridge?.Invoke;
+  if (!invoke) throw new Error('WAILS_BRIDGE_UNAVAILABLE');
   const snapshot = await invoke('novel_work_get', { input: { projectId: ${JSON.stringify(projectId)}, novelWorkId: ${JSON.stringify(workId)} } });
   return snapshot.chapters.map((chapter) => {
     const revision = snapshot.revisions.find((item) => item.id === chapter.latestRevisionId);
@@ -129,7 +129,7 @@ const readChapterRows = async (workId, projectId) => evaluate(`(async () => {
   });
 })()`);
 
-await waitFor("Boolean(window.__TAURI_INTERNALS__) && document.body.innerText.includes('数据库 就绪')", "application startup");
+await waitFor("Boolean(window.go?.app?.Bridge) && document.body.innerText.includes('数据库 就绪')", "application startup");
 await clickButton("短剧 Agent");
 await waitFor("document.body.innerText.includes('引用小说章节')", "short drama source workspace");
 

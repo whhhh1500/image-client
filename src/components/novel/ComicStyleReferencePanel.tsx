@@ -1,6 +1,5 @@
 import { useState } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { fileSrc, openDialog } from "../../lib/desktop";
 import { ImagePlus, Trash2 } from "lucide-react";
 import AssetPicker from "../AssetPicker";
 import { comicMdWorkVisualImport, type MdScope, type MdStyleReference } from "../../lib/comic/markdownApi";
@@ -65,7 +64,7 @@ export default function ComicStyleReferencePanel({ scope, references, onChange, 
     {error && <p role="alert" className="mt-3 text-xs text-rose-200">{error}</p>}
     {!normalized.length ? <p className="mt-3 rounded-lg border border-dashed border-white/10 p-3 text-xs text-slate-500">尚未选择画风图。可继续只使用作品设定中的文字画风；选择图片后请补充“画风说明”。</p> : <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
       {normalized.map((reference, index) => <article key={reference.assetId} className="overflow-hidden rounded-lg border border-white/10 bg-slate-950/35">
-        <img src={convertFileSrc(reference.path)} alt={`画风参考 ${index + 1}：${reference.label}`} className="h-32 w-full object-cover" onError={() => setError(`画风参考“${reference.label}”无法读取，请移除后重新上传。`)} />
+        <img src={fileSrc(reference.path)} alt={`画风参考 ${index + 1}：${reference.label}`} className="h-32 w-full object-cover" onError={() => setError(`画风参考“${reference.label}”无法读取，请移除后重新上传。`)} />
         <div className="space-y-2 p-3">
           <div className="flex items-start gap-2"><span className="min-w-0 flex-1 break-words text-xs text-slate-200">{index + 1}. {reference.label}</span><button aria-label={`移除画风参考 ${reference.label}`} title="移除画风参考" className="rounded p-1 text-slate-500 hover:text-rose-300 disabled:opacity-40" disabled={disabled} onClick={() => update(normalized.filter((item) => item.assetId !== reference.assetId))}><Trash2 size={14} /></button></div>
           <label className="block text-[11px] text-slate-400">备注（可选）<textarea aria-label={`${reference.label} 画风说明`} disabled={disabled} value={reference.description ?? ""} onChange={(event) => update(normalized.map((item) => item.assetId === reference.assetId ? { ...item, description: event.target.value } : item))} className={`${field} mt-1 min-h-20 w-full text-xs`} placeholder="例如：主要参考线条和纸张纹理，不参考人物造型" /></label>

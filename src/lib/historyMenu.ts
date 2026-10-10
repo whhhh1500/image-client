@@ -1,4 +1,4 @@
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { revealItemInDir } from "./desktop";
 import { menuIcons, type MenuItem } from "../components/ContextMenu";
 import { compressHistoryImage, convertHistoryImage, refreshImageInfo } from "./imageCompress";
 import type { ConvertFormat } from "./ipc";

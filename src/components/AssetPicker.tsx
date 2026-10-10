@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { fileSrc } from "../lib/desktop";
 import { Eye, FileText, Image as ImageIcon, Search, Video, X } from "lucide-react";
 import { useLibraryStore, type LibAsset } from "../store/useLibraryStore";
 import { useProjectStore } from "../store/useProjectStore";
@@ -174,7 +174,7 @@ export default function AssetPicker({
                 {assets.map((asset) => (
                   <article key={asset.asset.id} className="group overflow-hidden rounded-xl border border-white/6 bg-white/[0.02]">
                     <button onClick={() => setPreview(asset)} className="relative block aspect-square w-full overflow-hidden bg-black/20">
-                      <img src={convertFileSrc(asset.asset.path)} alt={asset.source} className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.03]" />
+                      <img src={fileSrc(asset.asset.path)} alt={asset.source} className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.03]" />
                       <span className="absolute right-2 top-2 rounded-md bg-slate-950/75 p-1.5 text-slate-300"><Eye size={12} /></span>
                     </button>
                     <div className="p-2.5">
@@ -190,7 +190,7 @@ export default function AssetPicker({
               <div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(220px,1fr))]">
                 {assets.map((asset) => (
                   <article key={asset.asset.id} className="overflow-hidden rounded-xl border border-white/6 bg-white/[0.02]">
-                    <video src={convertFileSrc(asset.asset.path)} muted className="aspect-video w-full bg-black object-cover" />
+                    <video src={fileSrc(asset.asset.path)} muted className="aspect-video w-full bg-black object-cover" />
                     <div className="flex items-center gap-2 p-2.5">
                       <Video size={13} className="text-violet-200" />
                       <span className="min-w-0 flex-1 truncate text-[11px] text-slate-300">{asset.source}</span>

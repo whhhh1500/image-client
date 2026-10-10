@@ -33,7 +33,7 @@ if (process.env.INSPECT_ONLY === "1") {
   await evaluate(`([...document.querySelectorAll('button[title="选择用于拼接"]')].slice(0, 2)).forEach(button => button.click())`);
   await new Promise((resolve) => setTimeout(resolve, 300));
   const result = await evaluate(`(async () => {
-    const rows = await window.__TAURI_INTERNALS__.invoke('db_select', {
+    const rows = await window.go.app.Bridge.Invoke('db_select', {
       query: "SELECT id, kind, path, duration_s, metadata FROM assets WHERE kind = ? ORDER BY created_at",
       bindValues: ['video'],
     });

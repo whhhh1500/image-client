@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { fileSrc } from "../lib/desktop";
 import { generationParamsSummary, inspectImageCached, latestDisplayPath, subscribeImageInfo } from "../lib/imageCompress";
 import { logEvent } from "../lib/logger";
 import type { ImageFileInfo } from "../lib/ipc";
@@ -49,7 +49,7 @@ export default function HistoryImageCard({
       onMouseLeave={() => setHover(false)}
     >
       <img
-        src={convertFileSrc(displayPath)}
+        src={fileSrc(displayPath)}
         alt={asset.source}
         onClick={() => onOpen(displayPath)}
         onContextMenu={(event) => {

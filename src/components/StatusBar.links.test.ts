@@ -1,50 +1,31 @@
 import { describe, expect, it } from "vitest";
-// Read the capability straight from the Tauri config so the check cannot drift
-// from what the packaged app actually ships.
-import capabilityRaw from "../../src-tauri/capabilities/default.json?raw";
+// Read the allow-list straight from the Go backend so the check cannot drift
+// from what the packaged app actually enforces.
+import systemSource from "../../internal/app/system.go?raw";
 import { GITHUB_REPO_URL, ZZONE_INVITE_URL } from "./StatusBar";
 
 /**
- * Every URL the status bar hands to the opener plugin must be inside the
- * capability allow-list. Getting this wrong fails silently at runtime: the
- * button looks fine, the click only writes a log line and no browser opens.
+ * Every URL the status bar opens must be on the backend's open_url
+ * allow-list. Getting this wrong fails at runtime with "不允许打开该链接":
+ * the button looks fine and no browser opens.
  */
-interface CapabilityPermission {
-  identifier: string;
-  allow?: { url?: string }[];
-}
-
-function openerUrlScope(): string[] {
-  const capability = JSON.parse(capabilityRaw) as { permissions: (string | CapabilityPermission)[] };
-  const permission = capability.permissions.find(
-    (entry): entry is CapabilityPermission =>
-      typeof entry === "object" && entry.identifier === "opener:allow-open-url",
-  );
-  return (permission?.allow ?? []).flatMap((entry) => (entry.url ? [entry.url] : []));
-}
-
-/** Glob match as the opener scope applies it: `**` spans anything. */
-function matchesScope(url: string, pattern: string): boolean {
-  const escaped = pattern
-    .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
-    .replace(/\*\*/g, "\u0000")
-    .replace(/\*/g, "[^/]*")
-    .replace(/\u0000/g, ".*");
-  return new RegExp(`^${escaped}$`).test(url);
+function allowedUrls(): string[] {
+  const constant = (name: string) => systemSource.match(new RegExp(`${name}\\s*=\\s*"([^"]+)"`))?.[1];
+  return [constant("inviteURL"), constant("repoURL")].filter((url): url is string => Boolean(url));
 }
 
 describe("external links", () => {
-  const scope = openerUrlScope();
+  const allowed = allowedUrls();
 
-  it("keeps a narrow opener scope instead of allowing every host", () => {
-    expect(scope.length).toBeGreaterThanOrEqual(2);
-    expect(scope.some((pattern) => pattern === "*" || pattern === "https://**")).toBe(false);
+  it("keeps a narrow allow-list instead of allowing every host", () => {
+    expect(allowed).toHaveLength(2);
+    expect(allowed.every((url) => url.startsWith("https://"))).toBe(true);
   });
 
   it.each([
     ["GitHub 仓库", GITHUB_REPO_URL],
     ["ZZone 邀请链接", ZZONE_INVITE_URL],
   ])("allows the %s URL", (_label, url) => {
-    expect(scope.some((pattern) => matchesScope(url, pattern))).toBe(true);
+    expect(allowed).toContain(url);
   });
 });

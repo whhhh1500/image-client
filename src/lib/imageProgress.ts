@@ -1,4 +1,4 @@
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen, type UnlistenFn } from "./desktop";
 
 /** Mirrors `gateway::ImageProgressEvent` (src-tauri/src/gateway.rs). */
 export type ImageProgressStage = "waiting" | "receiving" | "downloading" | "retrying" | "partial" | "saving";

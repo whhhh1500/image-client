@@ -1,7 +1,7 @@
 import { BookOpenText, Github, History } from "lucide-react";
 import type { AppInfo, ConfigStatus, ProviderInfo } from "../lib/ipc";
 import { logsDir } from "../lib/ipc";
-import { openPath, openUrl } from "@tauri-apps/plugin-opener";
+import { openPath, openUrl } from "../lib/desktop";
 import { logEvent } from "../lib/logger";
 
 export const ZZONE_INVITE_URL = "https://oenai.cc.cd/j/i1.cmVzZWxsZXIAZmQxeVp2TEY1V3hJb0JWeDltNDYwYlpS.cn5C6uhqhbNTFeR46uZf1TPAP-3Uf7-zsIcsDZovdK8";

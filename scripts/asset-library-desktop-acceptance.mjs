@@ -151,7 +151,7 @@ const send = (method, params = {}) => new Promise((resolve, reject) => {
   try { socket.send(JSON.stringify({ id, method, params })); } catch (error) { clearTimeout(timer); pending.delete(id); reject(error); }
 });
 const evaluate = async (expression) => { const response = await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }); if (response.result?.exceptionDetails) throw new Error(response.result.exceptionDetails.exception?.description ?? response.result.exceptionDetails.text); return response.result?.result?.value; };
-const invoke = (command, args = {}) => evaluate(`window.__TAURI_INTERNALS__.invoke(${JSON.stringify(command)}, ${JSON.stringify(args)})`);
+const invoke = (command, args = {}) => evaluate(`window.go.app.Bridge.Invoke(${JSON.stringify(command)}, ${JSON.stringify(args)})`);
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const checks = [];
 const check = (name, evidence) => checks.push({ name, evidence });
@@ -238,7 +238,7 @@ const writeFixtureAsset = async ({ projectId, imageBytes, videoBytes, name, kind
 };
 
 try {
-  await until("Boolean(window.__TAURI_INTERNALS__) && document.body.innerText.includes('数据库 就绪')", "desktop startup");
+  await until("Boolean(window.go?.app?.Bridge) && document.body.innerText.includes('数据库 就绪')", "desktop startup");
   if (phase === "initial") {
     const [imageBytes, videoBytes] = await Promise.all([readFile(join(auditRoot, "fixtures", fixtureImageName)), readFile(join(auditRoot, "fixtures", fixtureVideoName))]);
     const activeRows = await invoke("db_select", { query: "SELECT value FROM settings WHERE key=?", bindValues: ["active_project"] });
@@ -249,7 +249,7 @@ try {
     const projectTwo = { ...projects[0], id: "asset-library-second-project", name: "资产库隔离第二项目" };
     await invoke("db_execute", { query: "UPDATE settings SET value=? WHERE key='projects'", bindValues: [JSON.stringify([...projects, projectTwo])] });
     await evaluate("location.reload(); true");
-    await until("Boolean(window.__TAURI_INTERNALS__) && document.body.innerText.includes('数据库 就绪')", "project fixture reload");
+    await until("Boolean(window.go?.app?.Bridge) && document.body.innerText.includes('数据库 就绪')", "project fixture reload");
     const normalImage = await writeFixtureAsset({ projectId, imageBytes, videoBytes, name: "ordinary-image-fixture.png", kind: "image", category: "image_generation", origin: "provider", group: { type: "generation_batch", id: "fixture-image-batch" } });
     const normalVideo = await writeFixtureAsset({ projectId, imageBytes, videoBytes, name: "ordinary-video-fixture.mp4", kind: "video", category: "video_generation", origin: "provider", group: { type: "video_shots", id: "fixture-video-shots" } });
     const promptAsset = await writeFixtureAsset({ projectId, imageBytes, videoBytes, name: "short-drama-prompt-fixture.txt", kind: "image", category: "short_drama", origin: "workspace", group: { type: "short_drama_workflow", id: "fixture-short-drama" } });

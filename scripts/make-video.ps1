@@ -8,7 +8,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $isWindowsPlatform = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
 $binary = if ($isWindowsPlatform) { "image-client.exe" } else { "image-client" }
-$exePath = Join-Path $repoRoot "src-tauri/target/release/$binary"
+$exePath = Join-Path $repoRoot "build/bin/$binary"
 if (-not (Test-Path -LiteralPath $exePath)) { throw "可执行文件不存在: $exePath" }
 
 $startArgs = @{ FilePath = $exePath; WorkingDirectory = (Split-Path $exePath); PassThru = $true }

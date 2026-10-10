@@ -1,4 +1,4 @@
-import { convertFileSrc } from "@tauri-apps/api/core";
+import { fileSrc } from "./desktop";
 import { runVideo, saveMediaAsset, type AssetRef, type RunNodeRequest } from "./ipc";
 import { concatMp4 } from "./media";
 import { useLibraryStore, type LibAsset } from "../store/useLibraryStore";
@@ -286,7 +286,7 @@ export async function concatVideoAssets(assets: LibAsset[]): Promise<AssetRef> {
   if (ordered.some((item) => item.projectId !== projectId)) throw new Error("不能跨项目拼接视频资源");
 
   const blobs = await Promise.all(ordered.map(async (item) => {
-    const response = await fetch(convertFileSrc(item.asset.path));
+    const response = await fetch(fileSrc(item.asset.path));
     if (!response.ok) throw new Error(`读取视频镜头失败：${response.status}`);
     return response.blob();
   }));

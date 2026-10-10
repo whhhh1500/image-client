@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { revealItemInDir } from "../../lib/desktop";
 import { comicMdDocumentSave, comicMdDocumentHistory, comicMdExport, comicMdOptimize, mdLabels, mdTemplate, mdReady, type MdDocument, type MdHistory, type MdKind, type MdScope, type MdJob } from "../../lib/comic/markdownApi";
 import { button, primary, field, draftKey, hasMdDraftChanges, savedDraftChanged, useLocalValue, type MdDraft } from "./mdWorkspaceState";
 

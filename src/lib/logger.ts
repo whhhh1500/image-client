@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./desktop";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 type LogFields = Record<string, unknown>;

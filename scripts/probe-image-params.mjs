@@ -314,7 +314,7 @@ async function main() {
   await run(
     "edits",
     () => {
-      const icon = readFileSync(resolve(process.cwd(), "src-tauri/icons/32x32.png"));
+      const icon = readFileSync(resolve(process.cwd(), "build/appicon.png"));
       return postMultipart(
         EDITS_ENDPOINT,
         {

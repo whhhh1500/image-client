@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 const listeners = vi.hoisted(() => new Map<string, (event: { payload: unknown }) => void>());
-vi.mock("@tauri-apps/api/event", () => ({
+vi.mock("./desktop", () => ({
   listen: vi.fn(async (name: string, handler: (event: { payload: unknown }) => void) => {
     listeners.set(name, handler);
     return () => listeners.delete(name);

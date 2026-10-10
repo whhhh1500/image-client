@@ -79,11 +79,17 @@ function createDatabase(path) {
 function createMigratedEmptyDatabase(path) {
   const db = new DatabaseSync(path);
   db.exec('PRAGMA foreign_keys=ON;');
-  const migrations = readdirSync(resolve('src-tauri/migrations'))
+  const migrations = readdirSync(resolve('internal/store/migrations'))
     .filter((name) => /^\d{4}_.+\.sql$/.test(name))
     .sort();
   for (const migration of migrations) {
-    db.exec(readFileSync(resolve('src-tauri/migrations', migration), 'utf8'));
+    // v22 rebuilds a referenced table; like internal/store/migrate.go, it runs
+    // with foreign keys off and legacy ALTER semantics.
+    const rebuild = migration.startsWith('0022_');
+    if (rebuild) db.exec('PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON;');
+    db.exec(readFileSync(resolve('internal/store/migrations', migration), 'utf8'));
+    if (rebuild) db.exec('PRAGMA legacy_alter_table=OFF; PRAGMA foreign_keys=ON;');
+    db.exec(`PRAGMA user_version=${Number(migration.slice(0, 4))};`);
   }
   db.close();
 }

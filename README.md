@@ -33,11 +33,11 @@
 
 ## 快速开始
 
-开发环境需要 Node.js 24、pnpm 10、Rust stable，以及对应系统的 [Tauri 2 前置依赖](https://v2.tauri.app/start/prerequisites/)。
+开发环境需要 Node.js 24、pnpm 10、Go 1.27 和 [Wails v2 CLI](https://wails.io/docs/gettingstarted/installation)（`go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0`）。Windows 需要 WebView2 运行时（Windows 10/11 一般已自带），macOS 需要 Xcode Command Line Tools。
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm tauri dev
+pnpm desktop:dev
 ```
 
 首次运行后，在“设置”中填写所用服务商的 API 地址、模型和密钥。密钥与业务数据保存在本地应用数据目录，不应提交到 Git。
@@ -46,11 +46,11 @@ pnpm tauri dev
 
 ```bash
 pnpm test
-cargo test --locked --manifest-path src-tauri/Cargo.toml
+go test ./internal/...
 pnpm release:build
 ```
 
-`pnpm release:build` 会先校验三处版本号和自定义图标，再执行前后端测试并生成当前系统的一个便携发布文件。更完整的平台依赖、产物位置和发版流程见 [docs/BUILDING.md](docs/BUILDING.md)。
+`pnpm release:build` 会先校验 `package.json` 与 `wails.json` 的版本号和自定义图标，再执行前后端测试并生成当前系统的一个便携发布文件（Windows 为 `release-exe/<版本>/Image-Client_<版本>_x64_portable.exe`）。更完整的平台依赖、产物位置和发版流程见 [docs/BUILDING.md](docs/BUILDING.md)。
 
 ## 本地接口
 

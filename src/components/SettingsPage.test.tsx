@@ -5,7 +5,7 @@ import SettingsPage from "./SettingsPage";
 import * as settingsLib from "../lib/settings";
 import { fetchModels } from "../lib/ipc";
 
-vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
+vi.mock("../lib/desktop", () => ({ openDialog: vi.fn() }));
 vi.mock("../lib/confirm", () => ({ confirmAction: vi.fn().mockResolvedValue(true) }));
 vi.mock("../lib/ipc", () => ({
   listVideoModels: vi.fn().mockResolvedValue(["kling-video-v3"]),

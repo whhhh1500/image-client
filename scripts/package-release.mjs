@@ -44,14 +44,13 @@ function releaseName(platform, version) {
   const names = {
     "windows-x64": `Image-Client_${version}_x64_portable.exe`,
     "macos-arm64": `Image-Client_${version}_aarch64.app.tar.gz`,
-    "linux-x64": `Image-Client_${version}_amd64.AppImage`,
   };
   const name = names[platform];
   if (!name) throw new Error(`不支持的发布平台：${platform}`);
   return name;
 }
 
-const ALL_PLATFORMS = ["windows-x64", "macos-arm64", "linux-x64"];
+const ALL_PLATFORMS = ["windows-x64", "macos-arm64"];
 
 /** Platforms this run covers: `--platforms a,b` or every supported release. */
 function requestedPlatforms() {
@@ -68,20 +67,8 @@ function releaseNames(version, platforms = ALL_PLATFORMS) {
   return platforms.map((platform) => releaseName(platform, version));
 }
 
-function targetReleaseDirectory(target) {
-  return target
-    ? join(root, "src-tauri", "target", target, "release")
-    : join(root, "src-tauri", "target", "release");
-}
-
-function exactlyOne(directory, predicate, description) {
-  if (!existsSync(directory)) throw new Error(`缺少 ${description} 目录：${directory}`);
-  const found = readdirSync(directory)
-    .map((name) => join(directory, name))
-    .filter((path) => predicate(path));
-  if (found.length !== 1) throw new Error(`${description} 必须恰好有一个，当前为 ${found.length}`);
-  return found[0];
-}
+// `wails build` writes the executable (Windows) or the .app bundle (macOS) here.
+const wailsOutputDirectory = join(root, "build", "bin");
 
 function windowsProductVersion(file) {
   const result = spawnSync(
@@ -104,14 +91,13 @@ function windowsProductVersion(file) {
   return result.stdout.trim();
 }
 
-function packagePlatform(platform, version, outputDirectory, target) {
-  const targetDirectory = targetReleaseDirectory(target);
+function packagePlatform(platform, version, outputDirectory) {
   const destination = join(outputDirectory, releaseName(platform, version));
   if (existsSync(destination) && !statSync(destination).isFile()) {
     throw new Error(`已知发布文件路径不是普通文件：${destination}`);
   }
   if (platform === "windows-x64") {
-    const source = join(targetDirectory, "image-client.exe");
+    const source = join(wailsOutputDirectory, "image-client.exe");
     if (!existsSync(source) || !statSync(source).isFile()) {
       throw new Error(`缺少 Windows portable 可执行文件：${source}`);
     }
@@ -120,19 +106,11 @@ function packagePlatform(platform, version, outputDirectory, target) {
       throw new Error(`Windows portable 版本不匹配：期望 ${version}，实际 ${productVersion || "缺失"}`);
     }
     copyFileSync(source, destination);
-  } else if (platform === "linux-x64") {
-    const source = exactlyOne(
-      join(targetDirectory, "bundle", "appimage"),
-      (path) => statSync(path).isFile() && path.endsWith(".AppImage"),
-      "Linux AppImage",
-    );
-    copyFileSync(source, destination);
   } else {
-    const source = exactlyOne(
-      join(targetDirectory, "bundle", "macos"),
-      (path) => statSync(path).isDirectory() && path.endsWith(".app"),
-      "macOS app",
-    );
+    const source = join(wailsOutputDirectory, "Image-Client.app");
+    if (!existsSync(source) || !statSync(source).isDirectory()) {
+      throw new Error(`缺少 macOS app：${source}`);
+    }
     const result = spawnSync(
       "tar",
       ["-czf", destination, "-C", resolve(source, ".."), basename(source)],
@@ -187,9 +165,6 @@ function writeReleaseNotes(version, destination, platforms) {
     platforms.includes("macos-arm64")
       ? `- macOS Apple Silicon：\`Image-Client_${version}_aarch64.app.tar.gz\`。解压后运行应用。`
       : "",
-    platforms.includes("linux-x64")
-      ? `- Linux x64：\`Image-Client_${version}_amd64.AppImage\`。赋予执行权限后运行。`
-      : "",
   ].filter(Boolean);
   const notes = [
     `# Image-Client v${version}`,
@@ -223,6 +198,6 @@ if (args.includes("--release-notes")) {
     verifyDirectory(outputDirectory, expected);
     console.log(`发布 allowlist 验证通过：${expected.join(", ")}`);
   } else {
-    packagePlatform(requiredOption("--platform"), version, outputDirectory, option("--target"));
+    packagePlatform(requiredOption("--platform"), version, outputDirectory);
   }
 }

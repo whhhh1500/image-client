@@ -39,10 +39,6 @@ docs/WORKFLOW_CLOSURE.md
 docs/superpowers/
 docs/awesome-gpt-image-2/extracted-case-assets/original/
 docs/awesome-gpt-image-2/extracted-case-assets/optimized/
-src-tauri/resources/*
-!src-tauri/resources/.gitkeep
-src-tauri/icons/android/
-src-tauri/icons/ios/
 
 # Editor directories and files
 .vscode/*
@@ -58,3 +54,12 @@ src-tauri/icons/ios/
 public/tauri.svg
 public/vite.svg
 src/assets/react.svg
+
+# Wails build output
+build/bin/
+build/wailsjs/
+package.json.md5
+
+# Leftovers of the retired Tauri shell (local build cache, downloads)
+src-tauri/
+/imageclient.exe

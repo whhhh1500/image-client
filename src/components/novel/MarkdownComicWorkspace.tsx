@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { fileSrc, revealItemInDir } from "../../lib/desktop";
 import { useProjectStore } from "../../store/useProjectStore";
 import { useLibraryStore } from "../../store/useLibraryStore";
 import { useComicMdWorkspace } from "../../store/useComicMdWorkspace";
@@ -352,7 +351,7 @@ function ImageGallery({ scope, workspace, onRender, disabled }: { scope: MdScope
   };
   return <>
     {(error || rerunStorageError) && <p role="status" className="text-sm text-amber-200">{error || "本次重画注入草稿无法写入本地，请先复制内容。"}</p>}
-    {largeImage && <div role="dialog" aria-modal="true" aria-label={`第${largeImage.pageNo}页原图`} className="fixed inset-0 z-50 flex flex-col bg-slate-950/95 p-6" onKeyDown={(event) => { if (event.key === "Escape") setLargeImage(null); }}><div className="flex justify-between gap-4 pb-4 text-slate-200"><span>第 {largeImage.pageNo} 页 · 原图</span><button autoFocus className={button} onClick={() => setLargeImage(null)}>关闭大图</button></div><div className="min-h-0 flex-1 overflow-auto"><img src={convertFileSrc(largeImage.path)} alt={`第${largeImage.pageNo}页漫画原图`} className="mx-auto h-auto" /></div></div>}
+    {largeImage && <div role="dialog" aria-modal="true" aria-label={`第${largeImage.pageNo}页原图`} className="fixed inset-0 z-50 flex flex-col bg-slate-950/95 p-6" onKeyDown={(event) => { if (event.key === "Escape") setLargeImage(null); }}><div className="flex justify-between gap-4 pb-4 text-slate-200"><span>第 {largeImage.pageNo} 页 · 原图</span><button autoFocus className={button} onClick={() => setLargeImage(null)}>关闭大图</button></div><div className="min-h-0 flex-1 overflow-auto"><img src={fileSrc(largeImage.path)} alt={`第${largeImage.pageNo}页漫画原图`} className="mx-auto h-auto" /></div></div>}
     <div className="grid gap-6 lg:grid-cols-2">{pages.map((pageNo) => {
     const versions = workspace.images.filter((image) => image.pageNo === pageNo).sort((a, b) => b.createdAt - a.createdAt);
     const chosen = versions.find((image) => image.id === selections[pageNo]) ?? versions[0];
@@ -361,7 +360,7 @@ function ImageGallery({ scope, workspace, onRender, disabled }: { scope: MdScope
     const rerunInjection = rerunInjections[pageNo] ?? "";
     return <figure key={pageNo} className="overflow-hidden rounded-xl border border-slate-800">
       <figcaption className="flex flex-wrap items-center justify-between gap-2 p-3 text-sm text-slate-200"><span>第 {pageNo} 页{chosen.stale ? " · Prompt、注入或作品画风已更新" : ""}</span><select aria-label={`第${pageNo}页图片版本`} className={field} value={chosen.id} onChange={(event) => select({ ...selections, [pageNo]: event.target.value })}>{versions.map((image, index) => <option key={image.id} value={image.id}>{index === 0 ? "最新结果" : `历史结果 ${versions.length - index}`} · Prompt 第 {image.documentRevision} 版</option>)}</select></figcaption>
-      <img src={convertFileSrc(chosen.path)} alt={`第${pageNo}页漫画`} className="mx-auto max-h-[70vh] max-w-full object-contain" onError={() => setError(`第 ${pageNo} 页图片无法显示，可打开文件位置检查。`)} />
+      <img src={fileSrc(chosen.path)} alt={`第${pageNo}页漫画`} className="mx-auto max-h-[70vh] max-w-full object-contain" onError={() => setError(`第 ${pageNo} 页图片无法显示，可打开文件位置检查。`)} />
       <div className="space-y-2 p-3">
         <label className="block text-sm text-slate-300">本次重画 Prompt 注入（可选）<textarea aria-label={`第${pageNo}页本次重画 Prompt 注入`} className={`${field} mt-1 min-h-20 w-full`} value={rerunInjection} onChange={(event) => updateRerunInjection(pageNo, event.target.value)} placeholder="例如：只把外套改为红色，其余画面保持不变" /></label>
         <p className="text-xs leading-5 text-slate-500">只作用于第 {pageNo} 页的这一次重画；与页 Prompt 或本章注入冲突时，以这里为准。</p>

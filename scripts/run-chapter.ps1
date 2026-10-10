@@ -41,8 +41,8 @@ for ($i = 0; $i -lt 3; $i++) {
 }
 if (-not $ready) {
   $binary = if ($isWindowsPlatform) { "image-client.exe" } else { "image-client" }
-  $exePath = Join-Path $repoRoot "src-tauri/target/debug/$binary"
-  if (-not (Test-Path -LiteralPath $exePath)) { throw "调试可执行文件不存在，请先运行 pnpm tauri build --no-bundle: $exePath" }
+  $exePath = Join-Path $repoRoot "build/bin/$binary"
+  if (-not (Test-Path -LiteralPath $exePath)) { throw "调试可执行文件不存在，请先运行 wails build -skipbindings: $exePath" }
   $startArgs = @{ FilePath = $exePath; WorkingDirectory = $repoRoot; PassThru = $true }
   if ($isWindowsPlatform) { $startArgs.WindowStyle = "Hidden" }
   $launched = Start-Process @startArgs

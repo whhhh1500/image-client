@@ -31,7 +31,7 @@ async function evaluate(expression) {
   if (value.exceptionDetails) throw new Error(value.exceptionDetails.exception?.description ?? value.exceptionDetails.exception?.value ?? value.exceptionDetails.text);
   return value.result.value;
 }
-const invoke = (command, args) => evaluate(`window.__TAURI_INTERNALS__.invoke(${JSON.stringify(command)},${JSON.stringify(args)})`);
+const invoke = (command, args) => evaluate(`window.go.app.Bridge.Invoke(${JSON.stringify(command)},${JSON.stringify(args)})`);
 const check = (name, evidence = true) => { report.checks.push({ name, evidence }); console.log(`PASS ${name}`); };
 const labels = { instruction: 'AI 优化要求', versions: '文档版本', all: '优化全部页', injection: '本章 Prompt 注入', saveRules: '保存注入', optimize: 'AI 优化', prior: '上一版', next: '下一版', current: '返回当前草稿', adopt: '采用此版本并保存' };
 let scope;
@@ -125,7 +125,7 @@ async function syncWithOutputs(outputs, viaUi=false) {
 }
 
 try {
-  await until(()=>evaluate(`Boolean(window.__TAURI_INTERNALS__?.invoke && document.querySelector('#root')?.children.length)`),'frontend ready');await pause(1200);
+  await until(()=>evaluate(`Boolean(window.go?.app?.Bridge?.Invoke && document.querySelector('#root')?.children.length)`),'frontend ready');await pause(1200);
   if(phase==='restore'){
     const prior=JSON.parse(await readFile(path.join(auditRoot,'dependency-checkpoint.json'),'utf8'));scope=prior.scope;
     const ws=await workspace();assert.deepEqual(ws.documents,prior.documents);assert.deepEqual(ws.images,prior.images);assert.deepEqual(ws.syncPlan,prior.syncPlan);assert.deepEqual(ws.affectedChapters,prior.affectedChapters);

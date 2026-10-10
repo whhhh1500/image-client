@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Inert unless --run is supplied after the visible normal supervisor starts.
-// It never invokes Tauri, Zustand/store internals, providers, or retries.
+// It never invokes Wails, Zustand/store internals, providers, or retries.
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, openSync, closeSync, fsyncSync, renameSync, mkdirSync, lstatSync } from "node:fs";
 import { basename, dirname, relative, resolve } from "node:path";
@@ -135,7 +135,7 @@ function plan(context) {
       "After candidate_ready, scroll visible 导出本页 into the viewport, mouse-click it, then use only owner-PID UIA for the native folder dialog.",
       "Optionally make one harmless artifact candidate text edit; never preview/adopt or use AI.",
     ],
-    prohibited: ["Tauri invoke", "store injection", "provider call", "retry", "adopt"],
+    prohibited: ["Wails invoke", "store injection", "provider call", "retry", "adopt"],
   };
 }
 function assertCdpListenerOwnedByNormal(port, pid) {
@@ -179,7 +179,7 @@ function assertLiveNormalIdentity(current) {
 async function connectVisiblePage(port) {
   const response = await fetch("http://127.0.0.1:" + port + "/json/list");
   const targets = await response.json();
-  const target = targets.find((item) => item.type === "page" && item.webSocketDebuggerUrl && /^(tauri:|http:\/\/tauri\.localhost)/.test(item.url));
+  const target = targets.find((item) => item.type === "page" && item.webSocketDebuggerUrl && /^(wails:|http:\/\/wails\.localhost)/.test(item.url));
   if (!target) fail("NORMAL_UI_CDP_PAGE_MISSING");
   return target;
 }

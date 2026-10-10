@@ -6,7 +6,12 @@ on:
     branches: [main]
     paths:
       - "src/**"
-      - "src-tauri/**"
+      - "internal/**"
+      - "main.go"
+      - "go.mod"
+      - "go.sum"
+      - "wails.json"
+      - "build/**"
       - "scripts/**"
       - "package.json"
       - "pnpm-lock.yaml"
@@ -18,12 +23,42 @@ permissions:
   contents: read
 
 env:
-  CARGO_INCREMENTAL: "0"
+  WAILS_VERSION: v2.16.0
 
 jobs:
-  # Functional tests do not need to compile the same debug graph four times.
   verify:
     runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: go vet ./internal/...
+      - run: go test ./internal/...
+
+  # A full native build per release target, on demand. Builds take well
+  # under a minute, so there is no cache to prewarm.
+  native-build:
+    if: github.event_name == 'workflow_dispatch'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows/amd64
+          - os: macos-latest
+            platform: darwin/arm64
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -34,56 +69,9 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-go@v6
         with:
-          workspaces: src-tauri
-          shared-key: verify-target-linux-x64
-          add-job-id-key: false
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Install Linux dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+          go-version-file: go.mod
+      - run: go install github.com/wailsapp/wails/v2/cmd/wails@${{ env.WAILS_VERSION }}
       - run: pnpm install --frozen-lockfile
-      - run: pnpm test
-      - run: cargo test --locked --manifest-path src-tauri/Cargo.toml
-
-  # Native jobs only prove and prewarm the release build for each target. The
-  # tag workflow reuses these exact caches and performs the final bundling.
-  # Linux is no longer a release target, so it is not prewarmed here (the
-  # verify job above still exercises the Linux test build).
-  warm-native:
-    if: github.event_name == 'workflow_dispatch'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: windows-latest
-            cache_key: windows-x64
-          - platform: macos-latest
-            cache_key: macos-arm64
-            target: aarch64-apple-darwin
-            build_args: --target aarch64-apple-darwin
-    runs-on: ${{ matrix.platform }}
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-          cache: pnpm
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-          shared-key: release-target-${{ matrix.cache_key }}
-          add-job-id-key: false
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm tauri build --no-bundle --ci ${{ matrix.build_args }}
+      - run: wails build -clean -skipbindings -platform ${{ matrix.platform }}

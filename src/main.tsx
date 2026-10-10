@@ -4,6 +4,7 @@ import type { Root } from "react-dom/client";
 import App from "./App";
 import "./index.css";
 import { initClientLogging, logEvent } from "./lib/logger";
+import { restoreLegacyLocalStorage } from "./lib/legacyStorage";
 
 const disposeClientLogging = initClientLogging();
 
@@ -22,6 +23,10 @@ function showError(msg: string) {
 const onWindowError = (e: ErrorEvent) => {
   const message = String((e as ErrorEvent).error?.message ?? e.message);
   logEvent("error", "frontend.uncaught_error", { message, filename: e.filename, line: e.lineno, column: e.colno });
+  // The desktop runtime injects its own scripts under /wails/; their errors
+  // (e.g. the dev server's browser bridge reconnecting) are logged but must
+  // not blank the app.
+  if (e.filename?.includes("/wails/")) return;
   showError(message);
 };
 const onUnhandledRejection = (e: PromiseRejectionEvent) => {
@@ -50,16 +55,23 @@ if (import.meta.hot) {
   import.meta.hot.dispose(disposeApp);
 }
 
-try {
-  const renderStarted = performance.now();
-  root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
-  root.render(
-    <React.StrictMode>
-      <App />
-    </React.StrictMode>,
-  );
-  logEvent("info", "frontend.react_render_scheduled", { durationMs: performance.now() - renderStarted });
-} catch (e) {
-  logEvent("error", "frontend.bootstrap_failed", { error: String(e) });
-  showError(String(e));
+function renderApp() {
+  if (disposed) return;
+  try {
+    const renderStarted = performance.now();
+    root = ReactDOM.createRoot(document.getElementById("root") as HTMLElement);
+    root.render(
+      <React.StrictMode>
+        <App />
+      </React.StrictMode>,
+    );
+    logEvent("info", "frontend.react_render_scheduled", { durationMs: performance.now() - renderStarted });
+  } catch (e) {
+    logEvent("error", "frontend.bootstrap_failed", { error: String(e) });
+    showError(String(e));
+  }
 }
+
+// Components read localStorage while mounting, so Tauri-era entries are
+// restored first (a no-op after the one-time migration).
+void restoreLegacyLocalStorage().finally(renderApp);
