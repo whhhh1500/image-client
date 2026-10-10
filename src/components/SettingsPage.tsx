@@ -1,5 +1,5 @@
 import { confirmAction } from "../lib/confirm";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { openDialog } from "../lib/desktop";
 import {
   FolderOpen,
@@ -23,7 +23,11 @@ import {
   saveSettings,
   type ConfigProfile,
 } from "../lib/settings";
-import { logEvent } from "../lib/logger";
+import { errorText } from "../lib/errors";
+import { useEscapeKey } from "../lib/useEscapeKey";
+
+/** How long 「已保存」 stays beside the save button. */
+const SAVED_NOTICE_MS = 4000;
 
 const inputCls =
   "w-full rounded-lg border border-slate-600 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400/40";
@@ -221,14 +225,21 @@ export default function SettingsPage({
   const [llmKey, setLlmKey] = useState("");
   const [llmModel, setLlmModel] = useState("gemini-3.7-flash");
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  // Outcome of the last save, shown beside the save button.
+  const [saveStatus, setSaveStatus] = useState<{ error: boolean; text: string } | null>(null);
   const [dirty, setDirty] = useState(false);
   // A profile was deleted since the last save; see saveSettings' clearConnections.
   const [profileRemoved, setProfileRemoved] = useState(false);
+  // Counts edits, so a save clears only the changes it actually sent.
+  const editCount = useRef(0);
+  const markDirty = (value: boolean) => {
+    if (value) editCount.current += 1;
+    setDirty(value);
+  };
 
   useEffect(() => {
     if (!open) return;
-    setMessage(null);
+    setSaveStatus(null);
     setDirty(false);
     setProfileRemoved(false);
     setOutputDir("");
@@ -261,10 +272,20 @@ export default function SettingsPage({
     }
   }, [configs, selectedId]);
 
-  if (!open) return null;
+  // A success note fades on its own; an error stays until the next attempt.
+  useEffect(() => {
+    if (!saveStatus || saveStatus.error) return;
+    const timer = setTimeout(() => setSaveStatus(null), SAVED_NOTICE_MS);
+    return () => clearTimeout(timer);
+  }, [saveStatus]);
 
   const isGlobalSelected = selectedId === "global" || (selectedId === null && configs.length === 0);
   const selected = isGlobalSelected ? null : configs.find((c) => c.id === selectedId) ?? null;
+  const isSelectedDefault = selected !== null && selected.id === activeId;
+  const hasChanges = dirty || profileRemoved;
+  const canSave = hasChanges && !busy;
+  // 「已保存」 describes the saved form, so the next edit retires it.
+  const shownStatus = saveStatus && !saveStatus.error && hasChanges ? null : saveStatus;
 
   /** Blank keeps the stored key only if the backend holds one for this profile's address. */
   const backendHoldsKey = (profile: NonNullable<typeof selected>, kind: "image" | "video") => {
@@ -273,20 +294,33 @@ export default function SettingsPage({
     return profile.id === activeId && Boolean(ready) && url === profile[kind].url.trim();
   };
 
-  const persist = async (nextActiveId = activeId) => {
+  /**
+   * Saves the whole form and reports the outcome in the footer; resolves false
+   * on failure. saveSettings' database and backend calls log their own errors.
+   */
+  const persist = async (
+    nextActiveId = activeId,
+    text = { saved: "已保存", failed: "保存失败" },
+  ): Promise<boolean> => {
     setBusy(true);
-    setMessage(null);
+    setSaveStatus(null);
+    const sentEdits = editCount.current;
     try {
       const st = await saveSettings(
         { configs, activeId: nextActiveId, outputDir, llmUrl, llmKey, llmModel },
         { clearConnections: profileRemoved },
       );
       if (st) onSaved(st);
-      setMessage("已保存");
-      setDirty(false);
-      setProfileRemoved(false);
+      setSaveStatus({ error: false, text: text.saved });
+      // Edits made while the request was in flight were not part of it.
+      if (editCount.current === sentEdits) {
+        setDirty(false);
+        setProfileRemoved(false);
+      }
+      return true;
     } catch (e) {
-      setMessage(`保存失败: ${e}`);
+      setSaveStatus({ error: true, text: `${text.failed}：${errorText(e)}` });
+      return false;
     } finally {
       setBusy(false);
     }
@@ -297,29 +331,32 @@ export default function SettingsPage({
     setConfigs((prev) => [...prev, next]);
     setSelectedId(next.id);
     setTab("image");
-    setMessage(null);
-    setDirty(true);
+    markDirty(true);
   };
 
   const removeConfig = async (id: string) => {
     const current = configs.find((config) => config.id === id);
-    if (!(await confirmAction(`确定删除接口配置“${current?.name ?? "未命名"}”吗？保存设置后生效。`))) return;
+    if (!(await confirmAction(`确定删除接口配置“${current?.name ?? "未命名"}”吗？点击「保存配置」后生效。`))) return;
     const next = configs.filter((c) => c.id !== id);
     setConfigs(next);
     setProfileRemoved(true);
     if (activeId === id) setActiveId(next[0]?.id ?? null);
     if (selectedId === id) setSelectedId(next[0]?.id ?? "global");
-    setDirty(true);
+    markDirty(true);
   };
 
-  const setDefault = async (id: string) => {
-    setActiveId(id);
-    setSelectedId(id);
-    await persist(id);
+  /** Makes `profile` the default; any other pending edits are saved with it. */
+  const setDefault = async (profile: ConfigProfile) => {
+    const previous = activeId;
+    setActiveId(profile.id);
+    const name = profile.name.trim() || "未命名";
+    const saved = await persist(profile.id, { saved: `已将“${name}”设为默认`, failed: "设为默认失败" });
+    // The star must not claim a default the backend never received.
+    if (!saved) setActiveId(previous);
   };
 
   const updateSelected = (patch: { name?: string; image?: Partial<{ url: string; key: string; model: string }>; video?: Partial<{ url: string; key: string; model: string }> }) => {
-    setDirty(true);
+    markDirty(true);
     setConfigs((prev) =>
       prev.map((c) =>
         c.id === selectedId
@@ -353,20 +390,47 @@ export default function SettingsPage({
     onClose();
   };
 
+  useEscapeKey(() => void attemptClose(), open);
+
+  // Ctrl/Cmd+S saves wherever focus is (it may sit on <body> after a row is
+  // deleted); the listener reads the latest form through this ref.
+  const saveShortcut = useRef<() => void>(() => {});
+  useEffect(() => {
+    saveShortcut.current = () => {
+      if (canSave) void persist();
+    };
+  });
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "s" || event.isComposing) return;
+      event.preventDefault();
+      saveShortcut.current();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open]);
+
+  if (!open) return null;
+
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-[#020617]/80 backdrop-blur-md" onClick={attemptClose}>
       <div className="flex h-full w-full p-6">
-        <div className="dream-dialog mx-auto flex h-full w-full max-w-4xl overflow-hidden rounded-2xl border border-cyan-200/15 bg-slate-950/90" onClick={(event) => event.stopPropagation()}>
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="设置"
+          className="dream-dialog mx-auto flex h-full w-full max-w-4xl overflow-hidden rounded-2xl border border-cyan-200/15 bg-slate-950/90"
+          onClick={(event) => event.stopPropagation()}
+        >
           {/* Left: config list */}
           <aside className="flex w-72 shrink-0 flex-col border-r border-slate-800 bg-slate-900/60">
             {/* Top: Global settings tab */}
             <div className="p-3 pb-2">
               <button
                 type="button"
-                onClick={() => {
-                  setSelectedId("global");
-                  setMessage(null);
-                }}
+                onClick={() => setSelectedId("global")}
+                aria-current={isGlobalSelected ? "true" : undefined}
                 className={`flex w-full cursor-pointer items-center justify-between rounded-lg border px-3 py-2 text-left text-xs transition ${
                   isGlobalSelected
                     ? "border-emerald-400 bg-slate-800"
@@ -379,7 +443,7 @@ export default function SettingsPage({
                   </span>
                   <div>
                     <div className="font-medium text-slate-100">全局通用设置</div>
-                    <div className="text-[10px] text-slate-400">产物目录 · 文本 LLM</div>
+                    <div className="text-[10px] text-slate-400">产物输出目录 · 文本 LLM</div>
                   </div>
                 </div>
               </button>
@@ -390,12 +454,13 @@ export default function SettingsPage({
                 <span className="flex h-6 w-6 items-center justify-center rounded bg-indigo-500/20 text-indigo-300">
                   <KeyRound size={13} />
                 </span>
-                <div className="text-xs font-semibold text-slate-300">接口配置 Profiles</div>
+                <div className="text-xs font-semibold text-slate-300">接口配置</div>
               </div>
               <button
                 type="button"
                 onClick={addConfig}
                 title="新增配置"
+                aria-label="新增配置"
                 className="flex h-6 w-6 items-center justify-center rounded border border-slate-600 text-slate-200 transition hover:bg-slate-800"
               >
                 <Plus size={13} />
@@ -414,47 +479,51 @@ export default function SettingsPage({
                   </button>
                 </div>
               )}
-              {configs.map((c) => (
-                <div
-                  key={c.id}
-                  onClick={() => {
-                    setSelectedId(c.id);
-                    setMessage(null);
-                  }}
-                  className={`flex cursor-pointer items-center justify-between rounded-lg border px-2.5 py-2 text-xs transition ${
-                    !isGlobalSelected && c.id === selectedId
-                      ? "border-indigo-400 bg-slate-800"
-                      : "border-slate-700/60 hover:border-slate-500"
-                  }`}
-                >
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-1">
-                      {c.id === activeId && (
-                        <Star size={11} className="text-amber-400" fill="currentColor" />
-                      )}
-                      <span className="truncate font-medium text-slate-100">{c.name}</span>
-                    </div>
-                    <div className="truncate text-[10px] text-slate-500">{c.image.model}</div>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1">
-                    {c.id === activeId && (
-                      <span className="rounded bg-amber-400/10 px-1 py-0.5 text-[9px] text-amber-300">
-                        默认
-                      </span>
-                    )}
+              {configs.map((c) => {
+                const isSelected = !isGlobalSelected && c.id === selectedId;
+                // Select and delete are sibling buttons: a button may not hold another.
+                return (
+                  <div
+                    key={c.id}
+                    className={`flex items-center rounded-lg border text-xs transition ${
+                      isSelected
+                        ? "border-indigo-400 bg-slate-800"
+                        : "border-slate-700/60 hover:border-slate-500"
+                    }`}
+                  >
                     <button
                       type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        removeConfig(c.id);
-                      }}
-                      className="rounded p-1 text-slate-500 hover:text-rose-300"
+                      onClick={() => setSelectedId(c.id)}
+                      aria-current={isSelected ? "true" : undefined}
+                      className="flex min-w-0 flex-1 cursor-pointer items-center justify-between gap-1 rounded-lg py-2 pl-2.5 text-left"
+                    >
+                      <span className="min-w-0">
+                        <span className="flex items-center gap-1">
+                          {c.id === activeId && (
+                            <Star size={11} className="shrink-0 text-amber-400" fill="currentColor" />
+                          )}
+                          <span className="truncate font-medium text-slate-100">{c.name}</span>
+                        </span>
+                        <span className="block truncate text-[10px] text-slate-500">{c.image.model}</span>
+                      </span>
+                      {c.id === activeId && (
+                        <span className="shrink-0 rounded bg-amber-400/10 px-1 py-0.5 text-[9px] text-amber-300">
+                          默认
+                        </span>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void removeConfig(c.id)}
+                      aria-label={`删除配置“${c.name}”`}
+                      title="删除配置"
+                      className="ml-1 mr-2.5 shrink-0 rounded p-1 text-slate-500 hover:text-rose-300"
                     >
                       <Trash2 size={12} />
                     </button>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </aside>
 
@@ -467,6 +536,7 @@ export default function SettingsPage({
               <button
                 type="button"
                 onClick={attemptClose}
+                aria-label="关闭"
                 className="rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-white"
               >
                 <X size={16} />
@@ -489,11 +559,8 @@ export default function SettingsPage({
                   setLlmModel={setLlmModel}
                   llmCatalog={catalogs.llm}
                   status={status}
-                  setDirty={setDirty}
+                  setDirty={markDirty}
                 />
-                {message && (
-                  <div className="mt-4 text-xs text-slate-400">{message}</div>
-                )}
               </div>
             ) : selected ? (
               <div className="min-h-0 flex-1 overflow-y-auto p-5">
@@ -567,13 +634,9 @@ export default function SettingsPage({
                     setLlmModel={setLlmModel}
                     llmCatalog={catalogs.llm}
                     status={status}
-                    setDirty={setDirty}
+                    setDirty={markDirty}
                   />
                 </div>
-
-                {message && (
-                  <div className="mt-4 text-xs text-slate-400">{message}</div>
-                )}
               </div>
             ) : (
               <div className="flex flex-1 items-center justify-center text-sm text-slate-500">
@@ -581,16 +644,31 @@ export default function SettingsPage({
               </div>
             )}
 
-            <div className="flex items-center justify-between border-t border-slate-800 px-5 py-3">
+            <footer className="flex items-center gap-3 border-t border-slate-800 px-5 py-3">
               <button
                 type="button"
-                onClick={() => selectedId && !isGlobalSelected && void setDefault(selectedId).catch((error) => logEvent("error", "settings.default_profile_failed", { error: String(error) }))}
-                disabled={!selected || isGlobalSelected}
-                className="flex items-center gap-1.5 rounded-lg border border-slate-600 px-3 py-2 text-xs font-medium text-slate-200 transition hover:bg-slate-800 disabled:opacity-50"
+                onClick={() => selected && void setDefault(selected)}
+                disabled={!selected || isSelectedDefault || busy}
+                title={selected && !isSelectedDefault && hasChanges ? "同时保存当前所有未保存的修改" : undefined}
+                className={`flex shrink-0 items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-medium transition disabled:opacity-50 ${
+                  isSelectedDefault
+                    ? "border-amber-400/30 text-amber-300"
+                    : "border-slate-600 text-slate-200 hover:bg-slate-800"
+                }`}
               >
-                <Star size={13} /> 设为默认
+                <Star size={13} fill={isSelectedDefault ? "currentColor" : "none"} />
+                {isSelectedDefault ? "已是默认" : hasChanges ? "设为默认并保存" : "设为默认"}
               </button>
-              <div className="flex gap-2">
+              <div className="min-w-0 flex-1 text-right text-xs">
+                {/* Kept mounted so screen readers announce the text when it appears. */}
+                <p role="status" className="text-emerald-300">
+                  {shownStatus && !shownStatus.error ? shownStatus.text : ""}
+                </p>
+                {shownStatus?.error && (
+                  <p role="alert" className="break-words text-rose-300">{shownStatus.text}</p>
+                )}
+              </div>
+              <div className="flex shrink-0 gap-2">
                 <button
                   type="button"
                   onClick={attemptClose}
@@ -601,14 +679,15 @@ export default function SettingsPage({
                 <button
                   type="button"
                   onClick={() => void persist()}
-                  disabled={busy}
+                  disabled={!canSave}
+                  title="Ctrl+S"
                   className="flex items-center gap-1.5 rounded-lg bg-indigo-500 px-4 py-2 text-xs font-medium text-white transition hover:bg-indigo-400 disabled:opacity-50"
                 >
                   {busy ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
                   保存配置
                 </button>
               </div>
-            </div>
+            </footer>
           </section>
         </div>
       </div>

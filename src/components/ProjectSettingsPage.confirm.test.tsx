@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { confirmAction } from "../lib/confirm";
 import { listVideoModelCapabilities, listVideoModels } from "../lib/ipc";
 import ProjectSettingsPage from "./ProjectSettingsPage";
-import type { Project } from "../store/useProjectStore";
+import { useProjectStore, type Project } from "../store/useProjectStore";
 
 vi.mock("../lib/confirm", () => ({ confirmAction: vi.fn() }));
 vi.mock("../lib/ipc", () => ({ listVideoModels: vi.fn(), listVideoModelCapabilities: vi.fn() }));
@@ -87,4 +87,51 @@ it("does not prompt confirmation when closing after automatic resolution alignme
   fireEvent.click(screen.getByRole("button", { name: "取消" }));
   expect(confirmAction).not.toHaveBeenCalled();
   expect(onClose).toHaveBeenCalledOnce();
+});
+
+it("closes on Escape through the same guard, but not while a model list is open", async () => {
+  const onClose = vi.fn();
+  const project: Project = {
+    id: "test", name: "项目", description: "", storyStyle: "通用短剧", artStyle: "电影写实",
+    aspectRatio: "16:9", imageModel: "gpt-image-2", imageQuality: "high", videoModel: "grok-imagine-video", videoResolution: "720p",
+  };
+  render(<ProjectSettingsPage open project={project} onClose={onClose} />);
+  expect(screen.getByRole("dialog", { name: "项目生产档案" }).getAttribute("aria-modal")).toBe("true");
+  expect(screen.getByRole("button", { name: "关闭" })).toBeTruthy();
+
+  const model = screen.getByRole("combobox", { name: "默认图像模型" });
+  fireEvent.click(model);
+  fireEvent.keyDown(model, { key: "Escape" });
+  expect(screen.queryByRole("listbox")).toBeNull();
+  expect(onClose).not.toHaveBeenCalled();
+
+  fireEvent.change(screen.getByLabelText("项目名称"), { target: { value: "未保存修改" } });
+  vi.mocked(confirmAction).mockResolvedValueOnce(false);
+  await act(async () => { fireEvent.keyDown(window, { key: "Escape" }); });
+  expect(confirmAction).toHaveBeenCalledOnce();
+  expect(onClose).not.toHaveBeenCalled();
+
+  vi.mocked(confirmAction).mockResolvedValueOnce(true);
+  await act(async () => { fireEvent.keyDown(window, { key: "Escape" }); });
+  expect(onClose).toHaveBeenCalledOnce();
+});
+
+it("reports a failed save once, without an Error: prefix", async () => {
+  const update = useProjectStore.getState().update;
+  useProjectStore.setState({ update: vi.fn().mockRejectedValue(new Error("磁盘已满")) });
+  try {
+    const onClose = vi.fn();
+    const project: Project = {
+      id: "test", name: "项目", description: "", storyStyle: "通用短剧", artStyle: "电影写实",
+      aspectRatio: "16:9", imageModel: "gpt-image-2", imageQuality: "high", videoModel: "grok-imagine-video", videoResolution: "720p",
+    };
+    render(<ProjectSettingsPage open project={project} onClose={onClose} />);
+    fireEvent.click(screen.getByRole("button", { name: /保存并应用/ }));
+
+    expect((await screen.findByRole("alert")).textContent).toBe("保存失败：磁盘已满");
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(onClose).not.toHaveBeenCalled();
+  } finally {
+    useProjectStore.setState({ update });
+  }
 });

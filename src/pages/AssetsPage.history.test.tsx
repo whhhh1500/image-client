@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { useLibraryStore, type LibAsset, type TaskRecord } from "../store/useLibraryStore";
 import { useProjectStore } from "../store/useProjectStore";
 import { useRunStore } from "../store/useRunStore";
+import { resetViewState } from "../store/useViewStore";
 
 const mocks = vi.hoisted(() => ({
   confirmAction: vi.fn(),
@@ -33,6 +34,7 @@ const retryButton = () => screen.queryByRole("button", { name: /按原参数重�
 describe("AssetsPage task retry", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetViewState();
     mocks.markTaskRetried.mockResolvedValue(undefined);
     useRunStore.setState({ retryingTaskId: null });
     useProjectStore.setState({ activeId: "project-a", projects: [] });
@@ -146,6 +148,7 @@ describe("AssetsPage grid paging", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    resetViewState();
     useProjectStore.setState({ activeId: "project-a", projects: [] });
     useLibraryStore.setState({ assets: videos(130), tasks: [] });
   });

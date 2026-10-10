@@ -56,7 +56,7 @@ describe("AssetDetailModal optimization model", () => {
     await screen.findByText("留空将使用设置中的文本模型（deepseek-v4）");
     expect(screen.getByRole("combobox", { name: "优化模型" }).getAttribute("placeholder")).toBe("默认：deepseek-v4");
 
-    fireEvent.click(screen.getByRole("button", { name: "智能优化提示词" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI 优化提示词" }));
     await waitFor(() => expect(llmChat).toHaveBeenCalledTimes(1));
     expect(vi.mocked(llmChat).mock.calls[0][2]).toBeUndefined();
     await screen.findByDisplayValue("更好的提示词");
@@ -70,7 +70,7 @@ describe("AssetDetailModal optimization model", () => {
     render(<AssetDetailModal asset={asset} onClose={vi.fn()} />);
 
     fireEvent.change(screen.getByRole("combobox", { name: "优化模型" }), { target: { value: "gemini-4-pro" } });
-    fireEvent.click(screen.getByRole("button", { name: "智能优化提示词" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI 优化提示词" }));
     await waitFor(() => expect(llmChat).toHaveBeenCalledTimes(1));
     expect(vi.mocked(llmChat).mock.calls[0][2]).toBe("gemini-4-pro");
   });
@@ -82,7 +82,7 @@ describe("AssetDetailModal optimization model", () => {
     useLibraryStore.setState({ assets: [asset], tasks: [] });
     render(<AssetDetailModal asset={asset} onClose={vi.fn()} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "智能优化提示词" }));
+    fireEvent.click(screen.getByRole("button", { name: "AI 优化提示词" }));
     expect(await screen.findByText("未配置文本 LLM")).toBeTruthy();
   });
 });

@@ -11,6 +11,8 @@ import {
   type ImportEntry,
 } from "../lib/assetImport";
 import { classifyAssetCatalog, type AssetCatalogCategory } from "../lib/assetCatalog";
+import { useEscapeKey } from "../lib/useEscapeKey";
+import { errorText } from "../lib/errors";
 
 export type AssetImportAction = "prompt" | "merge_prompt" | "reference";
 export type ReferenceImportMode = "replace" | "append";
@@ -49,13 +51,13 @@ function actionLabel(action: AssetImportAction): string {
 }
 
 function categoryLabel(value: AssetCatalogCategory): string {
-  return ({ image_generation: "AI 生图", video_generation: "AI 视频", novel: "小说", comic: "小说漫画", short_drama: "短剧", upload: "本地上传", legacy: "其他历史资产" } as const)[value];
+  return ({ image_generation: "AI 生图", video_generation: "AI 视频", novel: "小说", comic: "小说漫画", short_drama: "短剧", upload: "外部上传", legacy: "其他历史资产" } as const)[value];
 }
 
 function groupLabel(entry: ImportEntry): string {
-  if (entry.entryType === "canonical_comic") return `${entry.chapterNo ? `第 ${entry.chapterNo} 章` : "漫画工作"} · ${entry.title}`;
+  if (entry.entryType === "canonical_comic") return `${entry.chapterNo ? `第${entry.chapterNo}章` : "漫画工作"} · ${entry.title}`;
   const group = classifyAssetCatalog(entry.asset).group;
-  return group?.label ?? `${group?.type === "generation_batch" ? "同批生图" : group?.type === "video_shots" ? "视频镜头组" : group?.type === "short_drama_workflow" ? "短剧工作流" : group?.type === "comic_chapter" ? "漫画章节" : group?.type === "upload_batch" ? "上传批次" : "资产组"} · ${entry.asset.source}`;
+  return group?.label ?? `${group?.type === "generation_batch" ? "生图批次" : group?.type === "video_shots" ? "视频镜头组" : group?.type === "short_drama_workflow" ? "短剧工作区" : group?.type === "comic_chapter" ? "漫画章节" : group?.type === "upload_batch" ? "外部上传批次" : "资产组"} · ${entry.asset.source}`;
 }
 
 function orderingValue(entry: ImportEntry): number | undefined {
@@ -116,6 +118,7 @@ export default function AssetImportPicker({
   const [categoryFilter, setCategoryFilter] = useState<AssetCatalogCategory | "all">("all");
   const [groupFilter, setGroupFilter] = useState<string>("all");
   const [groupContent, setGroupContent] = useState<"all" | "page_prompt" | "image">("all");
+  useEscapeKey(onClose, open);
 
   const matchesActiveProject = useCallback((entry: ImportEntry) => {
     if (!strictProject) return true;
@@ -197,7 +200,7 @@ export default function AssetImportPicker({
       setSelected([]);
       onClose();
     } catch (cause) {
-      setError(String(cause));
+      setError(errorText(cause));
     } finally {
       setApplying(false);
     }
@@ -220,7 +223,7 @@ export default function AssetImportPicker({
           {availableGroups.length > 0 && <select aria-label="资产组筛选" value={groupFilter} onChange={(event) => { setGroupFilter(event.target.value); setGroupContent("all"); }} className="mt-2 max-w-full rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] text-slate-300"><option value="all">所有组</option>{availableGroups.map(([key, entry]) => <option key={key} value={key}>{groupLabel(entry)}</option>)}</select>}
           {groupFilter !== "all" && <div className="mt-2 flex gap-1 text-[10px]" aria-label="资产组内容筛选"><button type="button" onClick={() => setGroupContent("all")} className={`rounded px-2 py-1 ${groupContent === "all" ? "bg-slate-700 text-white" : "text-slate-400"}`}>全部资料</button><button type="button" onClick={() => setGroupContent("page_prompt")} className={`rounded px-2 py-1 ${groupContent === "page_prompt" ? "bg-slate-700 text-white" : "text-slate-400"}`}>页面提示词</button><button type="button" onClick={() => setGroupContent("image")} className={`rounded px-2 py-1 ${groupContent === "image" ? "bg-slate-700 text-white" : "text-slate-400"}`}>图片版本</button></div>}
           {action === "reference" && <div className="mt-2 flex gap-2 text-[11px]"><button type="button" onClick={() => setReferenceMode("replace")} className={`rounded px-2 py-1 ${referenceMode === "replace" ? "bg-slate-700 text-white" : "text-slate-400"}`}>覆盖现有参考</button><button type="button" onClick={() => setReferenceMode("append")} className={`rounded px-2 py-1 ${referenceMode === "append" ? "bg-slate-700 text-white" : "text-slate-400"}`}>追加到现有参考</button></div>}
-          <div className="relative mt-3"><Search size={14} className="pointer-events-none absolute left-3 top-2.5 text-slate-500" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索当前项目资产" className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 pl-9 pr-3 text-xs text-slate-100 outline-none focus:border-indigo-400" /></div>
+          <div className="relative mt-3"><Search size={14} className="pointer-events-none absolute left-3 top-2.5 text-slate-500" /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索当前项目资产" className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2 pl-9 pr-3 text-xs text-slate-100 outline-none focus:border-indigo-400" /></div>
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto p-3">
           {candidates.length ? <div className="space-y-1">{candidates.map((entry) => {

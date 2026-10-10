@@ -10,6 +10,8 @@ import {
   type NovelSnapshot,
   type NovelWork,
 } from "../../lib/novel/api";
+import { useEscapeKey } from "../../lib/useEscapeKey";
+import { errorText } from "../../lib/errors";
 
 export interface NovelAssetSelection {
   projectId: string;
@@ -138,7 +140,7 @@ export default function NovelAssetManager({ projectId, open, onClose, mode: mana
         ? preferredWorkId
         : items.some((item) => item.id === current) ? current : items[0]?.id ?? "");
     } catch (cause) {
-      if (request === worksRequestRef.current && session === sessionRef.current && loadedProjectRef.current === projectId) setError(`读取小说资产失败：${String(cause)}`);
+      if (request === worksRequestRef.current && session === sessionRef.current && loadedProjectRef.current === projectId) setError(`读取小说资产失败：${errorText(cause)}`);
     } finally {
       if (request === worksRequestRef.current && session === sessionRef.current && loadedProjectRef.current === projectId) setLoadingWorks(false);
     }
@@ -182,7 +184,7 @@ export default function NovelAssetManager({ projectId, open, onClose, mode: mana
         setSnapshot(null);
         setChapterId("");
         setSnapshotStale(true);
-        setError(`读取章节失败：${String(cause)}`);
+        setError(`读取章节失败：${errorText(cause)}`);
       }
       return false;
     } finally {
@@ -257,6 +259,9 @@ export default function NovelAssetManager({ projectId, open, onClose, mode: mana
     }
   }, [draft, editingScope, mode, open, projectId]);
 
+  // Same path as the 关闭 button: drafts are kept locally, a running save is not abandoned.
+  useEscapeKey(() => { if (!saving) onClose(); }, open);
+
   if (!open) return null;
 
   const selectedWork = works.find((item) => item.id === workId);
@@ -312,7 +317,7 @@ export default function NovelAssetManager({ projectId, open, onClose, mode: mana
       lastSavedRevisionRef.current = null;
       setEditingScope({ projectId, workId: created.id });
     } catch (cause) {
-      if (session === sessionRef.current && loadedProjectRef.current === projectId) setError(`新建小说失败：${String(cause)}`);
+      if (session === sessionRef.current && loadedProjectRef.current === projectId) setError(`新建小说失败：${errorText(cause)}`);
     } finally {
       if (session === sessionRef.current && loadedProjectRef.current === projectId) setSaving(false);
     }
@@ -360,10 +365,10 @@ export default function NovelAssetManager({ projectId, open, onClose, mode: mana
       try {
         onChanged?.({ projectId, novelWorkId: revision.novelWorkId, novelChapterId: revision.chapterId, novelChapterRevisionId: revision.id });
       } catch (cause) {
-        setError(`章节已保存，但使用方刷新通知失败：${String(cause)}`);
+        setError(`章节已保存，但使用方刷新通知失败：${errorText(cause)}`);
       }
     } catch (cause) {
-      if (session === sessionRef.current && loadedProjectRef.current === projectId) setError(`${mode === "edit_chapter" ? "保存章节修订" : "新增章节"}失败：${String(cause)}`);
+      if (session === sessionRef.current && loadedProjectRef.current === projectId) setError(`${mode === "edit_chapter" ? "保存章节修订" : "新增章节"}失败：${errorText(cause)}`);
     } finally {
       if (session === sessionRef.current && loadedProjectRef.current === projectId) setSaving(false);
     }
@@ -400,7 +405,7 @@ export default function NovelAssetManager({ projectId, open, onClose, mode: mana
     <section role="dialog" aria-modal="true" aria-labelledby="novel-source-picker-title" className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-cyan-300/20 bg-slate-950 shadow-2xl">
       <header className="flex items-start justify-between gap-4 border-b border-slate-800 px-5 py-4">
           <div><h2 id="novel-source-picker-title" className="text-base font-semibold text-slate-100">{managerMode === "select" ? "选择小说原文资产" : "管理小说原文资产"}</h2><p className="mt-1 text-xs leading-5 text-slate-500">{managerMode === "select" ? "选择已保存的小说章节；原文与各工作台的改编内容分别保存。" : "在此维护共享小说、章节和原文版本；保存不会替换各工作台已保存的改编稿或原文快照。"}</p></div>
-        <button className={button} disabled={saving} onClick={onClose}>关闭</button>
+        <button className={button} disabled={saving} onClick={onClose} autoFocus>关闭</button>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto p-5">
         {error && <p role="alert" className="mb-4 rounded-xl border border-rose-300/20 bg-rose-300/5 p-3 text-sm text-rose-100">{error}</p>}

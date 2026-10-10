@@ -3,8 +3,10 @@ import { AlertTriangle, ArrowRight, Clapperboard, FileInput, GitBranch, History,
 import { agentLabel, agentSystem } from "../../store/useAgentStore";
 import { useLibraryStore, type LibAsset } from "../../store/useLibraryStore";
 import { useProjectStore } from "../../store/useProjectStore";
+import { useViewState } from "../../store/useViewStore";
 import { llmChat } from "../../lib/ipc";
 import { confirmAction } from "../../lib/confirm";
+import { useEscapeKey } from "../../lib/useEscapeKey";
 import {
   documentChangeLabel,
   getDocumentMeta,
@@ -41,6 +43,7 @@ import {
 import VideoDocumentViews, { type VideoDocumentView } from "./VideoDocumentViews";
 import VideoQualityReviewCard from "./VideoQualityReviewCard";
 import VideoStageNavigation, { videoResultStageStatus, type VideoStageStatus } from "./VideoStageNavigation";
+import { errorText } from "../../lib/errors";
 
 type View = "source" | VideoMarkdownStage | "videos";
 type SourceKind = "manual" | "novel" | "idea";
@@ -95,7 +98,7 @@ function novelSourceReferenceFromAsset(asset?: LibAsset): NovelSourceReference |
 
 function novelSourceLabel(reference: NovelSourceReference): string {
   const chapter = reference.chapterNo ? `第${reference.chapterNo}章` : "章节号未知";
-  const revision = reference.revisionNo ? `正文第${reference.revisionNo}版` : "正文版本号未知";
+  const revision = reference.revisionNo ? `正文第 ${reference.revisionNo} 版` : "正文版本号未知";
   return `${reference.workTitle ? `《${reference.workTitle}》 · ` : ""}${chapter} · ${reference.title} · ${revision} · ${reference.novelChapterRevisionId}`;
 }
 
@@ -300,10 +303,12 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
   const projects = useProjectStore((state) => state.projects);
   const assets = useLibraryStore((state) => state.assets);
   const tasks = useLibraryStore((state) => state.tasks);
-  const [view, setView] = useState<View>("source");
-  const [selectedByStage, setSelectedByStage] = useState<Record<string, string | undefined>>({});
-  const [drafts, setDrafts] = useState<Record<string, StageDraft>>({});
-  const [documentViews, setDocumentViews] = useState<Record<string, VideoDocumentView>>({});
+  // Kept across tab switches. Selections, drafts and document views are keyed
+  // by project and workflow, so they cannot leak into another project.
+  const [view, setView] = useViewState<View>(`video-md:view:${projectId ?? ""}`, "source");
+  const [selectedByStage, setSelectedByStage] = useViewState<Record<string, string | undefined>>("video-md:selected", {});
+  const [drafts, setDrafts] = useViewState<Record<string, StageDraft>>("video-md:drafts", {});
+  const [documentViews, setDocumentViews] = useViewState<Record<string, VideoDocumentView>>("video-md:document-views", {});
   const [activeWorkflowId, setActiveWorkflowId] = useState<string>();
   const currentProjectIdRef = useRef(projectId);
   const currentWorkflowIdRef = useRef<string | undefined>(undefined);
@@ -325,6 +330,8 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
   const discardDialogWasOpenRef = useRef(false);
 
   const closeDiscardDialog = () => setDiscardConfirmOpen(false);
+  // Escape keeps the draft (继续编辑) wherever focus is, not only inside the dialog.
+  useEscapeKey(closeDiscardDialog, discardConfirmOpen);
   const openDiscardDialog = (trigger: HTMLButtonElement) => {
     discardReturnFocusRef.current = trigger;
     setDiscardConfirmOpen(true);
@@ -351,7 +358,6 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
     // Re-read the per-project video reference map: it is keyed by workflow id and
     // used to merge writes into `video-md:work-video-references:<project>`.
     setVideoReferencesByWorkflow(readVideoWorkReferences(projectId));
-    setSelectedByStage({});
     setMessage("");
     setError("");
   }, [projectId]);
@@ -412,7 +418,7 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
       saveVideoReferenceIds((current) => [...current, ...importedIds]);
       setMessage(`已导入 ${importedIds.length} 个本地视频作品，并关联到当前短剧工作区。`);
     } catch (cause) {
-      setError(`导入视频失败：${String(cause)}`);
+      setError(`导入视频失败：${errorText(cause)}`);
     } finally {
       setImportingVideo(false);
       if (videoFileInputRef.current) videoFileInputRef.current.value = "";
@@ -592,7 +598,7 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
 
   const selectVersion = (assetId: string) => {
     setSelectedByStage((state) => ({ ...state, [stageKey]: assetId }));
-    setMessage("已打开保存版本。历史版本默认只读，需明确选择‘历史分支’或‘迁移最新依赖’后才能修改。");
+    setMessage("已打开保存版本。历史版本默认只读，需明确选择「按原依赖创建分支」或「迁移到最新依赖」后才能修改。");
     setError("");
   };
 
@@ -605,7 +611,7 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
     setDocumentView("compare");
     setMessage(mode === "preserve_history"
       ? "已创建历史分支草稿：保存时保留旧依赖，不会替代当前生产版本。"
-      : "已创建迁移草稿：内容尚未证明适配最新依赖，请先审查或使用 LLM 优化后再保存。");
+      : "已创建迁移草稿：内容尚未证明适配最新依赖，请先审查或使用 AI 优化后再保存。");
   };
 
   const confirmDiscard = () => {
@@ -861,7 +867,7 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
         ? `历史分支已保存为 v${getDocumentMeta(saved)?.version ?? 1}，旧依赖保持不变，未替代当前生产版本。`
         : `已保存为 v${getDocumentMeta(saved)?.version ?? 1}。${reviewValid ? "质量审查随版本保存。" : "该版本仍待质量审查，下游不会放行。"}`);
     } catch (cause) {
-      setError(String(cause));
+      setError(errorText(cause));
     } finally {
       setBusy(null);
     }
@@ -871,7 +877,7 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
     const spec = stageSpec(view);
     if (!spec?.agentId || busy || view === "source" || view === "videos") return;
     if (contentDirty) {
-      setError("当前正文有未保存修改。请先保存、放弃草稿，或使用 LLM 优化当前草稿。");
+      setError("当前正文有未保存修改。请先保存、放弃草稿，或使用 AI 优化当前草稿。");
       return;
     }
     if (!dependenciesReady(view)) {
@@ -907,7 +913,7 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
       setDocumentView(selectedMeta ? "compare" : view === "anchors" || view === "storyboard" ? "overview" : "markdown");
       setMessage(`${agentLabel(spec.agentId)}已生成并完成独立审查：${review.status === "passed" ? "通过" : "需修改"}${review.score === null ? "" : ` · ${review.score}分`}。结果仍是未保存草稿。`);
     } catch (cause) {
-      setError(String(cause));
+      setError(errorText(cause));
     } finally {
       setBusy(null);
     }
@@ -918,7 +924,7 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
     if (!spec?.agentId || view === "source" || view === "videos" || busy) return;
     const instruction = activeDraft.optimizationInstruction.trim();
     if (!instruction) {
-      setError("请先填写 LLM 优化要求");
+      setError("请先填写 AI 优化要求");
       return;
     }
     if (!activeDraft.text.trim()) {
@@ -1072,7 +1078,7 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
       setDocumentView("compare");
       setMessage(`AI 联动优化完成：${prepared.map((item) => stageSpec(item.stage)?.label).join(" → ")} 已直接保存为新版本并通过独立审查。已有视频资源未自动重生成。`);
     } catch (cause) {
-      setError(String(cause));
+      setError(errorText(cause));
     } finally {
       setBusy(null);
     }
@@ -1096,7 +1102,7 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
       updateDraft({ reviewMarkdown: review.markdown, reviewStatus: review.status, reviewScore: review.score, reviewedText: activeDraft.text, reviewAt: Date.now(), reviewPolicyVersion: VIDEO_REVIEW_POLICY_VERSION });
       setMessage(`独立质量审查完成：${review.status === "passed" ? "通过" : "需修改"}${review.score === null ? "" : ` · ${review.score}分`}。审查报告会在保存时绑定到该正文版本。`);
     } catch (cause) {
-      setError(String(cause));
+      setError(errorText(cause));
     } finally {
       setBusy(null);
     }
@@ -1109,7 +1115,7 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
       updateDraft({ optimizationInstruction: review.suggestions || review.blockingIssues || "根据质量审查报告修复全部阻断问题，并保持未指出的内容不变。" });
       setMessage("已把审查建议带入优化要求，请检查后点击“AI 优化”。");
     } catch (cause) {
-      setError(String(cause));
+      setError(errorText(cause));
     }
   };
 
@@ -1162,7 +1168,7 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
       try {
         confirmed = await confirmAction("所选章节的视频原文草稿尚未保存。确定用新选择替换它吗？");
       } catch (cause) {
-        setError(`无法确认替换当前草稿：${String(cause)}`);
+        setError(`无法确认替换当前草稿：${errorText(cause)}`);
         return;
       }
       if (!confirmed) {
@@ -1190,7 +1196,7 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
       try {
         confirmed = await confirmAction("当前视频原文草稿尚未保存。确定用所选文本资产替换它吗？");
       } catch (cause) {
-        setError(`无法确认替换当前草稿：${String(cause)}`);
+        setError(`无法确认替换当前草稿：${errorText(cause)}`);
         return;
       }
       if (!confirmed) {
@@ -1301,7 +1307,7 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
       {!requiresWorkspaceSelection && <VideoStageNavigation idPrefix={stageTabsId} items={stageNavigationItems} current={view} onSelect={(id) => { setView(id); setMessage(""); setError(""); }} />}
     </header>
 
-    {!requiresWorkspaceSelection && videoWorkReferences.length > 0 && <section aria-label="短剧视频作品参考" className="mx-5 mt-4 rounded-xl border border-fuchsia-300/15 bg-fuchsia-300/[0.04] p-3"><div className="flex flex-wrap items-center gap-2"><span className="text-xs font-semibold text-fuchsia-100">视频作品参考</span><span className="text-[10px] text-slate-500">整条短剧 Agent 链共享 · {videoWorkReferences.length} 个</span></div><div className="mt-2 flex flex-wrap gap-2">{videoWorkReferences.map((asset) => <div key={asset.asset.id} className="flex items-center gap-2 rounded-lg border border-white/8 bg-slate-950/40 px-2 py-1.5 text-[11px] text-slate-300"><span className="max-w-56 truncate">{asset.source}{asset.asset.durationS ? ` · ${asset.asset.durationS}秒` : ""}</span><button aria-label={`移除视频作品参考 ${asset.source}`} className="text-slate-500 hover:text-rose-300" onClick={() => saveVideoReferenceIds(videoReferenceIds.filter((id) => id !== asset.asset.id))}>×</button></div>)}</div><p className="mt-2 text-[10px] leading-4 text-slate-500">本地视频不会直接发送给文本模型；Agent 会读取资源名称、模型、时长和关联信息。作为 zzone 生成参考时仍需公网 HTTPS URL。</p></section>}
+    {!requiresWorkspaceSelection && videoWorkReferences.length > 0 && <section aria-label="短剧视频作品参考" className="mx-5 mt-4 rounded-xl border border-fuchsia-300/15 bg-fuchsia-300/[0.04] p-3"><div className="flex flex-wrap items-center gap-2"><span className="text-xs font-semibold text-fuchsia-100">视频作品参考</span><span className="text-[10px] text-slate-500">整条短剧 Agent 链共享 · {videoWorkReferences.length} 个</span></div><div className="mt-2 flex flex-wrap gap-2">{videoWorkReferences.map((asset) => <div key={asset.asset.id} className="flex items-center gap-2 rounded-lg border border-white/8 bg-slate-950/40 px-2 py-1.5 text-[11px] text-slate-300"><span className="max-w-56 truncate">{asset.source}{asset.asset.durationS ? ` · ${asset.asset.durationS}秒` : ""}</span><button aria-label={`移除视频作品参考 ${asset.source}`} className="text-slate-500 hover:text-rose-300" onClick={() => saveVideoReferenceIds(videoReferenceIds.filter((id) => id !== asset.asset.id))}>×</button></div>)}</div><p className="mt-2 text-[10px] leading-4 text-slate-500">本地视频不会直接发送给文本模型；Agent 会读取资源名称、模型、时长和关联信息。作为 ZZone 生成参考时仍需公网 HTTPS URL。</p></section>}
 
     {!requiresWorkspaceSelection && views.filter((item) => item.id !== view).map((item) => <div
       key={item.id}
@@ -1317,7 +1323,7 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
       className="min-h-0 flex-1 overflow-y-auto p-5"
     >
       {requiresWorkspaceSelection ? <section className="mx-auto max-w-3xl rounded-2xl border border-cyan-300/15 bg-slate-950/40 p-6"><h2 className="text-lg font-semibold text-slate-100">请选择视频工作区</h2><p className="mt-2 text-sm leading-6 text-slate-400">当前项目有多个小说章节或脑洞工作区。为避免误改最近保存的其他章节，系统不会替你自动选择。</p><div className="mt-5 grid gap-3 sm:grid-cols-2">{workspaceSources.map((asset) => <button key={workflowIdFromSource(asset)} onClick={() => chooseWorkflow(workflowIdFromSource(asset)!)} className="rounded-xl border border-slate-700 bg-slate-900/50 p-4 text-left hover:border-cyan-300/30"><span className="block text-sm font-medium text-slate-100">{chapterLabel(asset)} · {asset.source}</span><span className="mt-2 block text-xs text-slate-500">原始资料 v{getDocumentMeta(asset)?.version ?? 1}</span></button>)}</div><div className="mt-4 flex flex-wrap gap-2"><button className={button} onClick={() => setNovelPickerOpen(true)}>引用其他小说章节</button><button className={button} onClick={() => setNovelManagerOpen(true)}>管理小说原文资产</button></div></section> : view === "videos" ? <div className="space-y-4">
-        <div className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950/30 p-4"><div><h2 className="text-base font-semibold">逐镜视频资源 · {completedShotCount}/{savedStoryboardShots.length || 0}</h2><p className="mt-1 text-xs text-slate-500">一个分镜对应一次请求和独立资源；这里不自动拼接。{failedVideoTasks.length ? ` 当前分镜有 ${failedVideoTasks.length} 个失败任务。` : ""}</p></div><button disabled={!storyboardReady} className={primary} onClick={() => { if (storyboardAsset) onSendToVideo(parseStoryboardShots(getDocumentMeta(storyboardAsset)?.text ?? ""), storyboardAsset, { anchorAssetId: anchorAsset?.asset.id, qcAssetId: qcAsset?.asset.id, approvedModel: project?.videoModel ?? "", approvedAspectRatio: project?.aspectRatio ?? "", approvedResolution: project?.videoResolution || "720p" }); }}><Clapperboard size={13} className="mr-1 inline" />发送当前分镜到视频生成</button></div>
+        <div className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950/30 p-4"><div><h2 className="text-base font-semibold">逐镜视频资源 · {completedShotCount}/{savedStoryboardShots.length || 0}</h2><p className="mt-1 text-xs text-slate-500">一个镜头对应一次请求和独立资源；这里不自动拼接。{failedVideoTasks.length ? ` 当前分镜有 ${failedVideoTasks.length} 个失败任务。` : ""}</p></div><button disabled={!storyboardReady} className={primary} onClick={() => { if (storyboardAsset) onSendToVideo(parseStoryboardShots(getDocumentMeta(storyboardAsset)?.text ?? ""), storyboardAsset, { anchorAssetId: anchorAsset?.asset.id, qcAssetId: qcAsset?.asset.id, approvedModel: project?.videoModel ?? "", approvedAspectRatio: project?.aspectRatio ?? "", approvedResolution: project?.videoResolution || "720p" }); }}><Clapperboard size={13} className="mr-1 inline" />发送当前分镜到视频生成</button></div>
         {!storyboardReady && <section className="rounded-xl border border-rose-300/15 bg-rose-300/5 p-4"><h3 className="text-sm font-semibold text-rose-100">当前不能进入视频生成</h3><ul className="mt-2 space-y-1 text-xs text-rose-200/80">{gateReasons.map((reason) => <li key={reason}>• {reason}</li>)}</ul></section>}
         <div className="space-y-3">{parseStoryboardShots(storyboardAsset ? getDocumentMeta(storyboardAsset)?.text ?? "" : "").map((shot) => { const resources = videos.filter((asset) => Number(asset.params?.shotNo) === shot.shotNo); return <article key={shot.shotNo} className="rounded-xl border border-slate-800 bg-slate-950/30 p-4"><div className="flex flex-wrap items-center gap-3"><span className="rounded-full bg-violet-400/10 px-2 py-1 text-xs text-violet-100">第 {shot.shotNo} 镜 · {shot.durationS} 秒</span><span className="min-w-0 flex-1 truncate text-xs text-slate-400">{shot.scene} · {shot.shotType}</span><span className="text-xs text-slate-500">{resources.length ? `${resources.length} 个资源版本` : "未生成"}</span></div>{resources.length > 0 && <div className="mt-3 grid gap-2 md:grid-cols-3">{resources.map((asset) => <div key={asset.asset.id} className="rounded-lg border border-white/5 p-3"><div className="truncate text-xs text-slate-200">{asset.source}</div><div className="mt-1 text-[10px] text-slate-500">{asset.model} · {asset.asset.durationS ?? shot.durationS} 秒</div></div>)}</div>}</article>; })}</div>
       </div> : <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_340px] xl:grid-cols-[minmax(0,1fr)_380px]">
@@ -1325,7 +1331,7 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
           <div className="sticky top-0 z-10 mb-3 rounded-xl border border-slate-800 bg-slate-950/95 p-3 shadow-xl shadow-black/10 backdrop-blur">
             <div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-base font-semibold">{stageSpec(view)?.label}</h2><p className="mt-1 text-xs text-slate-500">{selectedAsset ? `v${selectedMeta?.version ?? 1} · ${documentChangeLabel(selectedMeta?.changeType ?? "manual")}` : "尚未保存"}{historical ? " · 历史版本" : ""}{dirty ? " · 草稿未保存" : ""}{view === "source" && sourceParent ? ` · 来源：${sourceParent.source}` : ""}</p></div><div className="flex flex-wrap gap-2">{dirty && <button className={button} disabled={Boolean(busy)} onClick={(event) => openDiscardDialog(event.currentTarget)}><RotateCcw size={13} className="mr-1 inline" />放弃草稿并恢复已保存内容…</button>}<button title={saveDisabledReason || undefined} className={primary} disabled={!canSave} onClick={() => void save()}>{busy === "save" ? <Loader2 size={13} className="mr-1 inline animate-spin" /> : <Save size={13} className="mr-1 inline" />}{saveLabel}</button></div></div>
             {view === "source" && activeNovelSource && <div className="mt-3 rounded-lg border border-violet-300/15 bg-violet-300/[0.04] p-3 text-xs text-violet-100"><div>小说原文资产来源：{novelSourceLabel(activeNovelSource)}</div><div className="mt-1 text-violet-200/70">这是固定到短剧工作区的可编辑改编用稿快照；编辑或保存它只创建短剧版本，不会回写小说。小说后续修订也不会自动覆盖。{novelSourceAdjusted ? "当前正文已在该章节快照基础上调整。" : "当前正文与所选章节快照一致。"}</div></div>}
-            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/5 pt-3">{versions.length > 0 && <label className="flex items-center gap-2 text-xs text-slate-400"><History size={13} />保存版本<select aria-label="保存版本" value={selectedAssetId ?? ""} onChange={(event) => selectVersion(event.target.value)} className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-2 text-xs text-slate-200">{versions.map((asset) => { const meta = getDocumentMeta(asset); const branch = asset.params?.videoBranch === true; return <option key={asset.asset.id} value={asset.asset.id}>v{meta?.version ?? 1}{asset.asset.id === current?.asset.id ? "（当前生产版）" : branch ? "（历史分支）" : "（历史）"} · {documentChangeLabel(meta?.changeType ?? "manual")}</option>; })}</select></label>}{view === "source" && <><button className={button} disabled={Boolean(busy)} onClick={() => setNovelPickerOpen(true)}>引用/采用小说章节为短剧快照</button><button className={button} disabled={Boolean(busy)} onClick={() => setNovelManagerOpen(true)}>管理小说原文资产</button><button className={button} disabled={Boolean(busy)} onClick={() => setOtherSourcePickerOpen(true)}>从其他文本资产选择</button><select aria-label="原文来源类型" value={activeNovelSource ? "novel" : activeDraft.sourceKind ?? "manual"} onChange={(event) => { const nextKind = event.target.value as SourceKind; if (nextKind === "novel") { setNovelPickerOpen(true); return; } updateDraft({ sourceKind: nextKind, sourceAssetId: undefined, novelSourceReference: undefined, sourceReferenceCleared: true, changeType: "manual" }); }} className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-2 text-xs text-slate-200"><option value="novel">小说章节快照</option><option value="manual">手动原文</option><option value="idea">脑洞 / 梗概</option></select></>}<span className="ml-auto text-[10px] text-slate-500">Ctrl/Cmd + S 保存可用草稿</span></div>
+            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/5 pt-3">{versions.length > 0 && <label className="flex items-center gap-2 text-xs text-slate-400"><History size={13} />保存版本<select aria-label="保存版本" value={selectedAssetId ?? ""} onChange={(event) => selectVersion(event.target.value)} className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-2 text-xs text-slate-200">{versions.map((asset) => { const meta = getDocumentMeta(asset); const branch = asset.params?.videoBranch === true; return <option key={asset.asset.id} value={asset.asset.id}>v{meta?.version ?? 1}{asset.asset.id === current?.asset.id ? "（当前生产版）" : branch ? "（历史分支）" : "（历史）"} · {documentChangeLabel(meta?.changeType ?? "manual")}</option>; })}</select></label>}{view === "source" && <><button className={button} disabled={Boolean(busy)} onClick={() => setNovelPickerOpen(true)}>引用/采用小说章节为短剧快照</button><button className={button} disabled={Boolean(busy)} onClick={() => setNovelManagerOpen(true)}>管理小说原文资产</button><button className={button} disabled={Boolean(busy)} onClick={() => setOtherSourcePickerOpen(true)}>从其他文本资产选择</button><select aria-label="原文来源类型" value={activeNovelSource ? "novel" : activeDraft.sourceKind ?? "manual"} onChange={(event) => { const nextKind = event.target.value as SourceKind; if (nextKind === "novel") { setNovelPickerOpen(true); return; } updateDraft({ sourceKind: nextKind, sourceAssetId: undefined, novelSourceReference: undefined, sourceReferenceCleared: true, changeType: "manual" }); }} className="rounded-lg border border-slate-700 bg-slate-950 px-2 py-2 text-xs text-slate-200"><option value="novel">小说章节快照</option><option value="manual">手动原文</option><option value="idea">脑洞 / 梗概</option></select></>}<span className="ml-auto text-[10px] text-slate-500">Ctrl/Cmd+S 保存可用草稿</span></div>
             {needsDependencyChoice && <div role="alert" className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-amber-300/15 bg-amber-300/5 p-3 text-xs text-amber-100"><GitBranch size={14} /><span className="mr-auto">{supersededWhileEditing ? "编辑期间出现了新的当前生产版。当前草稿仍完整保留，但必须明确选择依赖策略后才能保存或继续调用 AI。" : "正在只读查看历史版本。不会自动把旧内容伪装成已适配最新依赖。"}</span><button className={button} onClick={() => beginHistoricalDraft("preserve_history")}>按原依赖创建分支</button><button className={button} onClick={() => beginHistoricalDraft("migrate_latest")}>迁移到最新依赖…</button></div>}
           </div>
           <section className="mb-3 flex flex-wrap items-center gap-3 rounded-xl border border-cyan-300/15 bg-cyan-300/5 p-3"><ArrowRight size={15} className="text-cyan-200" /><div><div className="text-[10px] uppercase tracking-wider text-cyan-300/70">推荐下一步</div><div className="mt-1 text-sm text-cyan-50">{recommendation}</div></div>{blockedDependencies.length > 0 && <div className="ml-auto flex flex-wrap gap-2">{blockedDependencies.map((id) => <button key={id} className={button} onClick={() => setView(id)}>打开{stageSpec(id)?.label}</button>)}</div>}</section>
@@ -1337,7 +1343,7 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
         </main>
 
         <aside className="space-y-4 lg:sticky lg:top-0">
-          {view !== "source" && <section className="rounded-xl border border-cyan-300/15 bg-slate-950/45 p-4"><div className="flex items-center justify-between"><div><h3 className="text-sm font-semibold text-cyan-50">AI 创作助手</h3><p className="mt-1 text-[11px] text-slate-500">生成只进入草稿；AI 优化会直接保存当前及已有下游文字产物。</p></div><Sparkles size={16} className="text-cyan-300" /></div><div className="mt-3 grid grid-cols-2 gap-2"><button title={generateDisabledReason || undefined} className={button} disabled={Boolean(generateDisabledReason)} onClick={() => void generate()}>{busy === "generate" ? <Loader2 size={13} className="mr-1 inline animate-spin" /> : null}AI 生成草稿</button><button title={optimizeDisabledReason || undefined} className={button} disabled={Boolean(optimizeDisabledReason)} onClick={() => void optimize()}>{busy === "optimize" ? <Loader2 size={13} className="mr-1 inline animate-spin" /> : null}AI 优化</button></div>{(generateDisabledReason || optimizeDisabledReason) && <div className="mt-2 space-y-1 text-[10px] leading-4 text-amber-200/80">{generateDisabledReason && <div>生成不可用：{generateDisabledReason}</div>}{optimizeDisabledReason && <div>优化不可用：{optimizeDisabledReason}</div>}</div>}<label className="mt-3 block text-xs text-slate-300">优化要求<textarea aria-label="LLM 优化要求" readOnly={!editorEditable} value={activeDraft.optimizationInstruction} onChange={(event) => updateDraft({ optimizationInstruction: event.target.value })} placeholder={view === "anchors" ? "例如：继承固定外貌，只把本章伤势和换装设为剧情锚点" : "例如：删掉越界续写，增强人物选择与因果，未提及内容保持不变"} className={`${field} mt-1 min-h-24 resize-y`} /></label><p className="mt-2 text-[10px] leading-4 text-slate-500">将按当前阶段 → 后续已有阶段逐个优化和独立审查，全部通过后直接保存新版本。可能调用多次文本模型；图片和视频不会自动重生成。</p><details className="mt-3 border-t border-white/5 pt-3"><summary className="cursor-pointer text-[11px] text-slate-500">本阶段 Agent 设置</summary><button className={`${button} mt-2 w-full`} onClick={() => onEditPrompt(stageSpec(view)?.agentId ?? "")}>查看 / 修改 Agent Prompt</button></details></section>}
+          {view !== "source" && <section className="rounded-xl border border-cyan-300/15 bg-slate-950/45 p-4"><div className="flex items-center justify-between"><div><h3 className="text-sm font-semibold text-cyan-50">AI 创作助手</h3><p className="mt-1 text-[11px] text-slate-500">生成只进入草稿；AI 优化会直接保存当前及已有下游文字产物。</p></div><Sparkles size={16} className="text-cyan-300" /></div><div className="mt-3 grid grid-cols-2 gap-2"><button title={generateDisabledReason || undefined} className={button} disabled={Boolean(generateDisabledReason)} onClick={() => void generate()}>{busy === "generate" ? <Loader2 size={13} className="mr-1 inline animate-spin" /> : null}AI 生成草稿</button><button title={optimizeDisabledReason || undefined} className={button} disabled={Boolean(optimizeDisabledReason)} onClick={() => void optimize()}>{busy === "optimize" ? <Loader2 size={13} className="mr-1 inline animate-spin" /> : null}AI 优化</button></div>{(generateDisabledReason || optimizeDisabledReason) && <div className="mt-2 space-y-1 text-[10px] leading-4 text-amber-200/80">{generateDisabledReason && <div>生成不可用：{generateDisabledReason}</div>}{optimizeDisabledReason && <div>优化不可用：{optimizeDisabledReason}</div>}</div>}<label className="mt-3 block text-xs text-slate-300">优化要求<textarea aria-label="AI 优化要求" readOnly={!editorEditable} value={activeDraft.optimizationInstruction} onChange={(event) => updateDraft({ optimizationInstruction: event.target.value })} placeholder={view === "anchors" ? "例如：继承固定外貌，只把本章伤势和换装设为剧情锚点" : "例如：删掉越界续写，增强人物选择与因果，未提及内容保持不变"} className={`${field} mt-1 min-h-24 resize-y`} /></label><p className="mt-2 text-[10px] leading-4 text-slate-500">将按当前阶段 → 后续已有阶段逐个优化和独立审查，全部通过后直接保存新版本。可能调用多次文本模型；图片和视频不会自动重生成。</p><details className="mt-3 border-t border-white/5 pt-3"><summary className="cursor-pointer text-[11px] text-slate-500">本阶段 Agent 设置</summary><button className={`${button} mt-2 w-full`} onClick={() => onEditPrompt(stageSpec(view)?.agentId ?? "")}>查看 / 修改 Agent Prompt</button></details></section>}
 
           {view !== "source" && <><VideoQualityReviewCard review={reviewValid ? activeDraft.reviewMarkdown : undefined} status={activeReviewStatus} score={reviewValid ? activeDraft.reviewScore : undefined} busy={busy === "review"} disabled={Boolean(reviewDisabledReason)} onReview={() => void reviewCurrent()} onUseSuggestions={useReviewSuggestions} />{reviewDisabledReason && <p className="-mt-2 text-[10px] text-amber-200/80">审查不可用：{reviewDisabledReason}</p>}</>}
 
@@ -1354,12 +1360,6 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
     <AssetPicker open={videoPickerOpen} onClose={() => setVideoPickerOpen(false)} kinds={["video"]} strictProject filter={(asset) => !videoReferenceIds.includes(asset.asset.id)} title="导入当前项目的视频作品参考" onPick={addVideoWorkReference} />
 
     {discardConfirmOpen && <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm"><section ref={discardDialogRef} role="dialog" aria-modal="true" aria-labelledby="discard-video-draft-title" aria-describedby="discard-video-draft-description" tabIndex={-1} onKeyDown={(event) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        closeDiscardDialog();
-        return;
-      }
       if (event.key !== "Tab") return;
       const dialog = discardDialogRef.current;
       if (!dialog) return;

@@ -17,7 +17,10 @@ import {
   type PromptlibKind,
 } from "../lib/promptlib";
 import { usePromptlibStore } from "../store/usePromptlibStore";
+import { useViewState } from "../store/useViewStore";
+import { useEscapeKey } from "../lib/useEscapeKey";
 import type { LibAsset } from "../store/useLibraryStore";
+import { errorText } from "../lib/errors";
 
 const inputCls =
   "w-full rounded-lg border border-slate-600 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400/40";
@@ -43,10 +46,11 @@ export default function PromptLibrary({
 }) {
   const overrides = usePromptlibStore((s) => s.overrides);
   const loaded = usePromptlibStore((s) => s.loaded);
-  const [kind, setKind] = useState<PromptlibKind | "all">("case");
-  const [category, setCategory] = useState("");
-  const [query, setQuery] = useState("");
-  const [modifiedOnly, setModifiedOnly] = useState(false);
+  // Browsing filters outlive the dialog and the generate page it opens from.
+  const [kind, setKind] = useViewState<PromptlibKind | "all">("promptlib:kind", "case");
+  const [category, setCategory] = useViewState("promptlib:category", "");
+  const [query, setQuery] = useViewState("promptlib:query", "");
+  const [modifiedOnly, setModifiedOnly] = useViewState("promptlib:modified-only", false);
   const [selected, setSelected] = useState<PromptlibEntry | null>(null);
   const [draft, setDraft] = useState("");
   const [jsonDraft, setJsonDraft] = useState("");
@@ -63,6 +67,7 @@ export default function PromptLibrary({
   // entry meanwhile must not let "save back" overwrite that one with it.
   const selectedIdRef = useRef<string | undefined>(undefined);
   selectedIdRef.current = selected?.id;
+  useEscapeKey(onClose, open);
 
   useEffect(() => {
     sessionRef.current += 1;
@@ -112,7 +117,7 @@ export default function PromptLibrary({
       await usePromptlibStore.getState().saveOverride(selected.id, draft, jsonDraft || undefined);
       setOptimized("");
     } catch (e) {
-      setError(String(e));
+      setError(errorText(e));
     } finally {
       setBusy(null);
     }
@@ -127,7 +132,7 @@ export default function PromptLibrary({
       setDraft(selected.prompt);
       setJsonDraft(selected.jsonPrompt ?? "");
     } catch (e) {
-      setError(String(e));
+      setError(errorText(e));
     } finally {
       setBusy(null);
     }
@@ -149,7 +154,7 @@ export default function PromptLibrary({
       if (selectedIdRef.current !== startedFor) return;
       setOptimized(result);
     } catch (e) {
-      setError(String(e));
+      setError(errorText(e));
     } finally {
       setBusy(null);
     }
@@ -172,7 +177,7 @@ export default function PromptLibrary({
       onPick({ prompt: currentPrompt(), entry: selected, asReference: true, referencePath: asset.asset.path, referenceAsset: asset });
       onClose();
     } catch (e) {
-      if (session === sessionRef.current) setError(String(e));
+      if (session === sessionRef.current) setError(errorText(e));
     } finally {
       if (session === sessionRef.current) setBusy(null);
     }
@@ -183,18 +188,21 @@ export default function PromptLibrary({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="prompt-library-title"
         className="flex h-[88vh] w-full max-w-6xl overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="flex items-center gap-3 border-b border-slate-800 px-5 py-3">
             <div>
-              <div className="text-sm font-semibold">提示词模板库</div>
+              <div id="prompt-library-title" className="text-sm font-semibold">提示词模板库</div>
               <div className="text-[10px] text-slate-500">
                 当前 {entries.length} 条 · {catalog.caseCount} 个案例 · {catalog.templateCount} 套工业模板 · 来源 {catalog.source.name}（{catalog.source.license}）
               </div>
             </div>
-            <button type="button" onClick={onClose} className="ml-auto rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-white">
+            <button type="button" aria-label="关闭" onClick={onClose} className="ml-auto rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-white">
               <X size={16} />
             </button>
           </div>
@@ -212,7 +220,7 @@ export default function PromptLibrary({
             ))}
             <label className="relative min-w-[180px] flex-1">
               <Search size={13} className="pointer-events-none absolute left-2.5 top-2.5 text-slate-500" />
-              <input className={`${inputCls} pl-8`} value={query} placeholder="搜索标题、关键词、提示词… 支持 动漫=anime" onChange={(e) => setQuery(e.target.value)} />
+              <input autoFocus className={`${inputCls} pl-8`} value={query} placeholder="搜索标题、关键词、提示词… 支持 动漫=anime" onChange={(e) => setQuery(e.target.value)} />
             </label>
             <label className="flex items-center gap-1 text-[11px] text-slate-400">
               <input type="checkbox" checked={modifiedOnly} onChange={(e) => setModifiedOnly(e.target.checked)} />
@@ -377,7 +385,7 @@ export default function PromptLibrary({
                     disabled={!!busy}
                     onClick={() => void usePromptlibStore.getState().saveOverride(selected.id, optimized, jsonDraft || undefined)
                       .then(() => { setDraft(optimized); setUseJson(false); setOptimized(""); })
-                      .catch((e) => setError(`存回模板失败：${String(e)}`))}
+                      .catch((e) => setError(`存回模板失败：${errorText(e)}`))}
                     className="rounded-lg border border-fuchsia-400/40 px-2 py-1.5 text-[11px] text-fuchsia-200 hover:bg-fuchsia-500/10 disabled:opacity-50"
                   >
                     存回模板

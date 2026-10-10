@@ -36,4 +36,16 @@ describe("useGenerationStore history compatibility", () => {
       importedSources: [],
     });
   });
+
+  it("drops the prompt template when a history prompt is loaded and on reset", () => {
+    const template = { id: "tpl", kind: "template" as const, title: "模板", prompt: "模板提示词", category: "poster", styles: [], scenes: [], tags: [], image: "" };
+    useGenerationStore.getState().set({ prompt: "模板提示词", promptTemplate: template });
+
+    useGenerationStore.getState().load({ prompt: "旧历史提示词" });
+    expect(useGenerationStore.getState().promptTemplate).toBeNull();
+
+    useGenerationStore.getState().set({ promptTemplate: template });
+    useGenerationStore.getState().reset();
+    expect(useGenerationStore.getState().promptTemplate).toBeNull();
+  });
 });

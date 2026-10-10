@@ -68,18 +68,26 @@ export default function HistoryImageCard({
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
     >
-      <img
-        src={fileSrc(displayPath)}
-        alt={asset.source}
-        loading="lazy"
-        decoding="async"
+      {/* A button so the card opens with Enter/Space and the menu key; the file info shows on focus as on hover. */}
+      <button
+        type="button"
         onClick={() => onOpen(displayPath)}
         onContextMenu={(event) => {
           event.preventDefault();
           onMenu(event.clientX, event.clientY);
         }}
-        className="max-h-full max-w-full cursor-pointer object-contain transition hover:scale-105"
-      />
+        onFocus={() => setHover(true)}
+        onBlur={() => setHover(false)}
+        className="flex h-full w-full items-center justify-center focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-cyan-300/70"
+      >
+        <img
+          src={fileSrc(displayPath)}
+          alt={asset.source}
+          loading="lazy"
+          decoding="async"
+          className="max-h-full max-w-full cursor-pointer object-contain transition hover:scale-105"
+        />
+      </button>
       {hover && info && (
         <div className="pointer-events-none absolute inset-x-1 bottom-1 z-10 rounded-md border border-slate-600/80 bg-slate-950/92 p-2 text-[10px] leading-relaxed text-slate-200 shadow-xl">
           <div className="truncate text-slate-100">{shown?.fileName ?? info.fileName}</div>

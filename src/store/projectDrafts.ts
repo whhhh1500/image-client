@@ -1,4 +1,4 @@
-import { useGenerationStore, type GenParams } from "./useGenerationStore";
+import { useGenerationStore, type GenerationForm } from "./useGenerationStore";
 import { useVideoStore, type VideoParams } from "./useVideoStore";
 
 /**
@@ -11,7 +11,7 @@ import { useVideoStore, type VideoParams } from "./useVideoStore";
  * persisted: a restart starts from the project profile as before.
  */
 export interface ProjectDraft {
-  generation: GenParams;
+  generation: GenerationForm;
   video: VideoParams;
 }
 
@@ -38,6 +38,7 @@ function snapshot(): ProjectDraft {
       background: g.background,
       model: g.model,
       count: g.count,
+      promptTemplate: g.promptTemplate,
     },
     video: {
       shots: v.shots,
@@ -87,7 +88,12 @@ export function hasProjectDraft(projectId: string): boolean {
 export function restoreProjectDrafts(projectId: string | null): boolean {
   formProjectId = projectId;
   const draft = projectId ? drafts.get(projectId) : undefined;
-  if (!projectId || !draft) return false;
+  // The template link went out with the previous project's prompt; the cleared
+  // defaults do not reset it, so a project without a stash must drop it here.
+  if (!projectId || !draft) {
+    useGenerationStore.getState().set({ promptTemplate: null });
+    return false;
+  }
   // The live forms are authoritative from here on; the next switch stashes them again.
   drafts.delete(projectId);
   useGenerationStore.getState().set(draft.generation);

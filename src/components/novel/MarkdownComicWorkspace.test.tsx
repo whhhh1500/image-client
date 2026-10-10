@@ -14,9 +14,10 @@ vi.mock("../../lib/comic/markdownApi", async (original) => ({ ...await original<
 vi.mock("./NovelAssetManager", () => ({ default: (props: { open: boolean; mode: string }) => { manager.props = props; return props.open ? <div role="dialog" aria-label="共享小说原文管理器">{props.mode}</div> : null; } }));
 import MarkdownComicWorkspace from "./MarkdownComicWorkspace";
 import { useLibraryStore } from "../../store/useLibraryStore";
+import { resetViewState } from "../../store/useViewStore";
 let data: MdWorkspace;
 beforeEach(() => {
-  vi.clearAllMocks(); localStorage.clear();
+  vi.clearAllMocks(); localStorage.clear(); resetViewState();
   confirm.confirmAction.mockResolvedValue(true);
   useLibraryStore.getState().loadAssets([]);
   data = { sourceRevisionId: "r1", sourceContent: "原著正文", documents: [], jobs: [], images: [], textReady: false, imageReady: false };
@@ -99,9 +100,9 @@ describe("Markdown comic workflow", () => {
     await waitFor(() => expect((screen.getByLabelText("小说原文预览") as HTMLTextAreaElement).value).toBe("第九章正文"));
     expect((screen.getByLabelText("选择章节") as HTMLSelectElement).value).toBe("c2");
     expect(api.workspace).toHaveBeenLastCalledWith({ projectId: "p", novelWorkId: "w", chapterId: "c2" });
+    // Back on chapter 1, its remembered step (作品设定) reopens with the draft.
     fireEvent.change(screen.getByLabelText("选择章节"), { target: { value: "c1" } });
-    await screen.findByLabelText("小说原文预览"); fireEvent.click(screen.getByRole("button", { name: "2. 作品设定" }));
-    expect((screen.getByLabelText("作品设定 Markdown") as HTMLTextAreaElement).value).toBe("第一章未保存的漫画改编稿");
+    expect((await screen.findByLabelText("作品设定 Markdown") as HTMLTextAreaElement).value).toBe("第一章未保存的漫画改编稿");
   });
   it("blocks missing-page drafts and active jobs before linked updates", async () => {
     let poll!: () => void;
@@ -411,8 +412,8 @@ describe("Markdown comic workflow", () => {
     data.documents = [{ id: "s", kind: "settings", pageNo: null, markdown: "原设定", revision: 1, stale: false, issues: [], updatedAt: 1 }];
     await open(); fireEvent.click(screen.getByRole("button", { name: "2. 作品设定" })); fireEvent.change(screen.getByLabelText("作品设定 Markdown"), { target: { value: "未保存的独立草稿" } });
     fireEvent.change(screen.getByLabelText("选择章节"), { target: { value: "c2" } }); await screen.findByLabelText("小说原文预览"); data.documents[0].revision = 2;
-    fireEvent.change(screen.getByLabelText("选择章节"), { target: { value: "c1" } }); await screen.findByLabelText("小说原文预览"); fireEvent.click(screen.getByRole("button", { name: "2. 作品设定" }));
-    expect((screen.getByLabelText("作品设定 Markdown") as HTMLTextAreaElement).value).toBe("未保存的独立草稿"); fireEvent.click(screen.getByRole("button", { name: "保存文字" }));
+    fireEvent.change(screen.getByLabelText("选择章节"), { target: { value: "c1" } });
+    expect((await screen.findByLabelText("作品设定 Markdown") as HTMLTextAreaElement).value).toBe("未保存的独立草稿"); fireEvent.click(screen.getByRole("button", { name: "保存文字" }));
     await waitFor(() => expect(api.save).toHaveBeenCalledWith(expect.objectContaining({ markdown: "未保存的独立草稿", expectedRevision: 1 })));
   });
   it("blocks stale prompts and keeps invalid model output accessible with history/export", async () => {
@@ -520,5 +521,61 @@ describe("Markdown comic workflow", () => {
     fireEvent.click(screen.getByRole("button", { name: "按当前画风重画全部（2 页）" }));
     await waitFor(() => expect(api.render).toHaveBeenCalledTimes(3));
     expect(api.render).toHaveBeenLastCalledWith(expect.objectContaining({ pages: ["d1", "d2"].map((documentId) => ({ documentId, revision: 2 })) }));
+  });
+});
+describe("Markdown comic view memory", () => {
+  const promptPages = (numbers: number[]) => numbers.map((pageNo) => ({ id: `d${pageNo}`, kind: "page_prompt" as const, pageNo, markdown: `第${pageNo}页 Prompt`, revision: 1, stale: false, issues: [], updatedAt: 1 }));
+  const visualPanel = () => screen.getByText("作品视觉设定与画风参考（统一视觉宪法）").closest("details") as HTMLDetailsElement;
+  it("reopens each chapter on its own step, prompt page and visual panel after leaving the tab", async () => {
+    data.documents = promptPages([1, 2]);
+    await open();
+    fireEvent.click(screen.getByRole("button", { name: "5. 每页 Prompt" }));
+    fireEvent.click(screen.getByRole("button", { name: "第2页" }));
+    fireEvent.click(screen.getByText("作品视觉设定与画风参考（统一视觉宪法）"));
+    // The details element reports the toggle in a later task.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    expect(visualPanel().open).toBe(true);
+    // Switching tabs unmounts the whole page.
+    cleanup();
+
+    render(<MarkdownComicWorkspace />);
+    expect(((await screen.findByLabelText("Prompt 页码")) as HTMLInputElement).value).toBe("2");
+    expect((screen.getByLabelText("本页 Prompt Markdown") as HTMLTextAreaElement).value).toBe("第2页 Prompt");
+    expect(visualPanel().open).toBe(true);
+
+    // Another chapter starts on its own first step; this one keeps its place.
+    fireEvent.change(screen.getByLabelText("选择章节"), { target: { value: "c2" } });
+    await screen.findByLabelText("小说原文预览");
+    expect(visualPanel().open).toBe(false);
+    fireEvent.change(screen.getByLabelText("选择章节"), { target: { value: "c1" } });
+    expect(((await screen.findByLabelText("Prompt 页码")) as HTMLInputElement).value).toBe("2");
+  });
+  it("reopens the last chapter and falls back from a remembered page that no longer exists", async () => {
+    data.documents = promptPages([1, 2, 3]);
+    await open();
+    fireEvent.change(screen.getByLabelText("选择章节"), { target: { value: "c2" } });
+    await waitFor(() => expect(api.workspace).toHaveBeenLastCalledWith({ projectId: "p", novelWorkId: "w", chapterId: "c2" }));
+    await screen.findByLabelText("小说原文预览");
+    fireEvent.click(screen.getByRole("button", { name: "5. 每页 Prompt" }));
+    fireEvent.click(screen.getByRole("button", { name: "第3页" }));
+    cleanup();
+    data.documents = promptPages([1, 2]);
+
+    render(<MarkdownComicWorkspace />);
+    await waitFor(() => expect((screen.getByLabelText("Prompt 页码") as HTMLInputElement).value).toBe("2"));
+    expect((screen.getByLabelText("选择章节") as HTMLSelectElement).value).toBe("c2");
+    expect((screen.getByLabelText("本页 Prompt Markdown") as HTMLTextAreaElement).value).toBe("第2页 Prompt");
+  });
+  it("closes the full-size page image with Escape", async () => {
+    data.documents = promptPages([1]);
+    data.images = [{ id: "i1", documentId: "d1", documentRevision: 1, pageNo: 1, path: "img", promptInjection: "", stale: false, createdAt: 1 }];
+    await open();
+    fireEvent.click(screen.getByRole("button", { name: "6. 漫画" }));
+    fireEvent.click(await screen.findByRole("button", { name: "查看原图" }));
+    expect(screen.getByRole("dialog", { name: "第1页原图" })).toBeTruthy();
+
+    fireEvent.keyDown(document.body, { key: "Escape" });
+
+    expect(screen.queryByRole("dialog", { name: "第1页原图" })).toBeNull();
   });
 });

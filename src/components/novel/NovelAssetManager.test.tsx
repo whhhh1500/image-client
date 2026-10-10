@@ -27,6 +27,26 @@ describe("NovelAssetManager", () => {
   afterEach(() => { vi.restoreAllMocks(); cleanup(); localStorage.clear(); });
   const open = () => render(<NovelAssetManager mode="select" projectId="project-1" open onClose={vi.fn()} onSelect={select} />);
 
+  it("closes on Escape like the 关闭 button, but not while a save is running", async () => {
+    const onClose = vi.fn();
+    api.saveChapter.mockReturnValue(new Promise(() => {}));
+    render(<NovelAssetManager mode="manage" projectId="project-1" open onClose={onClose} />);
+    expect(screen.getByRole("dialog", { name: "管理小说原文资产" })).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "关闭" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "添加新章节" }));
+    fireEvent.change(screen.getByLabelText("小说章节正文"), { target: { value: "第二章正文" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存新章节" }));
+    await screen.findByRole("button", { name: "保存中…" });
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+
+    cleanup();
+    render(<NovelAssetManager mode="manage" projectId="project-1" open onClose={onClose} />);
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("returns a concrete current chapter revision instead of a library asset", async () => {
     open();
     await screen.findByLabelText("章节正文预览");

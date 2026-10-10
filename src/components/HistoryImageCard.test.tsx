@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { LibAsset } from "../store/useLibraryStore";
 
 const inspect = vi.hoisted(() => vi.fn());
@@ -31,6 +32,20 @@ describe("HistoryImageCard", () => {
     expect(image.getAttribute("loading")).toBe("lazy");
     expect(image.getAttribute("decoding")).toBe("async");
     expect(inspect).toHaveBeenCalledWith("C:/a.png");
+  });
+
+  it("opens from the keyboard like a click", async () => {
+    inspect.mockReturnValue(new Promise(() => {}));
+    const onOpen = vi.fn();
+    const user = userEvent.setup();
+    render(<HistoryImageCard asset={asset} onOpen={onOpen} onMenu={vi.fn()} />);
+
+    await user.tab();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "历史图" }));
+    await user.keyboard("{Enter}");
+    await user.keyboard(" ");
+    expect(onOpen).toHaveBeenCalledTimes(2);
+    expect(onOpen).toHaveBeenCalledWith("C:/a.png");
   });
 
   it("waits until the card scrolls into view before inspecting the file", () => {

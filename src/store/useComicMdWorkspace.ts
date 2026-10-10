@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { comicMdWorkspaceGet, type MdScope, type MdWorkspace } from "../lib/comic/markdownApi";
+import { errorText } from "../lib/errors";
 
 /** Cheap change detector so an unchanged poll does not re-render the workspace. */
 function workspaceSignature(workspace: MdWorkspace): string {
@@ -37,7 +38,7 @@ export function useComicMdWorkspace(scope: MdScope) {
       }
       return true;
     } catch (cause) {
-      if (active.current && token === request.current) setError(String(cause));
+      if (active.current && token === request.current) setError(errorText(cause));
       return false;
     }
   }, [scope.projectId, scope.novelWorkId, scope.chapterId]);

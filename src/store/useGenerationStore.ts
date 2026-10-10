@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { AssetImportRecord } from "../lib/assetImport";
+import type { PromptlibEntry } from "../lib/promptlib";
 
 export type ImageReferenceRole =
   | "character_identity"
@@ -34,7 +35,17 @@ export interface GenParams {
   count: number;
 }
 
-const DEFAULTS: GenParams = {
+/** The image form: the request parameters plus where its prompt came from. */
+export interface GenerationForm extends GenParams {
+  /**
+   * The prompt-library template the prompt was picked from; its rules guide
+   * "AI 优化" and it is recorded with the result. It goes with the prompt:
+   * editing, importing over or loading a history prompt drops it.
+   */
+  promptTemplate: PromptlibEntry | null;
+}
+
+const DEFAULTS: GenerationForm = {
   prompt: "",
   referencePath: "",
   references: [],
@@ -44,10 +55,11 @@ const DEFAULTS: GenParams = {
   background: "auto",
   model: "gpt-image-2",
   count: 1,
+  promptTemplate: null,
 };
 
-interface GenerationState extends GenParams {
-  set: (p: Partial<GenParams>) => void;
+interface GenerationState extends GenerationForm {
+  set: (p: Partial<GenerationForm>) => void;
   load: (p: Partial<GenParams>) => void;
   reset: () => void;
 }
@@ -63,6 +75,8 @@ export const useGenerationStore = create<GenerationState>((set) => ({
     referencePath: p.referencePath ?? "",
     references: p.references ?? [],
     importedSources: p.importedSources ?? [],
+    // The loaded prompt is not the template's.
+    promptTemplate: null,
   })),
   reset: () => set(DEFAULTS),
 }));

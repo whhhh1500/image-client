@@ -6,6 +6,8 @@ import { useProjectStore } from "../store/useProjectStore";
 import AssetDetailModal from "./AssetDetailModal";
 import { getDocumentDisplayVersion, getDocumentMeta } from "../lib/documents";
 import { readTextAsset } from "../lib/ipc";
+import { useEscapeKey } from "../lib/useEscapeKey";
+import { errorText } from "../lib/errors";
 
 type PickerKind = "text" | "image" | "video";
 
@@ -38,7 +40,7 @@ export default function AssetPicker({
   onClose,
   onPick,
   kinds,
-  title = "从项目资源导入",
+  title = "从资产库导入",
   strictProject = false,
   filter,
 }: {
@@ -81,6 +83,12 @@ export default function AssetPicker({
       .sort((a, b) => b.createdAt - a.createdAt);
   }, [activeKind, allAssets, filter, projectId, query, strictProject]);
 
+  const isPicking = Boolean(pickingAssetId);
+  const requestClose = () => {
+    if (!isPicking) onClose();
+  };
+  useEscapeKey(requestClose, open);
+
   if (!open) return null;
 
   const pick = async (asset: LibAsset) => {
@@ -100,28 +108,23 @@ export default function AssetPicker({
       await onPick(selected);
       onClose();
     } catch (cause) {
-      setError(String(cause));
+      setError(errorText(cause));
     } finally {
       releaseAssetPickerPick(pickingAssetRef);
       setPickingAssetId(null);
     }
   };
 
-  const isPicking = Boolean(pickingAssetId);
-  const requestClose = () => {
-    if (!isPicking) onClose();
-  };
-
   return (
     <>
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#020617]/80 p-4 backdrop-blur-md" onClick={requestClose}>
-        <section className="dream-dialog flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-cyan-200/15 bg-slate-950/92" onClick={(event) => event.stopPropagation()}>
+        <section role="dialog" aria-modal="true" aria-label={title} className="dream-dialog flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-cyan-200/15 bg-slate-950/92" onClick={(event) => event.stopPropagation()}>
           <header className="flex items-center gap-3 border-b border-white/5 px-5 py-4">
             <div className="min-w-0 flex-1">
               <div className="text-sm font-semibold text-slate-100">{title}</div>
               <div className="mt-0.5 text-[10px] text-slate-600">{strictProject ? "仅显示当前项目资源；先查看完整内容，再导入到当前步骤。" : "搜索全部历史；先查看完整内容，再导入到当前步骤。"}</div>
             </div>
-            <button disabled={isPicking} onClick={requestClose} className="rounded-lg p-1 text-slate-500 hover:bg-white/5 hover:text-white disabled:opacity-40"><X size={16} /></button>
+            <button type="button" aria-label="关闭" disabled={isPicking} onClick={requestClose} className="rounded-lg p-1 text-slate-500 hover:bg-white/5 hover:text-white disabled:opacity-40"><X size={16} /></button>
           </header>
 
           <div className="border-b border-white/5 px-5 py-3">
@@ -137,7 +140,7 @@ export default function AssetPicker({
               ))}
               <label className="relative ml-auto min-w-52 flex-1 sm:max-w-xs">
                 <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
-                <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索标题、内容、模型或提示词" className="w-full rounded-lg border border-white/8 bg-slate-950/65 py-2 pl-8 pr-3 text-xs text-slate-200 outline-none focus:border-cyan-300/30" />
+                <input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索标题、内容、模型或提示词" className="w-full rounded-lg border border-white/8 bg-slate-950/65 py-2 pl-8 pr-3 text-xs text-slate-200 outline-none focus:border-cyan-300/30" />
               </label>
             </div>
           </div>
@@ -161,7 +164,7 @@ export default function AssetPicker({
                         <div className="truncate text-xs font-medium text-slate-200">{meta?.title ?? asset.source} · v{getDocumentDisplayVersion(asset, allAssets)}</div>
                         <div className="mt-1 line-clamp-2 text-[10px] leading-relaxed text-slate-600">{meta?.text || "旧文档，打开详情后从文件读取"}</div>
                       </div>
-                      <button onClick={() => setPreview(asset)} className="rounded-lg border border-white/8 p-2 text-slate-500 hover:text-cyan-200" title="完整查看"><Eye size={13} /></button>
+                      <button type="button" onClick={() => setPreview(asset)} className="rounded-lg border border-white/8 p-2 text-slate-500 hover:text-cyan-200" title="完整查看" aria-label="完整查看"><Eye size={13} /></button>
                        <button disabled={isPicking} onClick={() => void pick(asset)} className="rounded-lg border border-cyan-300/15 bg-cyan-300/8 px-3 py-1.5 text-[10px] text-cyan-100 disabled:opacity-40">{pickingAssetId === asset.asset.id ? "导入中…" : "导入"}</button>
                     </div>
                   );
@@ -194,7 +197,7 @@ export default function AssetPicker({
                     <div className="flex items-center gap-2 p-2.5">
                       <Video size={13} className="text-violet-200" />
                       <span className="min-w-0 flex-1 truncate text-[11px] text-slate-300">{asset.source}</span>
-                      <button onClick={() => setPreview(asset)} className="rounded p-1 text-slate-500 hover:text-cyan-200"><Eye size={12} /></button>
+                      <button type="button" onClick={() => setPreview(asset)} className="rounded p-1 text-slate-500 hover:text-cyan-200" aria-label="完整查看"><Eye size={12} /></button>
                        <button disabled={isPicking} onClick={() => void pick(asset)} className="rounded border border-cyan-300/15 px-2 py-1 text-[10px] text-cyan-200 disabled:opacity-40">{pickingAssetId === asset.asset.id ? "导入中…" : "导入"}</button>
                     </div>
                   </article>

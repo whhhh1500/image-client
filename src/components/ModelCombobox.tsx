@@ -147,6 +147,8 @@ export default function ModelCombobox({
       return;
     }
     if (event.key === "Escape" && open) {
+      // Closing the list must not also close the dialog around it.
+      event.preventDefault();
       setOpen(false);
       setQuery(null);
       setActive(-1);

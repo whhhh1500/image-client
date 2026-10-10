@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { LibAsset } from "../store/useLibraryStore";
 import { createEmptyStoryboardShot, serializeStoryboard } from "../lib/video/storyboard";
 import { useLibraryStore } from "../store/useLibraryStore";
@@ -469,6 +469,20 @@ describe("VideoPanel storyboard import", () => {
     expect(useVideoStore.getState().shots[0].referenceVideos).toEqual([]);
     expect(useVideoStore.getState().shots[0].referenceStrategy).toBeUndefined();
     await waitFor(() => expect(screen.queryByText("托管视频 URL · https://cdn.example/shot-video.mp4")).toBeNull());
+  });
+
+  it("groups the mode buttons so clicking the field title does not switch the mode", async () => {
+    useProjectStore.setState({ activeId: "project-a", projects: [project("project-a")] });
+    useVideoStore.getState().load({ model: "model", mode: "reference", aspectRatio: "16:9", resolution: "720p", images: [], videos: [], audios: [], shots: [{ id: "shot-1", shotNo: 1, prompt: "镜头", durationS: 3 }] });
+    useLibraryStore.setState({ assets: [], tasks: [] });
+
+    render(<VideoPanel />);
+    const modes = await screen.findByRole("group", { name: "生成方式" });
+    await waitFor(() => expect(within(modes).getAllByRole("button").map((button) => button.getAttribute("aria-pressed"))).toEqual(["false", "false", "true"]));
+
+    // Inside a <label> this click landed on the first mode button (文生视频).
+    fireEvent.click(within(modes).getByText("生成方式"));
+    expect(useVideoStore.getState().mode).toBe("reference");
   });
 
   it("allows importing unassigned video references under default project", async () => {

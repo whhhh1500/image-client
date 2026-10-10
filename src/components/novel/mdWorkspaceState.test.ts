@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from "vitest";
-import { selectRenderPages, syncDraftBlock, pageBlock } from "./mdWorkspaceState";
+import { selectRenderPages, syncDraftBlock, pageBlock, restorablePageNo } from "./mdWorkspaceState";
 import type { MdWorkspace } from "../../lib/comic/markdownApi";
 const scope = { projectId: "p", novelWorkId: "w", chapterId: "c" };
 function workspace(numbers: number[]): MdWorkspace { return { sourceContent: "正文", sourceRevisionId: "r", documents: numbers.map((pageNo) => ({ id: `d${pageNo}`, pageNo, kind: "page_prompt", markdown: "完整Prompt", revision: 2, stale: false, issues: [], updatedAt: 1 })), jobs: [], images: [], textReady: true, imageReady: true }; }
@@ -62,5 +62,16 @@ describe("explicit page ranges", () => {
     expect(selectRenderPages(scope, data, "remaining", "A").documents.map((doc) => doc.pageNo)).toEqual([1, 2, 3]);
     data.documents[0].stale = true;
     expect(selectRenderPages(scope, data, "remaining", "A").reason).toContain("第1页需要更新");
+  });
+});
+describe("restorablePageNo", () => {
+  it("keeps a page with a saved prompt or a local draft and otherwise falls back to the nearest earlier page", () => {
+    const documents = workspace([1, 2, 4]).documents;
+    expect(restorablePageNo(scope, documents, 4)).toBe(4);
+    expect(restorablePageNo(scope, documents, 3)).toBe(2);
+    expect(restorablePageNo(scope, documents, 9)).toBe(4);
+    expect(restorablePageNo(scope, [], 5)).toBe(1);
+    localStorage.setItem("comic-md:draft:p:w:c:page_prompt:5", JSON.stringify({ markdown: "新页草稿", expectedRevision: null }));
+    expect(restorablePageNo(scope, documents, 5)).toBe(5);
   });
 });

@@ -206,7 +206,7 @@ function App() {
       const drafted = useVideoStore.getState().shots.filter((shot) => shot.prompt.trim()).length;
       if (drafted) {
         const projectId = useProjectStore.getState().activeId;
-        if (!(await confirmAction(`视频页已有 ${drafted} 个镜头草稿，将被当前分镜替换，继续？`))) return;
+        if (!(await confirmAction(`视频生成页已有 ${drafted} 个镜头草稿，将被当前分镜替换，继续？`))) return;
         // The form now belongs to another project; this storyboard does not.
         if (useProjectStore.getState().activeId !== projectId) return;
       }
@@ -322,7 +322,7 @@ function App() {
             className="flex h-8 items-center gap-1.5 whitespace-nowrap rounded-lg border border-slate-700 px-2.5 text-[11px] text-slate-300 transition hover:border-cyan-300/20 hover:text-cyan-100 disabled:opacity-40 max-[1024px]:px-2"
           >
             <RefreshCw size={13} className={historyRefreshing ? "animate-spin" : ""} />
-            {historyRefreshing ? "刷新中" : "刷新历史"}
+            {historyRefreshing ? "刷新中…" : "刷新历史"}
           </button>
           <button onClick={() => setSettingsOpen(true)} title="设置" className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-700 text-slate-300 transition hover:bg-slate-800 hover:text-white">
             <Settings size={15} />

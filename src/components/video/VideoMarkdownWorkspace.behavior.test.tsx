@@ -33,6 +33,7 @@ vi.mock("../novel/NovelAssetManager", () => ({ default: ({ open, mode, onSelect,
 vi.mock("./VideoStoryboardEditor", () => ({ default: () => null }));
 
 import VideoMarkdownWorkspace from "./VideoMarkdownWorkspace";
+import { resetViewState } from "../../store/useViewStore";
 
 function textAsset(id: string, source: string, params: Record<string, unknown>, createdAt: number) {
   return { asset: { id, kind: "text", path: `${id}.md` }, source, projectId: "p", params, createdAt };
@@ -49,6 +50,7 @@ const provenance = (parentAssetIds: string[], type = "manual") => ({
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
+  resetViewState();
   pickers.byTitle = {};
   pickers.filters = {};
   novelManagers.onSelect = undefined;
@@ -301,7 +303,7 @@ describe("VideoMarkdownWorkspace editing loop", () => {
     fireEvent.click(screen.getByRole("tab", { name: /改编规划/ }));
     expect(screen.getByLabelText("改编规划 Markdown")).toHaveProperty("value", "# 改编规划\n\n旧规划");
 
-    fireEvent.change(screen.getByLabelText("LLM 优化要求"), { target: { value: "加强因果，但保持人物关系" } });
+    fireEvent.change(screen.getByLabelText("AI 优化要求"), { target: { value: "加强因果，但保持人物关系" } });
     fireEvent.click(screen.getByRole("button", { name: "AI 优化" }));
 
     await waitFor(() => expect(api.llmChat).toHaveBeenCalledTimes(2));
@@ -362,7 +364,7 @@ describe("VideoMarkdownWorkspace editing loop", () => {
 
     render(<VideoMarkdownWorkspace llmModel="test-llm" onEditPrompt={vi.fn()} onSendToVideo={vi.fn()} />);
     fireEvent.click(screen.getByRole("tab", { name: /改编规划/ }));
-    fireEvent.change(screen.getByLabelText("LLM 优化要求"), { target: { value: "加强选择与后果" } });
+    fireEvent.change(screen.getByLabelText("AI 优化要求"), { target: { value: "加强选择与后果" } });
     fireEvent.click(screen.getByRole("button", { name: "AI 优化" }));
 
     await waitFor(() => expect(api.saveDocumentVersion).toHaveBeenCalledTimes(2));
@@ -483,6 +485,17 @@ describe("VideoMarkdownWorkspace editing loop", () => {
     fireEvent.click(screen.getByRole("tab", { name: /视频锚点/ }));
     expect(screen.getByRole("tab", { name: /改编规划 草稿未保存/ })).toBeTruthy();
     expect(screen.getByText("另有未保存草稿，不参与当前下游生产")).toBeTruthy();
+  });
+
+  it("reopens on the stage and draft the user left when the tab comes back", () => {
+    const first = render(<VideoMarkdownWorkspace llmModel="test-llm" onEditPrompt={vi.fn()} onSendToVideo={vi.fn()} />);
+    fireEvent.click(screen.getByRole("tab", { name: /改编规划/ }));
+    fireEvent.change(screen.getByLabelText("改编规划 Markdown"), { target: { value: "# 改编规划\n\n切页前的草稿" } });
+    first.unmount();
+
+    render(<VideoMarkdownWorkspace llmModel="test-llm" onEditPrompt={vi.fn()} onSendToVideo={vi.fn()} />);
+    expect(screen.getByRole("tab", { name: /改编规划/ }).getAttribute("aria-selected")).toBe("true");
+    expect((screen.getByLabelText("改编规划 Markdown") as HTMLTextAreaElement).value).toBe("# 改编规划\n\n切页前的草稿");
   });
 
   it("links the selected stage tab to its panel", () => {

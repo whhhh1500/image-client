@@ -276,7 +276,7 @@ export const useAgentStore = create<AgentStore>((set, get) => {
   const ensureLoaded = async () => {
     if (get().loaded) return;
     await get().load();
-    if (!get().loaded) throw new Error("Agent 提示词尚未加载成功，已阻止保存以免覆盖已有版本，请稍后重试");
+    if (!get().loaded) throw new Error("Agent Prompt 尚未加载成功，已阻止保存以免覆盖已有版本，请稍后重试");
   };
   return {
   versions: {},

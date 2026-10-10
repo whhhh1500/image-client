@@ -4,6 +4,8 @@ import { confirmAction } from "../../lib/confirm";
 import { useProjectStore } from "../../store/useProjectStore";
 import { useLibraryStore } from "../../store/useLibraryStore";
 import { useComicMdWorkspace } from "../../store/useComicMdWorkspace";
+import { useViewState } from "../../store/useViewStore";
+import { useEscapeKey } from "../../lib/useEscapeKey";
 import { novelWorkGet, novelWorkList, type NovelChapter, type NovelWork } from "../../lib/novel/api";
 import { comicMdExport, comicMdGenerate, comicMdRender, comicMdRenderOptionsSave, comicMdSync, comicMdWorkVisualExtract, comicMdWorkVisualSave, mdLabels, mdStageBlock, type MdDocument, type MdScope, type MdStage, type MdStyleReference, type MdWorkspace } from "../../lib/comic/markdownApi";
 import { comicStyleReferenceKey, isComicStyleReferenceCandidate, normalizeComicStyleReferences } from "../../lib/comic/styleReferences";
@@ -11,7 +13,8 @@ import MarkdownDocumentEditor from "./MarkdownDocumentEditor";
 import MarkdownSyncNotice from "./MarkdownSyncNotice";
 import ComicStyleReferencePanel from "./ComicStyleReferencePanel";
 import NovelAssetManager, { type NovelAssetChange, type NovelAssetInitialSelection, type NovelAssetManagerMode, type NovelAssetSelection } from "./NovelAssetManager";
-import { button, primary, field, scopeKey, useLocalValue, selectRenderPages, pageBlock, syncDraftBlock, type RenderSelection } from "./mdWorkspaceState";
+import { button, primary, field, scopeKey, useLocalValue, selectRenderPages, pageBlock, syncDraftBlock, restorablePageNo, type RenderSelection } from "./mdWorkspaceState";
+import { errorText } from "../../lib/errors";
 
 export default function MarkdownComicWorkspace() {
   const projectId = useProjectStore((state) => state.activeId);
@@ -32,7 +35,7 @@ function BookShelf({ projectId }: { projectId: string }) {
     try {
       const items = (await novelWorkList(projectId)).filter((item) => item.status !== "archived");
       if (alive.current) { setWorks(items); setError(""); }
-    } catch (cause) { if (alive.current) setError(String(cause)); }
+    } catch (cause) { if (alive.current) setError(errorText(cause)); }
   }, [projectId]);
   useEffect(() => {
     alive.current = true;
@@ -64,11 +67,11 @@ function BookShelf({ projectId }: { projectId: string }) {
       <p className="text-sm leading-5 text-slate-400">小说原文资产由统一管理器维护；本页保存的是独立的漫画改编稿、分镜和图片。管理原文不会自动覆盖这些成果。</p>
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <label className="text-sm text-slate-300">小说原文 <select aria-label="选择小说" className={`${field} ml-2 max-w-60`} value={work?.id ?? ""} onChange={(event) => { select(event.target.value); setRequestedChapterId(undefined); }}><option value="" disabled>请选择小说</option>{works.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select></label>
-        <button className={button} onClick={() => openManager("manage")}>管理小说原文</button>
+        <button className={button} onClick={() => openManager("manage")}>管理小说原文资产</button>
       </div>
       {error && <p role="alert" className="mt-2 text-sm text-rose-300">{error}</p>}
     </header>
-    {work ? <ChapterShelf key={work.id} projectId={projectId} work={work} requestedChapterId={requestedChapterId} onRequestedChapterHandled={() => setRequestedChapterId(undefined)} sourceChange={sourceChange} onManage={openManager} /> : <div className="space-y-3 p-6"><p className="text-sm text-slate-400">先在共享小说原文管理器新建一本小说和第一章，再选择章节进入漫画改编。保存原文不会调用模型。</p><button className={button} onClick={() => openManager("manage")}>管理小说原文</button><button className={primary} onClick={() => openManager("select")}>选择小说章节开始漫画改编</button></div>}
+    {work ? <ChapterShelf key={work.id} projectId={projectId} work={work} requestedChapterId={requestedChapterId} onRequestedChapterHandled={() => setRequestedChapterId(undefined)} sourceChange={sourceChange} onManage={openManager} /> : <div className="space-y-3 p-6"><p className="text-sm text-slate-400">先在共享小说原文管理器新建一本小说和第一章，再选择章节进入漫画改编。保存原文不会调用模型。</p><button className={button} onClick={() => openManager("manage")}>管理小说原文资产</button><button className={primary} onClick={() => openManager("select")}>选择小说章节开始漫画改编</button></div>}
     <NovelAssetManager projectId={projectId} open={managerOpen} onClose={() => setManagerOpen(false)} mode={managerMode} onSelect={chooseSource} onChanged={changedSource} initialSelection={managerInitial} selectActionLabel="在漫画中使用此章节" />
   </section>;
 }
@@ -85,7 +88,7 @@ function ChapterShelf({ projectId, work, requestedChapterId, onRequestedChapterH
       if (alive.current) { setChapters(snapshot.chapters); setLoaded(true); setError(""); }
       return true;
     } catch (cause) {
-      if (alive.current) setError(String(cause));
+      if (alive.current) setError(errorText(cause));
       return false;
     }
   }, [projectId, work.id]);
@@ -116,12 +119,17 @@ const views: { id: View; label: string }[] = [{ id: "source", label: "原文资�
 function ChapterWorkspace({ scope, chapter, refreshChapters, onChooseChapter, sourceChange, onManageSource }: { scope: MdScope; chapter: NovelChapter; refreshChapters: () => Promise<boolean>; onChooseChapter: (chapterId: string) => void; sourceChange?: NovelAssetChange; onManageSource: () => void }) {
   const { workspace, error, refresh } = useComicMdWorkspace(scope);
   const libraryAssets = useLibraryStore((state) => state.assets);
-  const [view, setView] = useState<View>("source");
-  const [visualOpen, setVisualOpen] = useState(false);
-  useEffect(() => {
-    setVisualOpen(view === "settings");
-  }, [view]);
-  const [pageNo, setPageNo] = useState(1);
+  // The step, the visual panel and the prompt page are remembered per chapter
+  // for the session, so leaving the tab does not send the user back to step 1.
+  const [view, setView] = useViewState<View>(`comic-md:view:${scopeKey(scope)}`, "source");
+  const [visualOpen, setVisualOpen] = useViewState(`comic-md:visual-open:${scopeKey(scope)}`, false);
+  // Entering 作品设定 unfolds the visual settings and leaving it folds them; a
+  // remount keeps whatever the user last chose.
+  const changeView = (next: View) => {
+    if (next !== view) setVisualOpen(next === "settings");
+    setView(next);
+  };
+  const [pageNo, setPageNo] = useViewState(`comic-md:page:${scopeKey(scope)}`, 1);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [exportPath, setExportPath] = useState("");
@@ -134,6 +142,14 @@ function ChapterWorkspace({ scope, chapter, refreshChapters, onChooseChapter, so
   const actionBusy = useRef(false);
   const active = useRef(true);
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
+  // A remembered prompt page that was removed meanwhile falls back once the workspace is read.
+  const pageRestored = useRef(false);
+  useEffect(() => {
+    if (!workspace || pageRestored.current) return;
+    pageRestored.current = true;
+    const restored = restorablePageNo(scope, workspace.documents, pageNo);
+    if (restored !== pageNo) setPageNo(restored);
+  }, [pageNo, scope, setPageNo, workspace]);
   useEffect(() => {
     if (sourceChange?.projectId === scope.projectId && sourceChange.novelWorkId === scope.novelWorkId && sourceChange.novelChapterId === scope.chapterId) {
       void Promise.all([refresh(), refreshChapters()]).then(([workspaceLoaded, chaptersLoaded]) => {
@@ -146,9 +162,9 @@ function ChapterWorkspace({ scope, chapter, refreshChapters, onChooseChapter, so
     actionBusy.current = true;
     setBusy(true); setMessage("");
     let actionError = "";
-    try { await action(); } catch (cause) { actionError = String(cause); if (active.current) setMessage(actionError); }
+    try { await action(); } catch (cause) { actionError = errorText(cause); if (active.current) setMessage(actionError); }
     finally {
-      try { await refresh(); } catch (cause) { if (active.current && !actionError) setMessage(String(cause)); }
+      try { await refresh(); } catch (cause) { if (active.current && !actionError) setMessage(errorText(cause)); }
       actionBusy.current = false;
       if (active.current) setBusy(false);
     }
@@ -269,7 +285,7 @@ function ChapterWorkspace({ scope, chapter, refreshChapters, onChooseChapter, so
   };
   const renderChoices: { selection: RenderSelection; label: string }[] = [{ selection: "first", label: "生成第一页" }, { selection: "first_three", label: "生成前三页" }, { selection: "remaining", label: "生成剩余页" }, ...((styleReferences.length || constitution.trim()) ? [{ selection: "all" as const, label: "按当前画风重画全部" }] : [])];
   return <div className="flex min-h-0 flex-1 flex-col">
-    <nav aria-label="制作步骤" className="flex shrink-0 flex-wrap gap-1 border-b border-slate-800 px-4 py-1">{views.map((item, index) => <button key={item.id} aria-current={view === item.id ? "step" : undefined} className={`${button} !py-1 ${view === item.id ? "border-indigo-400 bg-indigo-500/20 text-white" : "border-transparent"}`} onClick={() => setView(item.id)}>{index + 1}. {item.label}</button>)}</nav>
+    <nav aria-label="制作步骤" className="flex shrink-0 flex-wrap gap-1 border-b border-slate-800 px-4 py-1">{views.map((item, index) => <button key={item.id} aria-current={view === item.id ? "step" : undefined} className={`${button} !py-1 ${view === item.id ? "border-indigo-400 bg-indigo-500/20 text-white" : "border-transparent"}`} onClick={() => changeView(item.id)}>{index + 1}. {item.label}</button>)}</nav>
     <main className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
       {(error || message) && <p role="alert" className="rounded-lg bg-amber-500/10 p-3 text-sm text-amber-100">{error || message}</p>}
       {currentJob && <p aria-label="当前生成状态" className="border-l-2 border-slate-600 pl-3 text-sm text-slate-300">{mdLabels[currentJob.kind]} · {currentJob.status === "running" ? `正在${currentJob.kind === "sync" ? "更新" : currentJob.kind === "optimize" ? "优化" : "生成"}${["images", "optimize", "sync"].includes(currentJob.kind) ? ` · ${currentJob.completedPages}/${currentJob.totalPages} ${currentJob.kind === "images" ? "页" : "份"}` : "，可以继续编辑文字"}` : "本次未完成，已有成果保留；请查看下方生成记录，修正后重新生成。"}</p>}
@@ -306,10 +322,10 @@ function ChapterWorkspace({ scope, chapter, refreshChapters, onChooseChapter, so
           </section>
         </div>
       </details>
-      {view === "source" ? <section aria-label="小说原文资产" className="space-y-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold text-slate-100">小说原文资产</h2><p className="mt-1 max-w-3xl text-sm leading-6 text-slate-400">这是当前漫画章节使用的小说原文快照。编辑原文会新建原文修订，并只把现有漫画改编稿标记为需要核对；不会自动生成、覆盖剧本、分镜或已有图片。</p></div><button className={button} disabled={disabled} onClick={onManageSource}>管理小说原文</button></div><dl className="grid gap-3 text-sm sm:grid-cols-2"><div className="rounded-lg border border-slate-800 p-3"><dt className="text-xs text-slate-500">漫画章节</dt><dd className="mt-1 text-slate-200">第{chapter.chapterNo}章 · {chapter.title || "未命名章节"}</dd></div><div className="rounded-lg border border-slate-800 p-3"><dt className="text-xs text-slate-500">当前原文修订</dt><dd className="mt-1 break-all text-slate-200">{workspace.sourceRevisionId ?? "尚未保存原文"}</dd></div></dl><label className="block text-sm text-slate-300">小说原文预览<textarea aria-label="小说原文预览" readOnly className={`${field} mt-1 min-h-72 w-full resize-y leading-7`} value={workspace.sourceContent} /></label><p className="text-xs leading-5 text-slate-500">下面的“作品设定”“本章剧本”“分页分镜”和 Prompt 都是漫画改编稿；它们的保存和原文资产相互独立。</p></section> : view === "images" ? <>
+      {view === "source" ? <section aria-label="小说原文资产" className="space-y-4"><div className="flex flex-wrap items-start justify-between gap-3"><div><h2 className="text-lg font-semibold text-slate-100">小说原文资产</h2><p className="mt-1 max-w-3xl text-sm leading-6 text-slate-400">这是当前漫画章节使用的小说原文快照。编辑原文会新建原文修订，并只把现有漫画改编稿标记为需要核对；不会自动生成、覆盖剧本、分镜或已有图片。</p></div><button className={button} disabled={disabled} onClick={onManageSource}>管理小说原文资产</button></div><dl className="grid gap-3 text-sm sm:grid-cols-2"><div className="rounded-lg border border-slate-800 p-3"><dt className="text-xs text-slate-500">漫画章节</dt><dd className="mt-1 text-slate-200">第{chapter.chapterNo}章 · {chapter.title || "未命名章节"}</dd></div><div className="rounded-lg border border-slate-800 p-3"><dt className="text-xs text-slate-500">当前原文修订</dt><dd className="mt-1 break-all text-slate-200">{workspace.sourceRevisionId ?? "尚未保存原文"}</dd></div></dl><label className="block text-sm text-slate-300">小说原文预览<textarea aria-label="小说原文预览" readOnly className={`${field} mt-1 min-h-72 w-full resize-y leading-7`} value={workspace.sourceContent} /></label><p className="text-xs leading-5 text-slate-500">下面的“作品设定”“本章剧本”“分页分镜”和 Prompt 都是漫画改编稿；它们的保存和原文资产相互独立。</p></section> : view === "images" ? <>
         <div><h2 className="text-lg font-semibold text-slate-100">漫画结果</h2><p className="mt-1 text-sm leading-6 text-slate-400">一份页 Prompt 对应一张漫画页。按页码顺序生成；缺页、未保存或需更新时会明确提示。</p></div>
         <label className="block text-sm text-slate-300">本章 Prompt 注入<textarea aria-label="本章 Prompt 注入" className={`${field} mt-1 min-h-24 w-full`} value={injection} onChange={(event) => setInjectionDraft(event.target.value === renderOptions.promptInjection && (!injectionDraft || injectionDraft.expectedRevision === renderOptions.revision) ? null : { promptInjection: event.target.value, expectedRevision: injectionDraft?.expectedRevision ?? renderOptions.revision })} placeholder="例如：使用黑白水墨画风，所有对白用简体中文" /></label>
-        <div className="flex flex-wrap items-center gap-2"><button className={button} disabled={busy || !injectionDirty} onClick={() => void run(async () => { await saveInjection(); setMessage("本章 Prompt 注入已保存。"); })}>保存注入</button><span className="text-sm text-slate-400">{injectionDirty ? "注入有未保存修改；点击任一生成按钮会先保存这份注入。" : `注入已保存 · 第${renderOptions.revision}版`}</span></div>
+        <div className="flex flex-wrap items-center gap-2"><button className={button} disabled={busy || !injectionDirty} onClick={() => void run(async () => { await saveInjection(); setMessage("本章 Prompt 注入已保存。"); })}>保存注入</button><span className="text-sm text-slate-400">{injectionDirty ? "注入有未保存修改；点击任一生成按钮会先保存这份注入。" : `注入已保存 · 第 ${renderOptions.revision} 版`}</span></div>
         <p className="text-sm text-slate-400">注入内容优先于每页 Prompt 中相冲突的要求；本章所有生图入口统一应用。修改后，旧规则生成的图片会标记需要更新。</p>
         {injectionDraft && injectionDraft.expectedRevision !== renderOptions.revision && <p role="alert" className="text-sm text-amber-200">注入规则已有较新版本，你的修改保留。<button className={`${button} ml-2`} onClick={() => setInjectionDraft(injection === renderOptions.promptInjection ? null : { promptInjection: injection, expectedRevision: renderOptions.revision })}>以当前注入版本为基准</button></p>}
         {injectionStorageError && <p role="alert" className="text-sm text-amber-200">注入草稿无法写入本地，请先复制内容。</p>}
@@ -322,7 +338,7 @@ function ChapterWorkspace({ scope, chapter, refreshChapters, onChooseChapter, so
         {view === "page_prompt" && <div className="flex flex-wrap items-center gap-2">{prompts.map((doc) => <button key={doc.id} className={`${button} ${pageNo === doc.pageNo ? "border-indigo-400" : ""}`} onClick={() => setPageNo(doc.pageNo!)}>第{doc.pageNo}页{doc.outOfPlan ? " · 不在当前分镜" : doc.stale ? " · 需更新" : doc.issues.length ? " · 待补齐" : ""}</button>)}<label className="text-sm text-slate-300">编辑第 <input aria-label="Prompt 页码" type="number" min={1} className={`${field} w-20`} value={pageNo} onChange={(event) => setPageNo(Math.max(1, Number(event.target.value) || 1))} /> 页</label><button className={button} onClick={() => setPageNo(Math.max(pageNo, ...prompts.map((doc) => doc.pageNo ?? 0)) + 1)}>添加下一页 Prompt</button></div>}
         <MarkdownDocumentEditor key={`${scopeKey(scope)}:${view}:${view === "page_prompt" ? pageNo : ""}`} scope={scope} kind={view} pageNo={view === "page_prompt" ? pageNo : undefined} document={currentDoc} pageDocuments={prompts} workspaceDocuments={workspace.documents} missingPageNos={workspace.syncPlan?.missingPageNos ?? []} jobs={jobs} refresh={async () => { await refresh(); }} renderingDisabled={disabled} onRender={renderPages} beforeOptimize={async () => { const saved = await saveWorkVisual(); ensureVisualReady(saved); }} injection={injection} />
       </>}
-      {!!exportDocuments.length && <div className="border-t border-slate-800 pt-4"><button className={button} disabled={busy} onClick={() => void run(async () => { const result = await comicMdExport({ ...scope, documentIds: exportDocuments.map((doc) => doc.id) }); setExportPath(result.files[0] ?? ""); setMessage(`已导出 ${result.files.length} 份 Markdown：${result.path}`); })}>导出本章全部已保存 MD</button><span className="ml-3 text-sm text-slate-500">包含作品设定，排除不在当前分镜的旧页；未保存草稿请先保存或复制。</span>{exportPath && <button className={`${button} ml-2`} onClick={() => void revealItemInDir(exportPath).catch((cause) => setMessage(String(cause)))}>打开导出文件位置</button>}</div>}
+      {!!exportDocuments.length && <div className="border-t border-slate-800 pt-4"><button className={button} disabled={busy} onClick={() => void run(async () => { const result = await comicMdExport({ ...scope, documentIds: exportDocuments.map((doc) => doc.id) }); setExportPath(result.files[0] ?? ""); setMessage(`已导出 ${result.files.length} 份 Markdown：${result.path}`); })}>导出本章全部已保存 MD</button><span className="ml-3 text-sm text-slate-500">包含作品设定，排除不在当前分镜的旧页；未保存草稿请先保存或复制。</span>{exportPath && <button className={`${button} ml-2`} onClick={() => void revealItemInDir(exportPath).catch((cause) => setMessage(errorText(cause)))}>打开导出文件位置</button>}</div>}
       {!!jobs.length && <details aria-label="生成记录" className="border-t border-slate-800 pt-3 text-sm text-slate-400"><summary className="cursor-pointer">生成记录（{jobs.length} 次）</summary>{jobs.map((job) => <div key={job.id} className="mt-3 border-l border-slate-700 pl-3"><p>{mdLabels[job.kind]} · {job.status === "running" ? "正在生成" : job.status === "succeeded" ? "已完成" : job.status === "interrupted" ? "已中断" : "未完成"}{job.kind === "images" && ` · ${job.completedPages}/${job.totalPages} 页`}</p>{job.message && <p className="mt-1">{job.message}</p>}{(job.status === "failed" || job.status === "interrupted") && <p className="mt-1">已有成果仍保留。修正后可点击对应步骤的生成按钮重新请求，可能计费。</p>}{job.outputMarkdown && <RawOutput markdown={job.outputMarkdown} />}</div>)}</details>}
     </main>
   </div>;
@@ -347,6 +363,7 @@ function ImageGallery({ scope, workspace, onRender, disabled }: { scope: MdScope
   const [rerunInjections, setRerunInjections, rerunStorageError] = useLocalValue<Record<string, string>>(`comic-md:rerun-injections:${scopeKey(scope)}`, {});
   const [error, setError] = useState("");
   const [largeImage, setLargeImage] = useState<{ path: string; pageNo: number } | null>(null);
+  useEscapeKey(() => setLargeImage(null), largeImage !== null);
   const pages = [...new Set(workspace.images.map((image) => image.pageNo))].sort((a, b) => a - b);
   if (!pages.length) return <p className="py-8 text-sm text-slate-400">还没有漫画图片。先准备每页 Prompt，再点击生成；也可以复制 Prompt 到其他工具画图。</p>;
   const updateRerunInjection = (pageNo: number, value: string) => {
@@ -357,7 +374,7 @@ function ImageGallery({ scope, workspace, onRender, disabled }: { scope: MdScope
   };
   return <>
     {(error || rerunStorageError) && <p role="status" className="text-sm text-amber-200">{error || "本次重画注入草稿无法写入本地，请先复制内容。"}</p>}
-    {largeImage && <div role="dialog" aria-modal="true" aria-label={`第${largeImage.pageNo}页原图`} className="fixed inset-0 z-50 flex flex-col bg-slate-950/95 p-6" onKeyDown={(event) => { if (event.key === "Escape") setLargeImage(null); }}><div className="flex justify-between gap-4 pb-4 text-slate-200"><span>第 {largeImage.pageNo} 页 · 原图</span><button autoFocus className={button} onClick={() => setLargeImage(null)}>关闭大图</button></div><div className="min-h-0 flex-1 overflow-auto"><img src={fileSrc(largeImage.path)} alt={`第${largeImage.pageNo}页漫画原图`} className="mx-auto h-auto" /></div></div>}
+    {largeImage && <div role="dialog" aria-modal="true" aria-label={`第${largeImage.pageNo}页原图`} className="fixed inset-0 z-50 flex flex-col bg-slate-950/95 p-6"><div className="flex justify-between gap-4 pb-4 text-slate-200"><span>第{largeImage.pageNo}页 · 原图</span><button autoFocus className={button} onClick={() => setLargeImage(null)}>关闭大图</button></div><div className="min-h-0 flex-1 overflow-auto"><img src={fileSrc(largeImage.path)} alt={`第${largeImage.pageNo}页漫画原图`} className="mx-auto h-auto" /></div></div>}
     <div className="grid gap-6 lg:grid-cols-2">{pages.map((pageNo) => {
     const versions = workspace.images.filter((image) => image.pageNo === pageNo).sort((a, b) => b.createdAt - a.createdAt);
     const chosen = versions.find((image) => image.id === selections[pageNo]) ?? versions[0];
@@ -365,12 +382,12 @@ function ImageGallery({ scope, workspace, onRender, disabled }: { scope: MdScope
     const blocked = prompt ? pageBlock(scope, [prompt]) : "本页 Prompt 不存在，请先恢复或保存。";
     const rerunInjection = rerunInjections[pageNo] ?? "";
     return <figure key={pageNo} className="overflow-hidden rounded-xl border border-slate-800">
-      <figcaption className="flex flex-wrap items-center justify-between gap-2 p-3 text-sm text-slate-200"><span>第 {pageNo} 页{chosen.stale ? " · Prompt、注入或作品画风已更新" : ""}</span><select aria-label={`第${pageNo}页图片版本`} className={field} value={chosen.id} onChange={(event) => select({ ...selections, [pageNo]: event.target.value })}>{versions.map((image, index) => <option key={image.id} value={image.id}>{index === 0 ? "最新结果" : `历史结果 ${versions.length - index}`} · Prompt 第 {image.documentRevision} 版</option>)}</select></figcaption>
-      <img src={fileSrc(chosen.path)} alt={`第${pageNo}页漫画`} className="mx-auto max-h-[70vh] max-w-full object-contain" onError={() => setError(`第 ${pageNo} 页图片无法显示，可打开文件位置检查。`)} />
+      <figcaption className="flex flex-wrap items-center justify-between gap-2 p-3 text-sm text-slate-200"><span>第{pageNo}页{chosen.stale ? " · Prompt、注入或作品画风已更新" : ""}</span><select aria-label={`第${pageNo}页图片版本`} className={field} value={chosen.id} onChange={(event) => select({ ...selections, [pageNo]: event.target.value })}>{versions.map((image, index) => <option key={image.id} value={image.id}>{index === 0 ? "最新结果" : `历史结果 ${versions.length - index}`} · Prompt 第 {image.documentRevision} 版</option>)}</select></figcaption>
+      <img src={fileSrc(chosen.path)} alt={`第${pageNo}页漫画`} className="mx-auto max-h-[70vh] max-w-full object-contain" onError={() => setError(`第${pageNo}页图片无法显示，可打开所在文件夹检查。`)} />
       <div className="space-y-2 p-3">
         <label className="block text-sm text-slate-300">本次重画 Prompt 注入（可选）<textarea aria-label={`第${pageNo}页本次重画 Prompt 注入`} className={`${field} mt-1 min-h-20 w-full`} value={rerunInjection} onChange={(event) => updateRerunInjection(pageNo, event.target.value)} placeholder="例如：只把外套改为红色，其余画面保持不变" /></label>
-        <p className="text-xs leading-5 text-slate-500">只作用于第 {pageNo} 页的这一次重画；与页 Prompt 或本章注入冲突时，以这里为准。</p>
-        <div className="flex flex-wrap gap-2"><button className={button} onClick={() => setLargeImage({ path: chosen.path, pageNo })}>查看原图</button><button className={button} onClick={() => void revealItemInDir(chosen.path).catch((cause) => setError(String(cause)))}>打开文件位置</button><button className={primary} disabled={disabled || !!blocked} onClick={() => void onRender([prompt!], rerunInjection)}>重画第{pageNo}页</button></div>
+        <p className="text-xs leading-5 text-slate-500">只作用于第{pageNo}页的这一次重画；与页 Prompt 或本章注入冲突时，以这里为准。</p>
+        <div className="flex flex-wrap gap-2"><button className={button} onClick={() => setLargeImage({ path: chosen.path, pageNo })}>查看原图</button><button className={button} onClick={() => void revealItemInDir(chosen.path).catch((cause) => setError(errorText(cause)))}>打开所在文件夹</button><button className={primary} disabled={disabled || !!blocked} onClick={() => void onRender([prompt!], rerunInjection)}>重画第{pageNo}页</button></div>
       </div>
       {blocked && <p className="px-3 pb-2 text-xs text-amber-200">{blocked}</p>}
       <details className="px-3 pb-3 text-sm text-slate-400"><summary className="cursor-pointer">此图实际使用的视觉规则</summary><div className="mt-2 space-y-2"><p className="whitespace-pre-wrap break-words"><strong className="text-slate-300">作品视觉宪法：</strong>第 {chosen.visualProfileRevision ?? 0} 版</p><p className="whitespace-pre-wrap break-words"><strong className="text-slate-300">作品参考图：</strong>{visualReferenceCount(chosen.visualReferenceSnapshot)}</p><p className="whitespace-pre-wrap break-words"><strong className="text-slate-300">本章注入：</strong>{chosen.promptInjection || "未设置"}</p><p className="whitespace-pre-wrap break-words"><strong className="text-slate-300">本次重画注入：</strong>{chosen.rerunPromptInjection || "未设置"}</p></div></details>

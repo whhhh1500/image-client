@@ -1,6 +1,7 @@
 import { confirmAction } from "../lib/confirm";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { fileSrc } from "../lib/desktop";
+import { useEscapeKey } from "../lib/useEscapeKey";
 import { Copy, FilePenLine, Image as ImageIcon, Loader2, Save, Sparkles, Video, X } from "lucide-react";
 import { configStatus, llmChat, readTextAsset } from "../lib/ipc";
 import { errorText } from "../lib/errors";
@@ -167,6 +168,7 @@ export default function AssetDetailModal({
   // while it runs must not turn it into the other version's draft.
   const selectedIdRef = useRef(selected?.asset.id);
   selectedIdRef.current = selected?.asset.id;
+  const titleId = useId();
 
   useEffect(() => setSelected(asset), [asset]);
 
@@ -229,6 +231,13 @@ export default function AssetDetailModal({
     () => selected && documentMeta ? getDocumentVersions(selected, allAssets) : [],
     [selected, documentMeta, allAssets],
   );
+
+  const attemptClose = async () => {
+    if (dirty && !(await confirmAction("当前有未保存修改，确定关闭吗？"))) return;
+    onClose();
+  };
+  useEscapeKey(() => void attemptClose(), open);
+
   if (!selected) return null;
 
   const setStoryboardShots = (next: StoryboardShot[]) => {
@@ -237,11 +246,6 @@ export default function AssetDetailModal({
     setDraftChangeType("manual");
     setRevisionInstruction(undefined);
     setDirty(true);
-  };
-
-  const attemptClose = async () => {
-    if (dirty && !(await confirmAction("当前修改尚未保存，确定关闭吗？"))) return;
-    onClose();
   };
 
   const selectVersion = async (version: LibAsset) => {
@@ -407,7 +411,7 @@ export default function AssetDetailModal({
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-[#020617]/85 p-4 backdrop-blur-md" onClick={attemptClose}>
-      <section className="dream-dialog flex max-h-[94vh] w-full max-w-6xl overflow-hidden rounded-2xl border border-cyan-200/15 bg-slate-950/90" onClick={(event) => event.stopPropagation()}>
+      <section role="dialog" aria-modal="true" aria-labelledby={titleId} className="dream-dialog flex max-h-[94vh] w-full max-w-6xl overflow-hidden rounded-2xl border border-cyan-200/15 bg-slate-950/90" onClick={(event) => event.stopPropagation()}>
         {documentMeta && versions.length > 0 && (
           <aside className="hidden w-56 shrink-0 border-r border-white/5 bg-slate-950/45 p-3 md:block">
             <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">版本历史</div>
@@ -435,10 +439,10 @@ export default function AssetDetailModal({
               {selected.asset.kind === "text" ? <FilePenLine size={17} /> : selected.asset.kind === "video" ? <Video size={17} /> : <ImageIcon size={17} />}
             </span>
             <div className="min-w-0 flex-1">
-              <div className="truncate text-sm font-semibold text-slate-100">{documentMeta ? `${documentMeta.title} · v${getDocumentDisplayVersion(selected, allAssets)}` : selected.source}</div>
+              <div id={titleId} className="truncate text-sm font-semibold text-slate-100">{documentMeta ? `${documentMeta.title} · v${getDocumentDisplayVersion(selected, allAssets)}` : selected.source}</div>
               <div className="mt-0.5 text-[10px] text-slate-500">{documentMeta ? `${documentTypeLabel(documentMeta.documentType)} · ${documentChangeLabel(documentMeta.changeType)}` : `${selected.asset.kind} · ${selected.model || "无模型信息"}`}</div>
             </div>
-            <button onClick={attemptClose} className="rounded-lg p-1.5 text-slate-500 hover:bg-white/5 hover:text-white"><X size={17} /></button>
+            <button type="button" autoFocus aria-label="关闭" onClick={attemptClose} className="rounded-lg p-1.5 text-slate-500 hover:bg-white/5 hover:text-white"><X size={17} /></button>
           </header>
 
           <div className="min-h-0 flex-1 overflow-y-auto p-5">
@@ -464,7 +468,7 @@ export default function AssetDetailModal({
                 )}
 
                 <div className="rounded-xl border border-violet-300/10 bg-violet-300/[0.035] p-3">
-                  <div className="mb-2 flex items-center gap-2 text-xs font-medium text-violet-200"><Sparkles size={13} /> 智能优化当前草稿</div>
+                  <div className="mb-2 flex items-center gap-2 text-xs font-medium text-violet-200"><Sparkles size={13} /> AI 优化当前草稿</div>
                   <textarea value={instruction} onChange={(event) => setInstruction(event.target.value)} className={`${inputCls} min-h-20 resize-y text-xs`} />
                   <button onClick={() => void optimize()} disabled={busy !== null || !draft.trim()} className="mt-2 flex items-center gap-1.5 rounded-lg border border-violet-300/20 bg-violet-300/10 px-3 py-1.5 text-xs text-violet-100 hover:bg-violet-300/15 disabled:opacity-40">
                     {busy === "optimize" ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />} 优化为可编辑草稿
@@ -479,7 +483,7 @@ export default function AssetDetailModal({
                   <label><span className="mb-1 block text-[10px] text-slate-500">视频提示词（可修改）</span><textarea value={mediaPrompt} onChange={(event) => { setMediaPrompt(event.target.value); setMediaChangeType("manual"); setDirty(true); }} className={`${inputCls} min-h-28 resize-y text-xs`} /></label>
                   <label><span className="mb-1 block text-[10px] text-slate-500">优化模型</span>{modelField}</label>
                 </div>
-                <div className="rounded-xl border border-violet-300/10 bg-violet-300/[0.035] p-3"><textarea value={mediaInstruction} onChange={(event) => setMediaInstruction(event.target.value)} className={`${inputCls} min-h-16 resize-y text-xs`} /><button onClick={() => void optimizeMediaPrompt()} disabled={busy !== null || !mediaPrompt.trim()} className="mt-2 rounded-lg border border-violet-300/15 px-3 py-1.5 text-xs text-violet-200 disabled:opacity-40">{busy === "optimize" ? "优化中…" : "智能优化提示词"}</button></div>
+                <div className="rounded-xl border border-violet-300/10 bg-violet-300/[0.035] p-3"><textarea value={mediaInstruction} onChange={(event) => setMediaInstruction(event.target.value)} className={`${inputCls} min-h-16 resize-y text-xs`} /><button onClick={() => void optimizeMediaPrompt()} disabled={busy !== null || !mediaPrompt.trim()} className="mt-2 rounded-lg border border-violet-300/15 px-3 py-1.5 text-xs text-violet-200 disabled:opacity-40">{busy === "optimize" ? "优化中…" : "AI 优化提示词"}</button></div>
                 {technicalParamsPanel}
               </div>
             ) : (
@@ -490,7 +494,7 @@ export default function AssetDetailModal({
                   <label><span className="mb-1 block text-[10px] text-slate-500">图片提示词（可修改）</span><textarea value={mediaPrompt} onChange={(event) => { setMediaPrompt(event.target.value); setMediaChangeType("manual"); setDirty(true); }} className={`${inputCls} min-h-28 resize-y text-xs`} /></label>
                   <label><span className="mb-1 block text-[10px] text-slate-500">优化模型</span>{modelField}</label>
                 </div>
-                <div className="rounded-xl border border-violet-300/10 bg-violet-300/[0.035] p-3"><textarea value={mediaInstruction} onChange={(event) => setMediaInstruction(event.target.value)} className={`${inputCls} min-h-16 resize-y text-xs`} /><button onClick={() => void optimizeMediaPrompt()} disabled={busy !== null || !mediaPrompt.trim()} className="mt-2 rounded-lg border border-violet-300/15 px-3 py-1.5 text-xs text-violet-200 disabled:opacity-40">{busy === "optimize" ? "优化中…" : "智能优化提示词"}</button></div>
+                <div className="rounded-xl border border-violet-300/10 bg-violet-300/[0.035] p-3"><textarea value={mediaInstruction} onChange={(event) => setMediaInstruction(event.target.value)} className={`${inputCls} min-h-16 resize-y text-xs`} /><button onClick={() => void optimizeMediaPrompt()} disabled={busy !== null || !mediaPrompt.trim()} className="mt-2 rounded-lg border border-violet-300/15 px-3 py-1.5 text-xs text-violet-200 disabled:opacity-40">{busy === "optimize" ? "优化中…" : "AI 优化提示词"}</button></div>
                 {technicalParamsPanel}
               </div>
             )}

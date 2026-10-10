@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { Copy, ExternalLink, FolderOpen, Maximize2, Minimize2 } from "lucide-react";
+import { useEscapeKey } from "../lib/useEscapeKey";
 
 export interface MenuItem {
   label: string;
@@ -19,18 +20,14 @@ export function ContextMenu({
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  useEscapeKey(onClose);
 
   useEffect(() => {
     const outside = (e: MouseEvent) => {
       if (ref.current && !ref.current.contains(e.target as Node)) onClose();
     };
-    const esc = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("mousedown", outside);
-    window.addEventListener("keydown", esc);
-    return () => {
-      window.removeEventListener("mousedown", outside);
-      window.removeEventListener("keydown", esc);
-    };
+    return () => window.removeEventListener("mousedown", outside);
   }, [onClose]);
 
   return (

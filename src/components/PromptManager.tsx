@@ -3,6 +3,8 @@ import { useEffect, useState } from "react";
 import { X } from "lucide-react";
 import { agentLabel, agentSystem, useAgentStore, AGENT_DEFAULTS, type AgentVersion } from "../store/useAgentStore";
 import { logEvent } from "../lib/logger";
+import { useEscapeKey } from "../lib/useEscapeKey";
+import { errorText } from "../lib/errors";
 
 // zustand v5 + React 19 要求 selector 返回稳定引用；
 // 内联 `?? []` 每次产生新数组会导致 useSyncExternalStore 无限重渲染（#185）。
@@ -42,6 +44,12 @@ export default function PromptManager({
     setDirty(false);
   }, [initialAgent, open]);
 
+  const attemptClose = async () => {
+    if (dirty && !(await confirmAction("Prompt 有未保存修改，确定关闭吗？"))) return;
+    onClose();
+  };
+  useEscapeKey(() => void attemptClose(), open);
+
   if (!open) return null;
 
   const loadAgent = async (id: string) => {
@@ -73,16 +81,11 @@ export default function PromptManager({
       setDirty(false);
       setMessage(`已保存为 v${latest}，并立即作为当前 Prompt 使用。`);
     } catch (error) {
-      setMessage(`保存失败：${error}`);
+      setMessage(`保存失败：${errorText(error)}`);
       logEvent("error", "agent_prompt.save_failed", { error: String(error) });
     } finally {
       setBusy(false);
     }
-  };
-
-  const attemptClose = async () => {
-    if (dirty && !(await confirmAction("Prompt 有未保存修改，确定关闭吗？"))) return;
-    onClose();
   };
 
   const toggleVersion = async (version: AgentVersion) => {
@@ -91,7 +94,7 @@ export default function PromptManager({
       await useAgentStore.getState().setEnabled(agentId, version.v, !version.enabled);
       setMessage(`v${version.v} 已${version.enabled ? "停用" : "启用"}。${version.enabled ? "如果没有其他启用版本，将回落到内置默认。" : "它会参与最新启用版本选择。"}`);
     } catch (error) {
-      setMessage(`操作失败：${error}`);
+      setMessage(`操作失败：${errorText(error)}`);
       logEvent("error", "agent_prompt.toggle_failed", { error: String(error) });
     }
   };
@@ -99,10 +102,10 @@ export default function PromptManager({
   return (
     <div className="fixed inset-0 z-50 flex bg-[#020617]/80 backdrop-blur-md" onClick={attemptClose}>
       <div className="flex h-full w-full p-6">
-        <div className="dream-dialog mx-auto flex h-full w-full max-w-5xl overflow-hidden rounded-2xl border border-cyan-200/15 bg-slate-950/90" onClick={(event) => event.stopPropagation()}>
+        <div role="dialog" aria-modal="true" aria-labelledby="prompt-manager-title" className="dream-dialog mx-auto flex h-full w-full max-w-5xl overflow-hidden rounded-2xl border border-cyan-200/15 bg-slate-950/90" onClick={(event) => event.stopPropagation()}>
           {/* Left: six agents */}
           <aside className="flex w-56 shrink-0 flex-col border-r border-slate-800 bg-slate-900/60">
-            <div className="px-4 py-3 text-sm font-semibold">Prompt 管理</div>
+            <div id="prompt-manager-title" className="px-4 py-3 text-sm font-semibold">Prompt 管理</div>
             <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto p-3">
               {AGENT_DEFAULTS.map((a) => (
                 <button
@@ -124,7 +127,7 @@ export default function PromptManager({
           <section className="flex min-w-0 flex-1 flex-col">
             <div className="flex items-center justify-between border-b border-slate-800 px-5 py-3">
               <div className="text-sm font-semibold">{agentLabel(agentId)} · 版本切换</div>
-              <button onClick={attemptClose} className="rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-white"><X size={18} /></button>
+              <button type="button" aria-label="关闭" onClick={attemptClose} className="rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-white"><X size={18} /></button>
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto p-5">
@@ -155,6 +158,8 @@ export default function PromptManager({
               {message && <div className="mb-3 rounded-lg border border-cyan-300/10 bg-cyan-300/[0.035] px-3 py-2 text-xs text-cyan-100">{message}</div>}
 
               <textarea
+                autoFocus
+                aria-label="Prompt 内容"
                 className="h-72 w-full resize-y rounded-xl border border-slate-700 bg-slate-950/60 p-4 font-mono text-sm leading-relaxed text-slate-200 outline-none focus:border-indigo-400"
                 value={draft}
                 onChange={(e) => { setDraft(e.target.value); setDirty(true); }}

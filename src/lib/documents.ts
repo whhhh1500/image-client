@@ -52,7 +52,7 @@ const TYPE_LABELS: Record<DocumentType, string> = {
 const CHANGE_LABELS: Record<DocumentChangeType, string> = {
   generated: "自动生成",
   manual: "手动修改",
-  ai_optimized: "智能优化",
+  ai_optimized: "AI 优化",
   copy: "保存副本",
 };
 

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { useLibraryStore } from "../store/useLibraryStore";
 import { useProjectStore } from "../store/useProjectStore";
+import { resetViewState } from "../store/useViewStore";
 
 const api = vi.hoisted(() => ({ novels: vi.fn(), comics: vi.fn() }));
 vi.mock("../lib/novel/api", () => ({ novelWorkList: api.novels }));
@@ -18,17 +19,18 @@ const comic = (projectId: string, title: string) => ({ sourceUri: `comic://${pro
 describe("AssetsPage catalog behavior", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetViewState();
     useProjectStore.setState({ activeId: "project-a", projects: [] });
     useLibraryStore.setState({ assets: [{ asset: { id: "image-a", kind: "image", path: "C:/a.png" }, source: "普通图片", projectId: "project-a", createdAt: 2 }], tasks: [] });
     api.novels.mockResolvedValue([{ id: "work", projectId: "project-a", title: "雾港", status: "active" }]);
-    api.comics.mockResolvedValue([comic("project-a", "第1页")]);
+    api.comics.mockResolvedValue([comic("project-a", "雾港分镜")]);
   });
   afterEach(() => cleanup());
 
   it("renders ordinary, novel, and comic sources together in All with a real total", async () => {
     render(<AssetsPage onQueueImport={vi.fn()} />);
     await screen.findByText("雾港");
-    expect(screen.getByText("第1页")).toBeTruthy();
+    expect(screen.getByText("雾港分镜")).toBeTruthy();
     expect(screen.getByText("普通图片")).toBeTruthy();
     expect(screen.getByRole("button", { name: /全部 3/ })).toBeTruthy();
   });

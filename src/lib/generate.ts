@@ -1,7 +1,7 @@
 import { runNode, type RunNodeRequest } from "./ipc";
 import { useLibraryStore } from "../store/useLibraryStore";
 import { useProjectStore } from "../store/useProjectStore";
-import { useGenerationStore, type GenParams, type ImageGenerationReference } from "../store/useGenerationStore";
+import { type GenParams, type ImageGenerationReference } from "../store/useGenerationStore";
 import { MAX_IMAGE_COUNT } from "./models";
 import { persistAssets, persistTask } from "./dbWrite";
 import type { AssetRef } from "../types";
@@ -228,9 +228,4 @@ export async function generateImage(
   } finally {
     unlisten?.();
   }
-}
-
-/** Load an asset's params back into the shared generation form. */
-export function applyAssetParams(params: Partial<GenParams> | undefined) {
-  useGenerationStore.getState().load(params ?? {});
 }

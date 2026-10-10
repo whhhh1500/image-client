@@ -177,7 +177,7 @@ describe("App storyboard handoff", () => {
 
     vi.mocked(confirmAction).mockResolvedValue(false);
     fireEvent.click(await screen.findByRole("button", { name: "发送当前分镜到视频生成" }));
-    await waitFor(() => expect(confirmAction).toHaveBeenCalledWith("视频页已有 2 个镜头草稿，将被当前分镜替换，继续？"));
+    await waitFor(() => expect(confirmAction).toHaveBeenCalledWith("视频生成页已有 2 个镜头草稿，将被当前分镜替换，继续？"));
     await act(async () => {});
     expect(useVideoStore.getState().shots).toEqual(drafts);
     expect(screen.queryByText("视频生成面板")).toBeNull();

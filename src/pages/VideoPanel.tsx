@@ -33,6 +33,7 @@ import { comicMdCatalogList } from "../lib/comic/markdownApi";
 import { useGenerationImportQueue } from "../store/useGenerationImportQueue";
 import { useRunStore, type VideoRunPhase, type VideoRunProgressState } from "../store/useRunStore";
 import { formsProjectId } from "../store/projectDrafts";
+import { useViewState } from "../store/useViewStore";
 import {
   createImportRecord,
   importEntryAssetId,
@@ -58,13 +59,18 @@ const MODE_LABELS: Record<VideoGenerationMode, string> = {
 type MaterialKind = "images" | "videos";
 type WorkflowPhase = VideoRunPhase;
 
-function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
+/** `group` is for several controls: a <label> forwards every click on its text or gaps to its first button. */
+function Field({ label, children, hint, group = false }: { label: string; children: React.ReactNode; hint?: string; group?: boolean }) {
+  const header = (
+    <div className="mb-1 flex items-center justify-between gap-2 text-xs font-medium text-slate-300">
+      <span>{label}</span>
+      {hint && <span className="text-right text-[10px] font-normal text-slate-500">{hint}</span>}
+    </div>
+  );
+  if (group) return <div role="group" aria-label={label} className="block">{header}{children}</div>;
   return (
     <label className="block">
-      <div className="mb-1 flex items-center justify-between gap-2 text-xs font-medium text-slate-300">
-        <span>{label}</span>
-        {hint && <span className="text-right text-[10px] font-normal text-slate-500">{hint}</span>}
-      </div>
+      {header}
       {children}
     </label>
   );
@@ -366,7 +372,6 @@ export default function VideoPanel() {
   const progress = useRunStore((s) => s.videoProgress);
   const resume = useRunStore((s) => s.videoResume);
   const setPhase = (videoPhase: WorkflowPhase) => useRunStore.getState().patch({ videoPhase });
-  const [selectedVideoIds, setSelectedVideoIds] = useState<string[]>([]);
   const [joining, setJoining] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number; asset: LibAsset } | null>(null);
   const [playing, setPlaying] = useState<LibAsset | null>(null);
@@ -386,6 +391,8 @@ export default function VideoPanel() {
 
   const projects = useProjectStore((s) => s.projects);
   const activeId = useProjectStore((s) => s.activeId);
+  // Clips picked for joining, per project; kept across tab switches.
+  const [selectedVideoIds, setSelectedVideoIds] = useViewState<string[]>(`video:join-selection:${activeId ?? ""}`, []);
   const defaultId = projects[0]?.id;
   const belongs = (projectId?: string) => projectId === activeId || (!projectId && activeId === defaultId);
   const allAssets = useLibraryStore((state) => state.assets);
@@ -511,9 +518,9 @@ export default function VideoPanel() {
       if (imageCount > capability.maxImages || shotVideos.length > capability.maxVideos) return `第 ${shot.shotNo} 镜的参考素材超过当前模型上限。`;
       if (capability.maxTotalReferences && imageCount + shotVideos.length > capability.maxTotalReferences) return `第 ${shot.shotNo} 镜的参考素材总数超过当前模型上限（${imageCount + shotVideos.length}/${capability.maxTotalReferences}）。`;
       if (shotMode === "text" && (shot.referenceImages?.length || shot.referenceVideos?.length || localImages.length)) return `第 ${shot.shotNo} 镜为文生模式，不能携带逐镜参考素材。`;
-      if (shotMode === "first_frame" && (imageCount !== 1 || shotVideos.length)) return `第 ${shot.shotNo} 镜的首帧模式需要且只能提供 1 张图片。`;
+      if (shotMode === "first_frame" && (imageCount !== 1 || shotVideos.length)) return `第 ${shot.shotNo} 镜的首帧驱动模式需要且只能提供 1 张图片。`;
       if (shotMode === "reference" && !imageCount && !shotVideos.length) return `第 ${shot.shotNo} 镜的多素材参考模式缺少参考素材。`;
-      if (shotMode === "reference" && capability.referenceImageCount && imageCount !== capability.referenceImageCount) return `第 ${shot.shotNo} 镜必须恰好提供 ${capability.referenceImageCount} 张参考图片。`;
+      if (shotMode === "reference" && capability.referenceImageCount && imageCount !== capability.referenceImageCount) return `第 ${shot.shotNo} 镜必须恰好提供 ${capability.referenceImageCount} 张参考图。`;
     }
     const materialGroups: Array<[string, string[], number]> = [
       ["图片", images, capability.maxImages],
@@ -526,7 +533,7 @@ export default function VideoPanel() {
     if (capability.maxTotalReferences && images.length + vid.videos.length > capability.maxTotalReferences) return `参考素材总数超过当前模型上限（${images.length + vid.videos.length}/${capability.maxTotalReferences}）。`;
     if (!capability.resolutions.includes(vid.resolution)) return `当前模型不支持 ${vid.resolution}。`;
     if (!capability.aspectRatios.includes(vid.aspectRatio)) return `当前模型不支持 ${vid.aspectRatio} 画幅。`;
-    if (vid.mode === "text" && hasMaterials) return "文生模式不能携带参考素材；请切换为首帧或多素材参考模式。";
+    if (vid.mode === "text" && hasMaterials) return "文生模式不能携带参考素材；请切换为首帧驱动或多素材参考模式。";
     const hasExplicitShotReferences = shots.some((shot) => (shot.referenceImages?.length ?? 0) + (shot.referenceVideos?.length ?? 0) + (shot.referenceLocalImages?.length ?? 0) > 0);
     if (vid.mode === "first_frame" && !hasExplicitShotReferences && images.length !== 1) return "首帧驱动模式需要且只能提供 1 张图片 URL。";
     if (vid.mode === "reference" && !hasMaterials && !shots.some((shot) => (shot.referenceImages?.length ?? 0) + (shot.referenceVideos?.length ?? 0) + (shot.referenceLocalImages?.length ?? 0) > 0)) return "多素材参考模式至少需要一条图片或视频参考。";
@@ -725,7 +732,7 @@ export default function VideoPanel() {
         throw new Error("上传已完成，但当前项目、审查清单或目标镜头已变化，结果没有回填。请重新选择后应用。");
       }
       const labels = new Map(media.map((item) => [sourceKey(item.entry), importEntryLabel(item.entry)]));
-      if (failed.length) throw new Error(`已上传 ${published.results.length - failed.length} 项；${failed.map((item) => `${labels.get(item.key) ?? "参考媒体"}: ${item.error ?? "未返回 URL"}`).join("；")}。再次点击“上传并引用”只会重试失败项。`);
+      if (failed.length) throw new Error(`已上传 ${published.results.length - failed.length} 项；${failed.map((item) => `${labels.get(item.key) ?? "参考媒体"}：${item.error ?? "未返回 URL"}`).join("；")}。再次点击“上传并引用”只会重试失败项。`);
     }
     const resolvedImages = [...new Set([...existingImages, ...selectedUrlImages.map(referenceUrl).filter((value): value is string => Boolean(value))])];
     const resolvedVideos = [...new Set([...existingVideos, ...selectedVideos.map(referenceUrl).filter((value): value is string => Boolean(value))])];
@@ -1037,17 +1044,17 @@ export default function VideoPanel() {
             <p className="mt-1 text-[10px] leading-relaxed text-slate-400">{desktopCapabilitySummary(capability)}</p>
           </div>
 
-          <Field label="生成方式" hint="仅显示当前模型支持的方式">
+          <Field group label="生成方式" hint="仅显示当前模型支持的方式">
             <div className="grid grid-cols-3 gap-1 rounded-lg border border-slate-600 bg-slate-900/70 p-1">
               {capability.modes.map((mode) => (
-                <button key={mode} type="button" onClick={() => selectMode(mode)} className={`rounded-md px-2 py-1.5 text-[11px] transition ${vid.mode === mode ? "bg-fuchsia-500 text-white" : "text-slate-400 hover:text-white"}`}>
+                <button key={mode} type="button" aria-pressed={vid.mode === mode} onClick={() => selectMode(mode)} className={`rounded-md px-2 py-1.5 text-[11px] transition ${vid.mode === mode ? "bg-fuchsia-500 text-white" : "text-slate-400 hover:text-white"}`}>
                   {MODE_LABELS[mode]}
                 </button>
               ))}
             </div>
           </Field>
 
-          <Field label="视频镜头" hint={`${shots.length} 镜 · 共 ${shots.reduce((sum, shot) => sum + shot.durationS, 0)} 秒`}>
+          <Field group label="视频镜头" hint={`${shots.length} 镜 · 共 ${shots.reduce((sum, shot) => sum + shot.durationS, 0)} 秒`}>
             <div className="space-y-2">
               {shots.map((shot, index) => {
                 const shotMode = shot.referenceStrategy ?? vid.mode;
@@ -1061,7 +1068,7 @@ export default function VideoPanel() {
                           {MODE_LABELS[shotMode]} · {shotReferenceSummary(shot)}
                         </span>
                       </div>
-                      <div className="flex items-center gap-2"><select aria-label={`第 ${shot.shotNo} 镜时长`} value={shot.durationS} onChange={(event) => updateShots(shots.map((item, itemIndex) => itemIndex === index ? { ...item, durationS: Number(event.target.value) } : item))} className="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] text-slate-200">{shotDurations.map((duration) => <option key={duration} value={duration}>{duration} 秒</option>)}</select><button type="button" disabled={shots.length === 1} onClick={() => updateShots(shots.filter((_, itemIndex) => itemIndex !== index))} className="rounded p-1 text-slate-500 hover:text-rose-300 disabled:opacity-30" title="删除镜头"><Trash2 size={12} /></button></div>
+                      <div className="flex items-center gap-2"><select aria-label={`第 ${shot.shotNo} 镜时长`} value={shot.durationS} onChange={(event) => updateShots(shots.map((item, itemIndex) => itemIndex === index ? { ...item, durationS: Number(event.target.value) } : item))} className="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] text-slate-200">{shotDurations.map((duration) => <option key={duration} value={duration}>{duration} 秒</option>)}</select><button type="button" disabled={shots.length === 1} onClick={() => updateShots(shots.filter((_, itemIndex) => itemIndex !== index))} className="rounded p-1 text-slate-500 hover:text-rose-300 disabled:opacity-30" title="删除镜头" aria-label={`删除第 ${shot.shotNo} 镜`}><Trash2 size={12} /></button></div>
                     </div>
                     <ShotPromptTextarea className={`${inputCls} h-20 resize-y leading-snug`} value={shot.prompt} placeholder="这一镜的完整视频 Prompt…" onCommit={(prompt) => commitShotPrompt(shot.id, prompt)} />
                     {((shot.referenceLocalImages?.length ?? 0) > 0 || (shot.referenceImages?.length ?? 0) > 0 || (shot.referenceVideos?.length ?? 0) > 0) && <div className="mt-2 space-y-1" aria-label={`第 ${shot.shotNo} 镜参考素材`}>
@@ -1081,21 +1088,21 @@ export default function VideoPanel() {
               <div className="mt-2 flex items-center gap-2 rounded-xl border border-cyan-300/10 bg-cyan-300/[0.035] p-2">
                 <button type="button" onClick={() => setPlaying(guideAsset)} title="查看本地创作参考" className="shrink-0"><img src={fileSrc(guideAsset.asset.path)} alt={guideAsset.source} className="h-12 w-12 rounded-lg object-cover" /></button>
                 <div className="min-w-0 flex-1"><div className="truncate text-[10px] text-cyan-100">本地创作参考：{guideAsset.source}</div><div className="mt-0.5 text-[9px] leading-snug text-slate-500">已提取画面描述帮助撰写提示词；当前视频服务仅支持公网 HTTPS 参考地址。</div></div>
-                <button type="button" onClick={() => setGuideAsset(null)} className="rounded p-1 text-slate-500 hover:text-rose-300"><X size={12} /></button>
+                <button type="button" onClick={() => setGuideAsset(null)} className="rounded p-1 text-slate-500 hover:text-rose-300" aria-label="移除本地创作参考"><X size={12} /></button>
               </div>
             )}
             {videoGuideAsset && (
               <div className="mt-2 flex items-center gap-2 rounded-xl border border-fuchsia-300/10 bg-fuchsia-300/[0.035] p-2">
                 <button type="button" onClick={() => setPlaying(videoGuideAsset)} title="查看本地视频作品参考" className="shrink-0"><video src={fileSrc(videoGuideAsset.asset.path)} muted preload="metadata" className="h-12 w-20 rounded-lg object-cover" /></button>
                 <div className="min-w-0 flex-1"><div className="truncate text-[10px] text-fuchsia-100">本地视频作品参考：{videoGuideAsset.source}</div><div className="mt-0.5 text-[9px] leading-snug text-slate-500">已导入创作链和溯源；当前视频服务仅支持公网 HTTPS 参考地址。</div></div>
-                <button type="button" onClick={() => setVideoGuideAsset(null)} className="rounded p-1 text-slate-500 hover:text-rose-300"><X size={12} /></button>
+                <button type="button" onClick={() => setVideoGuideAsset(null)} className="rounded p-1 text-slate-500 hover:text-rose-300" aria-label="移除本地视频作品参考"><X size={12} /></button>
               </div>
             )}
           </Field>
 
           {vid.mode === "text" ? (
             <div className="rounded-xl border border-slate-700 bg-slate-950/30 px-3 py-2 text-[10px] leading-relaxed text-slate-500">
-              文生视频不携带参考素材。{hasMaterials ? "已填写的素材 URL 会保留在表单中；切换到参考模式后才可提交。" : "可从项目中导入本地图片；它会随生成请求发送给视频服务，或按选择经托管转为 URL。"}
+              文生视频不携带参考素材。{hasMaterials ? "已填写的素材 URL 会保留在表单中；切换到首帧驱动或多素材参考模式后才可提交。" : "可从项目中导入本地图片；它会随生成请求发送给视频服务，或按选择经托管转为 URL。"}
             </div>
           ) : (
             <div className="space-y-3 rounded-xl border border-slate-800 bg-slate-950/25 p-3">
@@ -1103,7 +1110,7 @@ export default function VideoPanel() {
               {hasShotReferences && <p className="text-[10px] text-slate-500">已设置逐镜参考的镜头使用上方素材。</p>}
               {visibleImages && <UrlListField label="公共托管图片 URL" values={images} max={vid.mode === "first_frame" ? 1 : capability.maxImages} onChange={(values) => setMaterials("images", values)} hint={vid.mode === "first_frame" ? "首帧最终本地图片 + URL 合计必须恰好 1 张" : capability.referenceImageCount ? `未单独设置参考的镜头必须恰好 ${capability.referenceImageCount} 张` : "每行一条"} />}
               {visibleVideos && <UrlListField label="参考视频 URL" values={vid.videos} max={capability.maxVideos} onChange={(values) => setMaterials("videos", values)} hint="每行一条" />}
-              {capability.maxReferenceDurationS && vid.mode === "reference" && <p className="text-[10px] text-amber-200/80">参考图模式最长 {capability.maxReferenceDurationS} 秒。</p>}
+              {capability.maxReferenceDurationS && vid.mode === "reference" && <p className="text-[10px] text-amber-200/80">多素材参考模式最长 {capability.maxReferenceDurationS} 秒。</p>}
             </div>
           )}
 
@@ -1170,14 +1177,14 @@ export default function VideoPanel() {
             <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
               <div className="mb-2 flex items-center justify-between text-xs font-semibold tracking-wide text-slate-400"><span>最新视频预览</span><span className="text-[10px] font-normal text-slate-600">仅显示当前项目的视频资产</span></div>
               <div className="flex min-h-[300px] items-center justify-center rounded-xl border border-dashed border-slate-700 bg-slate-800/30">
-                {preview ? <div className="relative w-full"><video src={fileSrc(preview.path)} controls className="max-h-[60vh] w-full rounded-lg object-contain" /><button type="button" onClick={() => previewItem && setPlaying(previewItem)} className="absolute right-2 top-2 rounded-lg border border-white/10 bg-slate-950/75 px-2 py-1 text-[10px] text-cyan-200">完整详情</button></div> : busy ? <Loader2 size={24} className="animate-spin text-slate-500" /> : <div className="text-center text-sm text-slate-500">填写提示词并提交视频任务</div>}
+                {preview ? <div className="relative w-full"><video src={fileSrc(preview.path)} controls className="max-h-[60vh] w-full rounded-lg object-contain" /><button type="button" onClick={() => previewItem && setPlaying(previewItem)} className="absolute right-2 top-2 rounded-lg border border-white/10 bg-slate-950/75 px-2 py-1 text-[10px] text-cyan-200">完整详情</button></div> : busy ? <Loader2 size={24} className="animate-spin text-slate-500" /> : <div className="text-center text-sm text-slate-500">填写 Prompt 并提交视频任务</div>}
               </div>
             </div>
 
             {videos.length > 0 && <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div><span className="text-xs font-semibold tracking-wide text-slate-400">视频镜头与历史</span><span className="ml-2 text-[10px] text-slate-600">已选 {selectedVideoIds.length} 镜</span></div><button type="button" onClick={() => void joinSelected()} disabled={selectedVideoIds.length < 2 || joining} className="flex items-center gap-1.5 rounded-lg border border-fuchsia-300/20 bg-fuchsia-300/[0.06] px-3 py-1.5 text-[10px] text-fuchsia-100 disabled:cursor-not-allowed disabled:opacity-40">{joining ? <Loader2 size={11} className="animate-spin" /> : <Clapperboard size={11} />}{joining ? "拼接中…" : "拼接所选镜头"}</button></div>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-                {videos.map((asset) => { const selected = selectedVideoIds.includes(asset.asset.id); return <article key={asset.asset.id} className={`overflow-hidden rounded-lg border bg-slate-800/60 ${selected ? "border-fuchsia-300/60 ring-1 ring-fuchsia-300/20" : "border-slate-700"}`}><div className="relative"><button type="button" onClick={() => setPlaying(asset)} onContextMenu={(event) => { event.preventDefault(); setMenu({ x: event.clientX, y: event.clientY, asset }); }} className="block aspect-video w-full"><video src={fileSrc(asset.asset.path)} muted preload="metadata" title={`${asset.source}${asset.model ? ` · ${asset.model}` : ""}`} className="h-full w-full object-contain" /></button><button type="button" onClick={() => toggleVideoSelection(asset.asset.id)} className={`absolute left-2 top-2 flex h-6 w-6 items-center justify-center rounded-md border shadow ${selected ? "border-fuchsia-200 bg-fuchsia-500 text-white" : "border-white/20 bg-slate-950/75 text-transparent hover:text-slate-300"}`} title="选择用于拼接"><Check size={13} /></button></div><div className="border-t border-slate-700 p-2"><div className="truncate text-[10px] text-slate-300">{asset.source}</div><button type="button" onClick={() => reuseHistory(asset)} className="mt-1 text-[10px] text-cyan-200 hover:text-white">复用参数</button></div></article>; })}
+                {videos.map((asset) => { const selected = selectedVideoIds.includes(asset.asset.id); return <article key={asset.asset.id} className={`overflow-hidden rounded-lg border bg-slate-800/60 ${selected ? "border-fuchsia-300/60 ring-1 ring-fuchsia-300/20" : "border-slate-700"}`}><div className="relative"><button type="button" aria-label={`查看视频 ${asset.source}`} onClick={() => setPlaying(asset)} onContextMenu={(event) => { event.preventDefault(); setMenu({ x: event.clientX, y: event.clientY, asset }); }} className="block aspect-video w-full"><video src={fileSrc(asset.asset.path)} muted preload="metadata" title={`${asset.source}${asset.model ? ` · ${asset.model}` : ""}`} className="h-full w-full object-contain" /></button><button type="button" aria-pressed={selected} aria-label={`选择用于拼接：${asset.source}`} onClick={() => toggleVideoSelection(asset.asset.id)} className={`absolute left-2 top-2 flex h-6 w-6 items-center justify-center rounded-md border shadow ${selected ? "border-fuchsia-200 bg-fuchsia-500 text-white" : "border-white/20 bg-slate-950/75 text-transparent hover:text-slate-300 focus-visible:text-slate-300"}`} title="选择用于拼接"><Check size={13} /></button></div><div className="border-t border-slate-700 p-2"><div className="truncate text-[10px] text-slate-300">{asset.source}</div><button type="button" onClick={() => reuseHistory(asset)} className="mt-1 text-[10px] text-cyan-200 hover:text-white">复用生成参数</button></div></article>; })}
               </div>
             </div>}
           </div>
@@ -1187,7 +1194,7 @@ export default function VideoPanel() {
       {menu && <ContextMenu x={menu.x} y={menu.y} onClose={() => setMenu(null)} items={[
         { label: "播放视频", icon: menuIcons.preview, onClick: () => setPlaying(menu.asset) },
         { label: "复用生成参数", icon: menuIcons.copy, onClick: () => reuseHistory(menu.asset) },
-        { label: "复制到粘贴板", icon: menuIcons.copy, onClick: () => void navigator.clipboard?.writeText(menu.asset.asset.path).catch((cause) => logEvent("warn", "clipboard.write_failed", { error: String(cause) })) },
+        { label: "复制文件路径", icon: menuIcons.copy, onClick: () => void navigator.clipboard?.writeText(menu.asset.asset.path).catch((cause) => logEvent("warn", "clipboard.write_failed", { error: String(cause) })) },
         { label: "打开所在文件夹", icon: menuIcons.open, onClick: () => void revealItemInDir(menu.asset.asset.path).catch((cause) => logEvent("warn", "asset.reveal_failed", { error: String(cause) })) },
       ]} />}
 

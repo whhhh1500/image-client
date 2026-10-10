@@ -35,6 +35,15 @@ export function pageBlock(scope: MdScope, documents: MdDocument[]): string | nul
   }
   return null;
 }
+/**
+ * The prompt page to reopen: the remembered one while it still has a saved
+ * prompt or a local draft, otherwise the nearest earlier saved page, or 1.
+ */
+export function restorablePageNo(scope: MdScope, documents: MdDocument[], pageNo: number): number {
+  const pages = documents.flatMap((doc) => doc.kind === "page_prompt" && doc.pageNo ? [doc.pageNo] : []);
+  if (pages.includes(pageNo) || readLocal<MdDraft | null>(draftKey(scope, "page_prompt", pageNo), null)) return pageNo;
+  return Math.max(1, ...pages.filter((no) => no < pageNo));
+}
 export type RenderSelection = "first" | "first_three" | "remaining" | "all";
 export function imageMatchesDocument(image: MdImage, document: MdDocument) {
   return image.documentId === document.id && (image.contentHash && document.contentHash ? image.contentHash === document.contentHash : image.documentRevision === document.revision);

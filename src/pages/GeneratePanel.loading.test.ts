@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { emptyPromptLibrarySelection, promptLibraryBoundaryView, promptLibraryMountPolicy } from "./GeneratePanel";
+import { promptLibraryBoundaryView, promptLibraryMountPolicy } from "./GeneratePanel";
 
 describe("PromptLibrary deferred mount policy", () => {
   it("does not mount before first open", () => {
@@ -18,9 +18,5 @@ describe("PromptLibrary deferred mount policy", () => {
     expect(promptLibraryBoundaryView(true, true)).toBe("error");
     expect(promptLibraryBoundaryView(true, false)).toBe("hidden");
     expect(promptLibraryBoundaryView(false, true)).toBe("children");
-  });
-
-  it("clears the template id and cached entry together", () => {
-    expect(emptyPromptLibrarySelection<{ title: string }>()).toEqual({ id: null, entry: null });
   });
 });

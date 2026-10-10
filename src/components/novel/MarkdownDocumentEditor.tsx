@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { revealItemInDir } from "../../lib/desktop";
 import { comicMdDocumentSave, comicMdDocumentHistory, comicMdExport, comicMdOptimize, mdLabels, mdTemplate, mdReady, type MdDocument, type MdHistory, type MdKind, type MdScope, type MdJob } from "../../lib/comic/markdownApi";
 import { button, primary, field, draftKey, hasMdDraftChanges, savedDraftChanged, useLocalValue, type MdDraft } from "./mdWorkspaceState";
+import { errorText } from "../../lib/errors";
 
 export default function MarkdownDocumentEditor({ scope, kind, pageNo, document, pageDocuments, workspaceDocuments, missingPageNos, jobs, refresh, renderingDisabled, onRender, beforeOptimize, injection }: {
   scope: MdScope; kind: MdKind; pageNo?: number; document?: MdDocument; pageDocuments: MdDocument[];
@@ -28,7 +29,7 @@ export default function MarkdownDocumentEditor({ scope, kind, pageNo, document, 
     if (!document) return;
     const request = ++historyRequest.current;
     try { const entries = await comicMdDocumentHistory({ ...scope, documentId: document.id }); if (active.current && historyRequest.current === request) { setHistory(entries); setHistoryError(""); } }
-    catch (cause) { if (active.current && historyRequest.current === request) setHistoryError(String(cause)); }
+    catch (cause) { if (active.current && historyRequest.current === request) setHistoryError(errorText(cause)); }
   };
   useEffect(() => { void loadHistory(); }, [document?.id, document?.revision]);
   const versions = [...history.filter((entry) => entry.revision !== document?.revision), ...(document ? [{ revision: document.revision, markdown: document.markdown, optimizationInstruction: document.optimizationInstruction, createdAt: document.updatedAt }] : [])].sort((a, b) => b.revision - a.revision);
@@ -82,7 +83,7 @@ export default function MarkdownDocumentEditor({ scope, kind, pageNo, document, 
   const perform = async (action: () => Promise<void>) => {
     if (busyRef.current) return;
     busyRef.current = true; setBusy(true); setMessage("");
-    try { await action(); } catch (cause) { if (active.current) setMessage(String(cause)); }
+    try { await action(); } catch (cause) { if (active.current) setMessage(errorText(cause)); }
     finally { busyRef.current = false; if (active.current) setBusy(false); }
   };
   const canAcknowledge = !!document?.stale && !dirty;
@@ -121,7 +122,7 @@ export default function MarkdownDocumentEditor({ scope, kind, pageNo, document, 
   const copy = async () => { try { await navigator.clipboard.writeText(visible.markdown); setMessage("已复制完整 Markdown。"); } catch { setMessage("复制失败，请在编辑框中全选复制。"); } };
   return <section aria-label={`${mdLabels[kind]}编辑器`} className="space-y-3">
     <div className="flex flex-wrap items-center gap-2">
-      <label className="text-sm text-slate-300">版本 <select aria-label="文档版本" className={field} disabled={busy} value={selectedVersion ?? "current"} onChange={(event) => navigate(event.target.value === "current" ? null : Number(event.target.value))}><option value="current">当前版本{hasMdDraftChanges(draft, document) ? "（含未保存草稿）" : document ? ` · 第${document.revision}版` : "（未保存）"}</option>{versions.map((entry) => <option key={entry.revision} value={entry.revision}>第 {entry.revision} 版</option>)}</select></label>
+      <label className="text-sm text-slate-300">版本 <select aria-label="文档版本" className={field} disabled={busy} value={selectedVersion ?? "current"} onChange={(event) => navigate(event.target.value === "current" ? null : Number(event.target.value))}><option value="current">当前版本{hasMdDraftChanges(draft, document) ? "（含未保存草稿）" : document ? ` · 第 ${document.revision} 版` : "（未保存）"}</option>{versions.map((entry) => <option key={entry.revision} value={entry.revision}>第 {entry.revision} 版</option>)}</select></label>
       <button className={button} disabled={busy || versionIndex < 0 || versionIndex >= navigation.length - 1} onClick={() => navigate(navigation[versionIndex + 1])}>上一版</button>
       <button className={button} disabled={busy || versionIndex <= 0} onClick={() => navigate(navigation[versionIndex - 1])}>下一版</button>
       {selectedVersion !== null && <button className={button} disabled={busy} onClick={() => navigate(null)}>返回当前草稿</button>}
@@ -136,8 +137,8 @@ export default function MarkdownDocumentEditor({ scope, kind, pageNo, document, 
     <div className="flex flex-wrap items-center gap-2">
       <button className={primary} disabled={busy || !canSave} onClick={() => void save()}>{busy ? "处理中…" : canAcknowledge ? "保存更新" : selectedVersion !== null ? "采用此版本并保存" : "保存文字"}</button>
       <button className={button} onClick={() => void copy()}>复制全文</button>
-      <button className={button} disabled={!document || dirty} onClick={() => void comicMdExport({ ...scope, documentIds: [document!.id] }).then((result) => { setExportPath(result.files[0] ?? ""); setMessage(`已导出：${result.path}`); }, (cause) => setMessage(String(cause)))}>{document?.outOfPlan ? "导出旧页 MD" : "导出 MD"}</button>
-      {exportPath && <button className={button} onClick={() => void revealItemInDir(exportPath).catch((cause) => setMessage(String(cause)))}>打开导出文件位置</button>}
+      <button className={button} disabled={!document || dirty} onClick={() => void comicMdExport({ ...scope, documentIds: [document!.id] }).then((result) => { setExportPath(result.files[0] ?? ""); setMessage(`已导出：${result.path}`); }, (cause) => setMessage(errorText(cause)))}>{document?.outOfPlan ? "导出旧页 MD" : "导出 MD"}</button>
+      {exportPath && <button className={button} onClick={() => void revealItemInDir(exportPath).catch((cause) => setMessage(errorText(cause)))}>打开导出文件位置</button>}
       <button className={button} disabled={!document} onClick={() => void loadHistory()}>历史版本</button>
       {kind === "page_prompt" && <button className={primary} disabled={busy || renderingDisabled || dirty || !mdReady(document)} onClick={() => void onRender([document!])}>生成这一页漫画</button>}
     </div>

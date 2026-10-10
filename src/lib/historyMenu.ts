@@ -71,7 +71,7 @@ export function imageHistoryMenu(input: {
     convert("webp"),
     convert("bmp"),
     convert("gif"),
-    { label: "复制到粘贴板", icon: menuIcons.copy, onClick: () => void navigator.clipboard?.writeText(input.asset.asset.path).catch((error) => logEvent("warn", "clipboard.write_failed", { error: String(error) })) },
+    { label: "复制文件路径", icon: menuIcons.copy, onClick: () => void navigator.clipboard?.writeText(input.asset.asset.path).catch((error) => logEvent("warn", "clipboard.write_failed", { error: String(error) })) },
     { label: "打开所在文件夹", icon: menuIcons.open, onClick: () => void revealItemInDir(input.asset.asset.path).catch((error) => logEvent("warn", "asset.reveal_failed", { error: String(error) })) },
   ];
 }

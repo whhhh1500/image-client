@@ -1,5 +1,5 @@
-import { useEffect } from "react";
 import { BookOpenText, History, X } from "lucide-react";
+import { useEscapeKey } from "../lib/useEscapeKey";
 
 export type AppDocsView = "guide" | "changelog";
 
@@ -14,7 +14,7 @@ function GuideContent() {
         <h3 className={headingClass}>快速开始</h3>
         <ol className={`${copyClass} list-decimal space-y-1 pl-4`}>
           <li>在顶部选择项目；首次使用可新建项目并填写生产档案。</li>
-          <li>打开右上角“设置”，配置图像、视频和文本模型接口。模型下拉框可点“获取模型”按当前接口地址读取网关模型目录，也可以直接输入列表以外的模型名。</li>
+          <li>打开右上角“设置”，配置图像、视频和文本模型接口。模型下拉框可点“获取模型”按当前 API 地址读取网关模型目录，也可以直接输入列表以外的模型名。</li>
           <li>文生图、视频和项目生产档案的模型选择处同样可以点“获取模型”刷新列表并手动输入模型名。</li>
           <li>选择功能页，输入提示词或导入素材后开始生成。</li>
           <li>生成结果会进入资产库，可再次打开或作为参考图使用。</li>
@@ -27,11 +27,11 @@ function GuideContent() {
           <li>图像生成：填写画面描述，按需选择尺寸、质量和参考图；可从当前项目资产库导入图片/提示词，或先把外部图片存入资产库后确认应用。</li>
           <li>Grok 图像模型按「比例 + 分辨率（1k/2k）」提交：界面选的尺寸会折算成 aspect_ratio，超过 2k 的选择按 2k 提交，背景参数不发送。</li>
           <li>「数量」可选 1–4 张：一次请求生成多张并按张计费，返回的整批图片会一起显示在「输出预览」里，历史结果按时间倒序保留全部图片。</li>
-          <li>视频生成：每个分镜独立请求并保存为独立视频资源；不会自动拆镜或拼接。</li>
+          <li>视频生成：每个镜头独立请求并保存为独立视频资源；不会自动拆镜或拼接。</li>
           <li>视频参考先选择目标镜头，再从资产库导入，或把本地图片、视频导入资产库后确认。导入窗口会区分“提示词”“合并选中提示词”和“参考资源”，请在预览后应用。</li>
           <li>本地图片可选择随生成请求直接发送给视频服务，或显式经媒体托管转换为 URL；漫画页图片也可作为参考。公网图片直接引用，本地视频仍须经托管后才能作为实际视频参考。</li>
-          <li>逐镜参考计数包含本地图片和托管 URL。仅有一张图片且模型支持时会使用首帧模式；可在镜头卡中单独移除本地图片或托管 URL。重新打开历史任务会恢复已保存的逐镜引用。</li>
-          <li>短剧 Agent 的 AI 优化会从当前阶段开始，依次更新已有的剧本、锚点、分镜和 QC；全部审查通过后直接保存新版本。</li>
+          <li>逐镜参考计数包含本地图片和托管 URL。仅有一张图片且模型支持时会使用首帧驱动模式；可在镜头卡中单独移除本地图片或托管 URL。重新打开历史任务会恢复已保存的逐镜引用。</li>
+          <li>短剧 Agent 的 AI 优化会从当前阶段开始，依次更新已有的剧本、锚点、分镜和质检；全部审查通过后直接保存新版本。</li>
           <li>AI 优化不会自动重新生成视频；确认新分镜后再进入视频工作区生成，拼接也必须主动点击。</li>
           <li>提交后请等待任务完成；生成进行中切换页面，生成按钮会保持锁定直到本次请求结束，避免重复计费；已保存的历史结果不受影响。</li>
           <li>提示词应明确主体、环境、构图和风格，避免互相冲突的要求。</li>
@@ -43,7 +43,7 @@ function GuideContent() {
         <ol className={`${copyClass} list-decimal space-y-1 pl-4`}>
           <li>通过“共享小说原文管理器”创建小说，新增、编辑章节并保存。每次保存会发布该章节当前修订为当前项目的小说文本资产，供漫画和短剧选择。</li>
           <li>漫画工作区选择章节后独立维护作品设定、剧本、分镜、页 Prompt 与页图；它不会与短剧工作区混合或互相覆盖。</li>
-          <li>在章节顶部上传或选择最多 8 张作品画风图，可由多模态文本模型提取并人工审核整部小说共享的视觉宪法。</li>
+          <li>在章节顶部上传或选择最多 8 张作品画风参考图，可由多模态文本模型提取并人工审核整部小说共享的视觉宪法。</li>
           <li>依次检查作品设定、本章剧本、分镜和每页 Prompt。分镜用“# 第1页”这样的一级标题分页，也可写成“第３页”“第三页”或“第3页（副标题）”；无法识别的页标题会在检查中提示。</li>
           <li>产物底部的 AI 优化会读取本章全部已保存产物，并从当前产物开始直接更新已有下游文字版本。</li>
           <li>优化页 Prompt 时默认更新当前页及后续页；勾选后可包含本章前面的有效页。</li>
@@ -67,17 +67,17 @@ function GuideContent() {
       <section className={sectionClass}>
         <h3 className={headingClass}>资产与项目</h3>
         <p className={copyClass}>
-          资产库按 AI 生图、AI 视频、小说、小说漫画、短剧、本地上传等分类显示，可按资产组查看。导入素材时先选择操作和素材，再检查预览并点击“确认应用”；项目用于隔离生产设置与内容，切换项目后请确认当前项目名称。删除项目不会自动删除本地资产文件。
+          资产库按 AI 生图、AI 视频、小说、小说漫画、短剧、外部上传等分类显示，可按资产组查看。导入素材时先选择操作和素材，再检查预览并点击“确认应用”；项目用于隔离生产设置与内容，切换项目后请确认当前项目名称。删除项目不会自动删除本地资产文件。
         </p>
       </section>
 
       <section className={sectionClass}>
         <h3 className={headingClass}>常见问题</h3>
         <dl className={`${copyClass} space-y-2`}>
-          <div><dt className="text-slate-300">显示“未配置”</dt><dd>打开设置，检查接口地址、密钥与模型名称并保存。</dd></div>
+          <div><dt className="text-slate-300">显示“未配置”</dt><dd>打开设置，检查 API 地址、API Key 与模型名称并保存。</dd></div>
           <div><dt className="text-slate-300">任务失败</dt><dd>先查看错误提示，再点击底部“日志”打开日志目录定位原因。</dd></div>
           <div><dt className="text-slate-300">历史没有更新</dt><dd>点击顶部“刷新历史”，重新从本地数据库载入结果。</dd></div>
-          <div><dt className="text-slate-300">安全提示</dt><dd>不要在截图、文档或反馈中公开 API 密钥与本地隐私素材。</dd></div>
+          <div><dt className="text-slate-300">安全提示</dt><dd>不要在截图、文档或反馈中公开 API Key与本地隐私素材。</dd></div>
         </dl>
       </section>
     </div>
@@ -106,7 +106,7 @@ function ChangelogContent() {
             <ul className={`${copyClass} mt-1 list-disc space-y-1 pl-4`}>
               <li>修复资产库中漫画第 2 章起缺少文字资料、图片被误标「已过期」的问题。</li>
               <li>分页标题支持全角数字、中文数字和副标题；保存本章注入后界面即时刷新，不再导致出图版本冲突。</li>
-              <li>自定义 Agent 提示词重启后正常生效，不再在下次保存时覆盖旧版本；从历史版本编辑保存不再报冲突。</li>
+              <li>自定义 Agent Prompt重启后正常生效，不再在下次保存时覆盖旧版本；从历史版本编辑保存不再报冲突。</li>
             </ul>
           </div>
           <div>
@@ -148,7 +148,7 @@ function ChangelogContent() {
         </div>
         <ul className={`${copyClass} list-disc space-y-1 pl-4 pt-1`}>
           <li>资产导入支持未归属资源；视频分镜逐镜参考支持托管视频并修复从图生退回文生时的校验死锁。</li>
-          <li>全局通用设置独立于接口配置，没有接口配置时也能保存输出目录和文本模型；项目生产档案打开时不再误报未保存。</li>
+          <li>全局通用设置独立于接口配置，没有接口配置时也能保存产物输出目录和文本模型；项目生产档案打开时不再误报未保存。</li>
           <li>漫画工作区的画风参考与视觉宪法可折叠，按步骤自动展开或收起。</li>
         </ul>
       </section>
@@ -226,7 +226,7 @@ function ChangelogContent() {
           <div>
             <h4 className="text-[11px] font-medium text-cyan-100/80">视频工作区</h4>
             <ul className={`${copyClass} mt-1 list-disc space-y-1 pl-4`}>
-              <li>新增小说/脑洞 → 规划 → 剧本 → 视频锚点 → 视频分镜 → QC → 逐镜视频资源的完整工作流。</li>
+              <li>新增小说/脑洞 → 规划 → 剧本 → 视频锚点 → 视频分镜 → 质检 → 逐镜视频资源的完整工作流。</li>
               <li>每镜一次请求、一个独立资源；不自动拆镜或拼接，声音、口型与字幕暂不处理。</li>
               <li>分辨率、画幅、时长和参考素材改为模型能力驱动，并与审查生产清单精确绑定。</li>
               <li>对齐 ZZone 异步视频协议，保留 Provider task ID，并加强轮询、下载重试及公网素材校验。</li>
@@ -236,7 +236,7 @@ function ChangelogContent() {
             <h4 className="text-[11px] font-medium text-cyan-100/80">AI 优化</h4>
             <ul className={`${copyClass} mt-1 list-disc space-y-1 pl-4`}>
               <li>小说漫画 AI 优化会按作品设定 → 剧本 → 分页分镜 → 页 Prompt 直接更新当前及已有下游文字版本。</li>
-              <li>短剧视频 AI 优化会按规划 → 剧本 → 锚点 → 分镜 → QC 联动，全部审查通过后再保存新版本。</li>
+              <li>短剧视频 AI 优化会按规划 → 剧本 → 锚点 → 分镜 → 质检联动，全部审查通过后再保存新版本。</li>
               <li>联动优化读取整个工作区上下文，但不会自动重画漫画或重新生成视频。</li>
             </ul>
           </div>
@@ -273,14 +273,7 @@ function ChangelogContent() {
 }
 
 export default function AppDocsDialog({ view, onClose }: { view: AppDocsView | null; onClose: () => void }) {
-  useEffect(() => {
-    if (!view) return;
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [view, onClose]);
+  useEscapeKey(onClose, view !== null);
 
   if (!view) return null;
 

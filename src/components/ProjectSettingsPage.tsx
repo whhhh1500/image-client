@@ -1,6 +1,8 @@
 import { confirmAction } from "../lib/confirm";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import { FolderCog, Save, X } from "lucide-react";
+import { errorText } from "../lib/errors";
+import { useEscapeKey } from "../lib/useEscapeKey";
 import { ART_STYLES, ASPECT_RATIOS, STORY_STYLES, applyProjectProfile } from "../lib/projectProfile";
 import { IMAGE_MODELS, VIDEO_MODELS } from "../lib/models";
 import { listVideoModelCapabilities, listVideoModels, type VideoModelCapability } from "../lib/ipc";
@@ -42,6 +44,7 @@ export default function ProjectSettingsPage({
   const [videoCapabilities, setVideoCapabilities] = useState<VideoModelCapability[]>([]);
   const [videoCapabilityNotice, setVideoCapabilityNotice] = useState<string | null>(null);
   const [videoCapabilityLoading, setVideoCapabilityLoading] = useState(false);
+  const titleId = useId();
 
   useEffect(() => {
     setDraft(project);
@@ -60,8 +63,8 @@ export default function ProjectSettingsPage({
         if (modelsResult.status === "fulfilled") videoCatalog.setOptions(modelsResult.value.length ? modelsResult.value : VIDEO_MODELS);
         if (capabilitiesResult.status === "fulfilled") setVideoCapabilities(capabilitiesResult.value);
         const failures = [
-          modelsResult.status === "rejected" ? `模型目录：${String(modelsResult.reason)}` : "",
-          capabilitiesResult.status === "rejected" ? `能力定义：${String(capabilitiesResult.reason)}` : "",
+          modelsResult.status === "rejected" ? `模型目录：${errorText(modelsResult.reason)}` : "",
+          capabilitiesResult.status === "rejected" ? `能力定义：${errorText(capabilitiesResult.reason)}` : "",
         ].filter(Boolean);
         if (failures.length) setVideoCapabilityNotice(`暂时无法完整读取视频模型信息：${failures.join("；")}。当前值会保留，生成前仍会再次校验。`);
       })
@@ -89,15 +92,17 @@ export default function ProjectSettingsPage({
     setVideoCapabilityNotice(`${selectedVideoCapability.label} 不支持 ${previousResolution}，已切换为 ${nextResolution}。保存后会用于质检和每个视频任务。`);
   }, [draft, selectedVideoCapability]);
 
+  const attemptClose = async () => {
+    if (dirty && !(await confirmAction("项目生产档案有未保存修改，确定关闭吗？"))) return;
+    onClose();
+  };
+  useEscapeKey(() => void attemptClose(), open && draft !== null);
+
   if (!open || !draft) return null;
 
   const update = (patch: Partial<Project>) => {
     setDirty(true);
     setDraft((current) => current ? { ...current, ...patch } : current);
-  };
-  const attemptClose = async () => {
-    if (dirty && !(await confirmAction("项目生产档案有未保存修改，确定关闭吗？"))) return;
-    onClose();
   };
   const save = async () => {
     if (!draft.name.trim() || busy) return;
@@ -109,7 +114,7 @@ export default function ProjectSettingsPage({
       setDirty(false);
       onClose();
     } catch (cause) {
-      setError(String(cause));
+      setError(errorText(cause));
     } finally {
       setBusy(false);
     }
@@ -128,14 +133,14 @@ export default function ProjectSettingsPage({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#020617]/80 p-4 backdrop-blur-md" onClick={attemptClose}>
-      <section className="dream-dialog w-full max-w-2xl rounded-2xl border border-cyan-200/15 bg-slate-950/90" onClick={(e) => e.stopPropagation()}>
+      <section role="dialog" aria-modal="true" aria-labelledby={titleId} className="dream-dialog w-full max-w-2xl rounded-2xl border border-cyan-200/15 bg-slate-950/90" onClick={(e) => e.stopPropagation()}>
         <header className="flex items-center gap-2 border-b border-slate-800 px-5 py-4">
           <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-500"><FolderCog size={16} /></span>
           <div>
-            <div className="text-sm font-semibold">项目生产档案</div>
+            <h2 id={titleId} className="text-sm font-semibold">项目生产档案</h2>
             <div className="text-[10px] text-slate-500">保存后同步到生成参数，并注入文本 Agent 上下文</div>
           </div>
-          <button onClick={attemptClose} className="ml-auto rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-white"><X size={16} /></button>
+          <button type="button" onClick={attemptClose} aria-label="关闭" className="ml-auto rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-white"><X size={16} /></button>
         </header>
 
         <div className="grid max-h-[70vh] grid-cols-2 gap-4 overflow-y-auto p-5">
@@ -214,7 +219,7 @@ export default function ProjectSettingsPage({
           </div>
         </div>
 
-        {error && <div className="mx-5 mb-3 rounded-lg bg-rose-500/10 px-3 py-2 text-xs text-rose-300">保存失败：{error}</div>}
+        {error && <div role="alert" className="mx-5 mb-3 rounded-lg bg-rose-500/10 px-3 py-2 text-xs text-rose-300">保存失败：{error}</div>}
 
         <footer className="flex justify-end gap-2 border-t border-slate-800 px-5 py-3">
           <button onClick={attemptClose} className="rounded-lg border border-slate-600 px-4 py-2 text-xs text-slate-300 hover:bg-slate-800">取消</button>
