@@ -52,7 +52,7 @@ func (m *authMode) UnmarshalJSON(b []byte) error {
 		return err
 	}
 	if s != string(authBearer) && s != string(authRaw) {
-		return fmt.Errorf("未知的认证方式: %q", s)
+		return fmt.Errorf("未知的认证方式：%q", s)
 	}
 	*m = authMode(s)
 	return nil
@@ -180,7 +180,7 @@ func (s *Service) hostingConfig(ctx context.Context) (hostingConfig, error) {
 		})
 	})
 	if err != nil {
-		return hostingConfig{}, fmt.Errorf("读取媒体托管设置失败: %w", err)
+		return hostingConfig{}, fmt.Errorf("读取媒体托管设置失败：%w", err)
 	}
 	if !found {
 		return hostingConfig{FileField: "file", URLField: "url", AuthMode: authBearer}, nil
@@ -251,7 +251,7 @@ func (s *Service) saveHosting(ctx context.Context, in hostingSaveInput) (hosting
 			&sqlitex.ExecOptions{Args: []any{hostingSecretKey, string(value)}})
 	})
 	if err != nil {
-		return hostingStatus{}, fmt.Errorf("保存媒体托管设置失败: %w", err)
+		return hostingStatus{}, fmt.Errorf("保存媒体托管设置失败：%w", err)
 	}
 	return cfg.status(), nil
 }

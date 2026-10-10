@@ -54,7 +54,7 @@ func (f *importFile) UnmarshalJSON(b []byte) error {
 		return err
 	}
 	if v.Source != "path" && v.Source != "bytes" {
-		return fmt.Errorf("未知的导入文件来源: %q", v.Source)
+		return fmt.Errorf("未知的导入文件来源：%q", v.Source)
 	}
 	*f = importFile(v)
 	return nil

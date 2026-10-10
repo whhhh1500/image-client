@@ -445,8 +445,8 @@ func TestUnusableResponsesReportTheirCause(t *testing.T) {
 		{postResponse{200, `{"data":[]}`}, "图像响应缺少 data"},
 		{postResponse{200, `[1]`}, "图像响应缺少 data"},
 		{postResponse{200, `{"data":[{"revised_prompt":"x"}]}`}, "图像响应中没有 b64_json 或 url"},
-		{postResponse{200, inlineBody(t, "!!!")}, "base64 解码失败: "},
-		{postResponse{200, `{"data":`}, "解析图像响应失败: "},
+		{postResponse{200, inlineBody(t, "!!!")}, "base64 解码失败："},
+		{postResponse{200, `{"data":`}, "解析图像响应失败："},
 		{postResponse{500, "boom"}, "图像接口返回 500 Internal Server Error: boom"},
 		{postResponse{400, strings.Repeat("错", 500)}, "图像接口返回 400 Bad Request: " + strings.Repeat("错", 400)},
 	}
@@ -482,7 +482,7 @@ func TestTheWaitForResponseHeadersIsBounded(t *testing.T) {
 	env.s.imageTimeouts.Header = 100 * time.Millisecond
 	started := time.Now()
 	_, err := generate(t, env, ImageRequest{Prompt: "x", Model: "gpt-image-2"}, nil)
-	if err == nil || !strings.HasPrefix(err.Error(), "请求图像接口失败: 等待图像接口响应超过 ") || !strings.HasSuffix(err.Error(), " 秒") {
+	if err == nil || !strings.HasPrefix(err.Error(), "请求图像接口失败：等待图像接口响应超过 ") || !strings.HasSuffix(err.Error(), " 秒") {
 		t.Fatalf("err = %v", err)
 	}
 	if time.Since(started) > 2*time.Second {
@@ -737,7 +737,7 @@ func TestAssetDownloadDoesNotRetryAnExpiredURL(t *testing.T) {
 		{rawResponse("403 Forbidden", nil, 0, nil), 0},
 	})
 	_, err := download(t, url, nil)
-	if err == nil || !strings.HasPrefix(err.Error(), "下载图片失败: ") || !strings.Contains(err.Error(), "403") {
+	if err == nil || !strings.HasPrefix(err.Error(), "下载图片失败：") || !strings.Contains(err.Error(), "403") {
 		t.Fatalf("err = %v", err)
 	}
 	if len(heads()) != 1 {

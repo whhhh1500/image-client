@@ -237,7 +237,7 @@ func (llmConfigBody) checkFields(f fieldSet) error { return f.require("url", "ke
 func (b llmConfigBody) validate() error {
 	u, err := url.Parse(strings.TrimSpace(b.URL))
 	if err != nil {
-		return fmt.Errorf("LLM 地址无效: %v", err)
+		return fmt.Errorf("LLM 地址无效：%v", err)
 	}
 	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return errors.New("LLM 地址必须是 HTTP(S) 地址")

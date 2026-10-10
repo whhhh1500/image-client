@@ -37,7 +37,7 @@ func (r SaveRequest) Validate() error {
 		}
 		u, err := url.Parse(value)
 		if err != nil {
-			return fmt.Errorf("%s 地址无效: %v", f.name, err)
+			return fmt.Errorf("%s 地址无效：%v", f.name, err)
 		}
 		if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 			return fmt.Errorf("%s 必须是 HTTP(S) 地址", f.name)

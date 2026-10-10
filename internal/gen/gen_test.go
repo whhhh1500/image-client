@@ -281,7 +281,7 @@ func TestRunNodeSavesIntoTheRunFolderAndEmitsProgress(t *testing.T) {
 		t.Fatal("events without progressId")
 	}
 	args = `{"req":{"nodeType":"image","category":"video","config":{"prompt":"x"}}}`
-	if _, err := router.Invoke(context.Background(), "run_node", json.RawMessage(args)); err == nil || err.Error() != "未知节点类别: video" {
+	if _, err := router.Invoke(context.Background(), "run_node", json.RawMessage(args)); err == nil || err.Error() != "未知节点类别：video" {
 		t.Fatalf("err = %v", err)
 	}
 }

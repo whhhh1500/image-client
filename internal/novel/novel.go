@@ -169,7 +169,7 @@ func withReceipt[T any](conn *sqlite.Conn, command, rawKey string, request map[s
 			storedJSON = stmt.ColumnText(1)
 		})
 	if err != nil {
-		return zero, fmt.Errorf("读取小说操作回执失败: %w", err)
+		return zero, fmt.Errorf("读取小说操作回执失败：%w", err)
 	}
 	if found {
 		if storedHash != hash {
@@ -177,7 +177,7 @@ func withReceipt[T any](conn *sqlite.Conn, command, rawKey string, request map[s
 		}
 		var replay T
 		if err := json.Unmarshal([]byte(storedJSON), &replay); err != nil {
-			return zero, fmt.Errorf("读取小说操作回执响应失败: %w", err)
+			return zero, fmt.Errorf("读取小说操作回执响应失败：%w", err)
 		}
 		return replay, nil
 	}
@@ -188,14 +188,14 @@ func withReceipt[T any](conn *sqlite.Conn, command, rawKey string, request map[s
 	}
 	body, err := json.Marshal(response)
 	if err != nil {
-		return zero, fmt.Errorf("序列化小说操作回执失败: %w", err)
+		return zero, fmt.Errorf("序列化小说操作回执失败：%w", err)
 	}
 	err = sqlitex.Execute(conn,
 		`INSERT INTO novel_operation_receipts (id, command_name, idempotency_key, request_hash, response_json, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
 		&sqlitex.ExecOptions{Args: []any{newID("nreceipt"), command, key, hash, string(body), nowMillis()}})
 	if err != nil {
-		return zero, fmt.Errorf("保存小说操作回执失败: %w", err)
+		return zero, fmt.Errorf("保存小说操作回执失败：%w", err)
 	}
 	return response, nil
 }

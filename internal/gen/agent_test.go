@@ -36,7 +36,7 @@ func TestValidatesAgentRequestAndTools(t *testing.T) {
 		{nil, "tools 数量必须在 1 到 32 之间"},
 		{many, "tools 数量必须在 1 到 32 之间"},
 		{[]AgentTool{tool("  ")}, "tools.name 不能为空"},
-		{[]AgentTool{tool("writer"), tool(" writer ")}, "tools.name 重复: writer"},
+		{[]AgentTool{tool("writer"), tool(" writer ")}, "tools.name 重复：writer"},
 		{[]AgentTool{tool(strings.Repeat("a", 101))}, "tools.name 超过 100 个字符"},
 		{[]AgentTool{{Name: "w", Description: "   ", System: "s"}}, "tools.description 不能为空"},
 		{[]AgentTool{{Name: "w", Description: strings.Repeat("d", 2001), System: "s"}}, "tools.description 超过 2000 个字符"},

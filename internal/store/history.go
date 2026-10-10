@@ -39,7 +39,7 @@ func (db *DB) PersistAssets(ctx context.Context, assets []AssetRef, meta AssetMe
 	}
 	metadata, err := json.Marshal(meta)
 	if err != nil {
-		return fmt.Errorf("序列化资产历史失败: %w", err)
+		return fmt.Errorf("序列化资产历史失败：%w", err)
 	}
 	createdAt := time.Now().UnixMilli()
 	err = db.Tx(ctx, func(conn *sqlite.Conn) error {
@@ -67,7 +67,7 @@ func (db *DB) PersistAssets(ctx context.Context, assets []AssetRef, meta AssetMe
 			stmt.BindInt64(8, createdAt)
 			stmt.BindText(9, string(metadata))
 			if _, err := stmt.Step(); err != nil {
-				return fmt.Errorf("写入资产历史失败: %w", err)
+				return fmt.Errorf("写入资产历史失败：%w", err)
 			}
 			stmt.Reset()
 		}

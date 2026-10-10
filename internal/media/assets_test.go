@@ -65,10 +65,10 @@ func TestSaveMediaValidatesKindExtensionAndContent(t *testing.T) {
 		{kind: "video", ext: "MOV", data: mp4, folder: "视频", format: "mov"},
 		{kind: "image", ext: "", data: pngData, err: "无效的媒体扩展名"},
 		{kind: "image", ext: "p/ng", data: pngData, err: "无效的媒体扩展名"},
-		{kind: "image", ext: "bmp", data: pngData, err: "不支持的媒体类型或扩展名: image.bmp"},
-		{kind: "audio", ext: "mp3", data: mp4, err: "不支持的媒体类型或扩展名: audio.mp3"},
+		{kind: "image", ext: "bmp", data: pngData, err: "不支持的媒体类型或扩展名：image.bmp"},
+		{kind: "audio", ext: "mp3", data: mp4, err: "不支持的媒体类型或扩展名：audio.mp3"},
 		{kind: "image", ext: "png", data: []byte("<html>"), err: "图片资产内容格式校验失败"},
-		{kind: "video", ext: "webm", data: mp4, err: "视频资产内容格式校验失败: webm"},
+		{kind: "video", ext: "webm", data: mp4, err: "视频资产内容格式校验失败：webm"},
 	}
 	for _, tc := range cases {
 		asset, err := env.svc.SaveMedia(tc.kind, tc.ext, tc.data)
@@ -147,7 +147,7 @@ func TestReadTextAssetOnlyReadsDocumentsInsideTheRoots(t *testing.T) {
 			t.Errorf("%s: error %q, want %q", filepath.Base(path), errText(err), want)
 		}
 	}
-	if _, err := env.svc.readTextAsset(filepath.Join(env.output, "missing.md")); !strings.HasPrefix(errText(err), "文档文件不存在或不可访问: ") {
+	if _, err := env.svc.readTextAsset(filepath.Join(env.output, "missing.md")); !strings.HasPrefix(errText(err), "文档文件不存在或不可访问：") {
 		t.Errorf("missing file: %v", err)
 	}
 	if _, err := env.svc.readTextAsset(invalid); !strings.HasPrefix(errText(err), "读取文档失败") {

@@ -169,7 +169,7 @@ func (s *Service) runNode(ctx context.Context, in runNodeArgs) (RunResult, error
 	switch in.Req.Category {
 	case "generate", "ai_process":
 	default:
-		return RunResult{}, fmt.Errorf("未知节点类别: %s", in.Req.Category)
+		return RunResult{}, fmt.Errorf("未知节点类别：%s", in.Req.Category)
 	}
 	// The connection check comes first, as it always has; only then are the
 	// node's own settings judged.

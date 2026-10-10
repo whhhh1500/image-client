@@ -40,7 +40,7 @@ func (db *DB) FrontendExec(ctx context.Context, query string, binds []json.RawMe
 	var result ExecResult
 	err := db.frontendStatement(ctx, query, binds, false, func(conn *sqlite.Conn, stmt *sqlite.Stmt) error {
 		if _, err := stmt.Step(); err != nil {
-			return fmt.Errorf("SQLite 执行失败: %w", err)
+			return fmt.Errorf("SQLite 执行失败：%w", err)
 		}
 		id := conn.LastInsertRowID()
 		result = ExecResult{RowsAffected: conn.Changes(), LastInsertID: &id}
@@ -58,7 +58,7 @@ func (db *DB) FrontendSelect(ctx context.Context, query string, binds []json.Raw
 		for {
 			more, err := stmt.Step()
 			if err != nil {
-				return fmt.Errorf("SQLite 查询失败: %w", err)
+				return fmt.Errorf("SQLite 查询失败：%w", err)
 			}
 			if !more {
 				return nil
@@ -88,7 +88,7 @@ func (db *DB) frontendStatement(ctx context.Context, query string, binds []json.
 		// The authorizer is consulted while the statement is prepared; a
 		// transient statement is never cached, so it cannot be reused unchecked.
 		if err := conn.SetAuthorizer(sqlite.AuthorizeFunc(authorizeFrontend)); err != nil {
-			return fmt.Errorf("初始化 SQLite 授权器失败: %w", err)
+			return fmt.Errorf("初始化 SQLite 授权器失败：%w", err)
 		}
 		stmt, _, err := conn.PrepareTransient(query)
 		conn.SetAuthorizer(nil)
@@ -97,7 +97,7 @@ func (db *DB) frontendStatement(ctx context.Context, query string, binds []json.
 			if isSelect {
 				label = "SQLite 查询准备失败"
 			}
-			return fmt.Errorf("%s: %w", label, err)
+			return fmt.Errorf("%s：%w", label, err)
 		}
 		defer stmt.Finalize()
 		for i, raw := range binds {
@@ -135,7 +135,7 @@ func validateQuery(query string, isSelect bool) error {
 	padded := " " + lower + " "
 	for _, keyword := range []string{"join", "union", "pragma", "attach", "detach", "vacuum", "reindex"} {
 		if strings.Contains(padded, " "+keyword+" ") {
-			return fmt.Errorf("SQLite 语句包含不允许的关键字: %s", keyword)
+			return fmt.Errorf("SQLite 语句包含不允许的关键字：%s", keyword)
 		}
 	}
 	var allowed bool
@@ -176,7 +176,7 @@ func validateQuery(query string, isSelect bool) error {
 		return fmt.Errorf("无法识别 SQLite 表名")
 	}
 	if !slices.Contains(frontendTables, table) {
-		return fmt.Errorf("SQLite 表不允许访问: %s", table)
+		return fmt.Errorf("SQLite 表不允许访问：%s", table)
 	}
 	return nil
 }
@@ -209,13 +209,13 @@ func bind(stmt *sqlite.Stmt, param int, raw json.RawMessage) error {
 	case raw[0] == '"':
 		var text string
 		if err := json.Unmarshal(raw, &text); err != nil {
-			return fmt.Errorf("SQLite 参数无效: %w", err)
+			return fmt.Errorf("SQLite 参数无效：%w", err)
 		}
 		stmt.BindText(param, text)
 	case raw[0] == '[' || raw[0] == '{':
 		var compact bytes.Buffer
 		if err := json.Compact(&compact, raw); err != nil {
-			return fmt.Errorf("序列化 SQLite JSON 参数失败: %w", err)
+			return fmt.Errorf("序列化 SQLite JSON 参数失败：%w", err)
 		}
 		stmt.BindText(param, compact.String())
 	default:

@@ -48,7 +48,7 @@ type LogSink struct {
 // OpenLogSink prepares dir and removes files older than the retention window.
 func OpenLogSink(dir string) (*LogSink, error) {
 	if err := MkdirPrivate(dir); err != nil {
-		return nil, fmt.Errorf("创建日志目录失败: %w", err)
+		return nil, fmt.Errorf("创建日志目录失败：%w", err)
 	}
 	sink := &LogSink{dir: dir, maxBytes: maxLogFileBytes, keepDays: logRetentionDays}
 	sink.prune(time.Now())
@@ -163,7 +163,7 @@ func (s *LogSink) Record(level slog.Level, target, event string, fields map[stri
 		line, err = json.Marshal(record)
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[logging] 序列化日志失败: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[logging] 序列化日志失败：%v\n", err)
 		return
 	}
 	if err := s.write(now, append(line, '\n')); err != nil {

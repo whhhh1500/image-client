@@ -378,7 +378,7 @@ func TestOrdinaryJSONAndErrorEnvelopesStaySupported(t *testing.T) {
 	for body, want := range map[string]string{
 		`{"error":{"message":"synthetic error"}}`: "文本接口返回应用错误",
 		`{"choices":[]}`: "文本接口未返回内容",
-		`{"choices"`:     "解析文本响应失败: ",
+		`{"choices"`:     "解析文本响应失败：",
 	} {
 		server := startLLM(t, llmResponse{status: 200, contentType: "application/json", body: body})
 		if _, err := chat(t, env, server.server.URL); err == nil || !strings.HasPrefix(err.Error(), want) {
@@ -410,7 +410,7 @@ func TestSilenceEndsAStream(t *testing.T) {
 	env := newTestService(t, nil)
 	env.s.llmTimeouts.Idle = 100 * time.Millisecond
 	_, err := chat(t, env, server.server.URL)
-	if err == nil || !strings.HasPrefix(err.Error(), "读取文本流失败: 超过 ") || !strings.HasSuffix(err.Error(), "秒没有收到新数据") {
+	if err == nil || !strings.HasPrefix(err.Error(), "读取文本流失败：超过 ") || !strings.HasSuffix(err.Error(), "秒没有收到新数据") {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -427,7 +427,7 @@ func TestTheWaitForLLMHeadersIsBounded(t *testing.T) {
 	env := newTestService(t, nil)
 	env.s.llmTimeouts.Header = 100 * time.Millisecond
 	_, err := chat(t, env, server.URL)
-	if err == nil || !strings.HasPrefix(err.Error(), "请求文本接口失败: 等待响应超过 ") {
+	if err == nil || !strings.HasPrefix(err.Error(), "请求文本接口失败：等待响应超过 ") {
 		t.Fatalf("err = %v", err)
 	}
 }

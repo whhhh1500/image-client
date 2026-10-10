@@ -190,7 +190,7 @@ func ReadLimited(r io.Reader, buf []byte, limit int64, label string, onProgress 
 			return buf, nil
 		}
 		if err != nil {
-			return buf, fmt.Errorf("读取%s失败: %w", label, err)
+			return buf, fmt.Errorf("读取%s失败：%w", label, err)
 		}
 	}
 }

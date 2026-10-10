@@ -49,15 +49,15 @@ const (
 func DecodeImage(b []byte) (image.Image, string, error) {
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(b))
 	if err != nil {
-		return nil, "", fmt.Errorf("识别图片格式失败: %w", err)
+		return nil, "", fmt.Errorf("识别图片格式失败：%w", err)
 	}
 	if cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width > MaxImageDimension || cfg.Height > MaxImageDimension ||
 		int64(cfg.Width)*int64(cfg.Height) > maxImagePixels {
-		return nil, "", fmt.Errorf("解码图片失败: 图片尺寸 %dx%d 超出限制", cfg.Width, cfg.Height)
+		return nil, "", fmt.Errorf("解码图片失败：图片尺寸 %dx%d 超出限制", cfg.Width, cfg.Height)
 	}
 	img, format, err := image.Decode(bytes.NewReader(b))
 	if err != nil {
-		return nil, "", fmt.Errorf("解码图片失败: %w", err)
+		return nil, "", fmt.Errorf("解码图片失败：%w", err)
 	}
 	return img, format, nil
 }
@@ -83,12 +83,12 @@ func ValidVideo(b []byte, ext string) bool {
 // SaveBytes writes data to dir/<uuid>.<format> and describes it as an asset.
 func SaveBytes(dir, kind string, data []byte, format string) (store.AssetRef, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return store.AssetRef{}, fmt.Errorf("创建资产目录失败: %w", err)
+		return store.AssetRef{}, fmt.Errorf("创建资产目录失败：%w", err)
 	}
 	id := uuid.NewString()
 	path := filepath.Join(dir, id+"."+format)
 	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return store.AssetRef{}, fmt.Errorf("写入资产失败: %w", err)
+		return store.AssetRef{}, fmt.Errorf("写入资产失败：%w", err)
 	}
 	return store.AssetRef{ID: id, Kind: kind, Path: path, Format: format}, nil
 }

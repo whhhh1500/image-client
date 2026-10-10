@@ -154,7 +154,7 @@ func (s *Service) Chat(ctx context.Context, r ChatRequest) (Completion, error) {
 	resp, err := c.post(ctx, body, s.llmTimeouts)
 	if err != nil {
 		c.fail(nil, err.Error())
-		return Completion{}, fmt.Errorf("请求文本接口失败: %v", err)
+		return Completion{}, fmt.Errorf("请求文本接口失败：%v", err)
 	}
 	c.headerMs = time.Since(c.started).Milliseconds()
 	status := resp.StatusCode
@@ -176,12 +176,12 @@ func (s *Service) Chat(ctx context.Context, r ChatRequest) (Completion, error) {
 		raw, err := readBody(resp, maxLLMResponseBytes, "文本接口响应", nil)
 		if err != nil {
 			c.fail(status, err.Error())
-			return Completion{}, fmt.Errorf("读取文本响应失败: %v", err)
+			return Completion{}, fmt.Errorf("读取文本响应失败：%v", err)
 		}
 		value, err := decodeJSON(raw)
 		if err != nil {
 			c.fail(status, err.Error())
-			return Completion{}, fmt.Errorf("解析文本响应失败: %v", err)
+			return Completion{}, fmt.Errorf("解析文本响应失败：%v", err)
 		}
 		return c.finishNonStream(value)
 	}
@@ -218,7 +218,7 @@ func (c *chatCall) nonStream(ctx context.Context, body map[string]any) (Completi
 	resp, err := c.post(ctx, body, platform.Timeouts{Total: c.s.llmTimeouts.Total})
 	if err != nil {
 		c.fail(nil, err.Error())
-		return Completion{}, fmt.Errorf("请求文本接口失败: %v", err)
+		return Completion{}, fmt.Errorf("请求文本接口失败：%v", err)
 	}
 	c.headerMs = time.Since(c.started).Milliseconds()
 	if !isSuccess(resp) {
@@ -232,7 +232,7 @@ func (c *chatCall) nonStream(ctx context.Context, body map[string]any) (Completi
 	}
 	value, err := decodeJSON(raw)
 	if err != nil {
-		return Completion{}, fmt.Errorf("解析文本响应失败: %v", err)
+		return Completion{}, fmt.Errorf("解析文本响应失败：%v", err)
 	}
 	return c.finishNonStream(value)
 }
@@ -298,7 +298,7 @@ func (c *chatCall) stream(resp *http.Response) (Completion, error) {
 		}
 		if err != nil {
 			c.fail(status, err.Error())
-			return Completion{}, fmt.Errorf("读取文本流失败: %v", err)
+			return Completion{}, fmt.Errorf("读取文本流失败：%v", err)
 		}
 	}
 	if !done {

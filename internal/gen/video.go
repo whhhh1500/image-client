@@ -494,11 +494,11 @@ func (s *Service) GenerateVideo(ctx context.Context, req VideoRequest, outDir st
 	// The folder is created only for a finished video, so failed or rejected
 	// requests do not leave empty run folders behind.
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return nil, fmt.Errorf("创建目录失败: %v", err)
+		return nil, fmt.Errorf("创建目录失败：%v", err)
 	}
 	path := filepath.Join(outDir, "video_"+uuid.NewString()+".mp4")
 	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return nil, fmt.Errorf("保存视频失败: %v", err)
+		return nil, fmt.Errorf("保存视频失败：%v", err)
 	}
 	duration := float64(req.DurationS)
 	slog.Info("video.request.end", "requestId", task.requestID, "status", "success",
@@ -553,7 +553,7 @@ func (t *videoTask) create(ctx context.Context, req VideoRequest) error {
 	started := time.Now()
 	resp, err := t.send(ctx, http.MethodPost, t.endpoint, body, t.s.videoTiming.create)
 	if err != nil {
-		return fmt.Errorf("创建视频任务失败: %v", err)
+		return fmt.Errorf("创建视频任务失败：%v", err)
 	}
 	text, _ := readBody(resp, 1<<20, "视频创建响应", nil)
 	slog.Info("video.task.create_response", "requestId", t.requestID, "segmentIndex", segmentIndex,
@@ -684,7 +684,7 @@ func (t *videoTask) wait(ctx context.Context) error {
 			if !ok {
 				message = "服务端未返回失败原因"
 			}
-			return fmt.Errorf("视频任务失败（%s）: %s", status, redactDataURLs(message))
+			return fmt.Errorf("视频任务失败（%s）：%s", status, redactDataURLs(message))
 		}
 		if !time.Now().Before(deadline) {
 			return fmt.Errorf("视频任务超时（task_id=%s，status=%s）", t.id, status)

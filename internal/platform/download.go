@@ -66,7 +66,7 @@ func Download(ctx context.Context, client *http.Client, url string, p DownloadPo
 		}
 		var fatal fatalError
 		if errors.As(err, &fatal) || ctx.Err() != nil {
-			return nil, fmt.Errorf("下载%s失败: %w", p.Label, err)
+			return nil, fmt.Errorf("下载%s失败：%w", p.Label, err)
 		}
 		slog.Warn("download.retry", "attempt", attempt, "receivedBytes", len(body), "error", ErrorText(err), "source", SafeURL(url))
 		lastErr = err
@@ -81,7 +81,7 @@ func Download(ctx context.Context, client *http.Client, url string, p DownloadPo
 			}
 		}
 	}
-	return nil, fmt.Errorf("下载%s失败（已尝试 %d 次）: %w", p.Label, p.Attempts, lastErr)
+	return nil, fmt.Errorf("下载%s失败（已尝试 %d 次）：%w", p.Label, p.Attempts, lastErr)
 }
 
 func downloadAttempt(ctx context.Context, client *http.Client, url string, p DownloadPolicy, attempt int,
@@ -114,7 +114,7 @@ func downloadAttempt(ctx context.Context, client *http.Client, url string, p Dow
 		contentRange := resp.Header.Get("Content-Range")
 		if start, ok := rangeStart(contentRange); !ok || start != int64(len(*body)) {
 			*body, *validator = (*body)[:0], ""
-			return fmt.Errorf("续传范围不匹配: %s", contentRange)
+			return fmt.Errorf("续传范围不匹配：%s", contentRange)
 		}
 	case status >= 200 && status < 300:
 		// A full body: the first attempt, or a server that ignored Range.

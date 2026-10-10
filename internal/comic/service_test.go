@@ -364,10 +364,10 @@ func TestExtractConstitutionSendsReferencesAndReturnsADraft(t *testing.T) {
 	_, err = s.extractConstitution(context.Background(), WorkVisualExtractInput{ProjectID: "project", NovelWorkID: "work", ExpectedRevision: 1})
 	mustErr(t, err, "视觉宪法提取文本未正常结束")
 	text.reply = func(context.Context, TextRequest) (Completion, error) {
-		return Completion{}, errors.New("请求文本接口失败: boom")
+		return Completion{}, errors.New("请求文本接口失败：boom")
 	}
 	_, err = s.extractConstitution(context.Background(), WorkVisualExtractInput{ProjectID: "project", NovelWorkID: "work", ExpectedRevision: 1})
-	mustErr(t, err, "请求文本接口失败: boom")
+	mustErr(t, err, "请求文本接口失败：boom")
 }
 
 func TestExtractionOnlySendsReferencesFromAppDirectories(t *testing.T) {

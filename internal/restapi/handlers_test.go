@@ -320,7 +320,7 @@ func TestOrchestration(t *testing.T) {
 	tool := `{"name":"writer","description":"写剧本","system":"你是编剧"}`
 	for _, tc := range []struct{ body, message string }{
 		{`{"system":"s","input":"i","tools":[]}`, "tools 数量必须在 1 到 32 之间"},
-		{`{"system":"s","input":"i","tools":[` + tool + `,` + tool + `]}`, "tools.name 重复: writer"},
+		{`{"system":"s","input":"i","tools":[` + tool + `,` + tool + `]}`, "tools.name 重复：writer"},
 		{`{"system":"s","input":"i","tools":[{"name":" ","description":"d","system":"s"}]}`, "tools.name 不能为空"},
 		{`{"system":"s","input":"i","tools":[{"name":"a","description":"","system":"s"}]}`, "tools.description 不能为空"},
 		{`{"system":"s","input":"i","tools":[{"name":"a","description":"d","system":" "}]}`, "tools.system 不能为空"},

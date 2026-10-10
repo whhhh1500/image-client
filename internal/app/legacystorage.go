@@ -88,11 +88,11 @@ func readLocalStorage(dir, origin string) (map[string]string, error) {
 	}
 	defer os.RemoveAll(copyDir)
 	if err := copyFiles(dir, copyDir); err != nil {
-		return nil, fmt.Errorf("复制旧本地存储失败: %w", err)
+		return nil, fmt.Errorf("复制旧本地存储失败：%w", err)
 	}
 	db, err := leveldb.OpenFile(copyDir, &opt.Options{ReadOnly: true})
 	if err != nil {
-		return nil, fmt.Errorf("打开旧本地存储失败: %w", err)
+		return nil, fmt.Errorf("打开旧本地存储失败：%w", err)
 	}
 	defer db.Close()
 

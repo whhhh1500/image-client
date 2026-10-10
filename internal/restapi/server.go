@@ -233,7 +233,7 @@ func (s *Server) drain(ctx context.Context) error {
 	srv.Close()
 	cancelRequests()
 	slog.Warn("api.server.shutdown_timeout", "timeoutMs", timeout.Milliseconds())
-	return fmt.Errorf("REST API 未能在时限内处理完进行中的请求: %w", err)
+	return fmt.Errorf("REST API 未能在时限内处理完进行中的请求：%w", err)
 }
 
 // dispatch routes a request. Unknown paths get the JSON 404; a known path

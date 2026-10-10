@@ -200,7 +200,7 @@ func within(root, path string) bool {
 
 func revealInFileManager(path string) error {
 	if _, err := os.Stat(path); err != nil {
-		return fmt.Errorf("文件不存在: %w", err)
+		return fmt.Errorf("文件不存在：%w", err)
 	}
 	switch runtime.GOOS {
 	case "windows":

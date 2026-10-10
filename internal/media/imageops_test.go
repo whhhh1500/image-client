@@ -220,7 +220,7 @@ func TestImageCommandsRejectBadInput(t *testing.T) {
 			t.Errorf("%s: error %q, want %q", tc.name, errText(err), tc.want)
 		}
 	}
-	if _, err := env.svc.compressImage(filepath.Join(env.output, "missing.png"), "q80"); !strings.HasPrefix(errText(err), "文件不存在或不可访问: ") {
+	if _, err := env.svc.compressImage(filepath.Join(env.output, "missing.png"), "q80"); !strings.HasPrefix(errText(err), "文件不存在或不可访问：") {
 		t.Errorf("missing file: %v", err)
 	}
 	if _, err := env.svc.convertImage(truncated, "png"); !strings.HasPrefix(errText(err), "识别图片格式失败") && !strings.HasPrefix(errText(err), "解码图片失败") {

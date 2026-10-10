@@ -80,17 +80,17 @@ func (s *Service) cachePromptlibImage(ctx context.Context, fileName string) (str
 		return dest, nil
 	}
 	if err := os.MkdirAll(s.paths.PromptlibImages(), 0o755); err != nil {
-		return "", fmt.Errorf("创建案例图缓存目录失败: %w", err)
+		return "", fmt.Errorf("创建案例图缓存目录失败：%w", err)
 	}
 
 	url := s.promptlibBase + name
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return "", fmt.Errorf("下载案例图失败: %w", err)
+		return "", fmt.Errorf("下载案例图失败：%w", err)
 	}
 	resp, err := platform.Do(ctx, platform.ClientFor(url), req, platform.Timeouts{Total: promptlibTimeout})
 	if err != nil {
-		return "", fmt.Errorf("下载案例图失败: %w", err)
+		return "", fmt.Errorf("下载案例图失败：%w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		resp.Body.Close()
@@ -102,18 +102,18 @@ func (s *Service) cachePromptlibImage(ctx context.Context, fileName string) (str
 		if errors.As(err, &tooLarge) {
 			return "", errors.New("案例图超过 8 MiB 大小限制")
 		}
-		return "", fmt.Errorf("读取案例图失败: %w", err)
+		return "", fmt.Errorf("读取案例图失败：%w", err)
 	}
 	if DetectImageFormat(data) == "" {
 		return "", errors.New("案例图内容格式校验失败")
 	}
 	tmp := filepath.Join(s.paths.PromptlibImages(), fmt.Sprintf("%s.part-%d", name, os.Getpid()))
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return "", fmt.Errorf("写入案例图缓存失败: %w", err)
+		return "", fmt.Errorf("写入案例图缓存失败：%w", err)
 	}
 	if err := os.Rename(tmp, dest); err != nil {
 		os.Remove(tmp)
-		return "", fmt.Errorf("保存案例图缓存失败: %w", err)
+		return "", fmt.Errorf("保存案例图缓存失败：%w", err)
 	}
 	slog.Info("promptlib.image_cached", "fileName", name, "bytes", len(data), "path", dest)
 	return dest, nil
@@ -128,7 +128,7 @@ func (s *Service) listCachedPromptlibImages() ([]string, error) {
 		return paths, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("读取案例图缓存失败: %w", err)
+		return nil, fmt.Errorf("读取案例图缓存失败：%w", err)
 	}
 	for _, entry := range entries {
 		path := filepath.Join(s.paths.PromptlibImages(), entry.Name())

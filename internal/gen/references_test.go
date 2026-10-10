@@ -33,10 +33,10 @@ func TestRejectsReferencePathsOutsideAllowedRoots(t *testing.T) {
 	if _, err := allowedReferencePath(outside, []string{root}); err == nil || err.Error() != "参考图必须位于应用资产目录或输出目录" {
 		t.Fatalf("err = %v", err)
 	}
-	if _, err := allowedReferencePath(filepath.Join(root, "missing.png"), []string{root}); err == nil || !strings.HasPrefix(err.Error(), "参考图文件不存在或不可访问: ") {
+	if _, err := allowedReferencePath(filepath.Join(root, "missing.png"), []string{root}); err == nil || !strings.HasPrefix(err.Error(), "参考图文件不存在或不可访问：") {
 		t.Fatalf("err = %v", err)
 	}
-	if _, err := allowedReferencePath("", []string{root}); err == nil || !strings.HasPrefix(err.Error(), "参考图文件不存在或不可访问: ") {
+	if _, err := allowedReferencePath("", []string{root}); err == nil || !strings.HasPrefix(err.Error(), "参考图文件不存在或不可访问：") {
 		t.Fatalf("err = %v", err)
 	}
 	// A sibling directory sharing the root's name prefix is outside.

@@ -311,7 +311,7 @@ func editsEndpoint(apiURL string) (string, error) {
 		err = errors.New("缺少协议或主机")
 	}
 	if err != nil {
-		return "", fmt.Errorf("图像 API 地址无效: %v", err)
+		return "", fmt.Errorf("图像 API 地址无效：%v", err)
 	}
 	prefix, ok := strings.CutSuffix(u.Path, "/generations")
 	if !ok {
@@ -549,7 +549,7 @@ func (j *imageJob) post(ctx context.Context, endpoint, contentType string, body 
 func (j *imageJob) postFailed(failure string, err error) error {
 	slog.Error("image.request.end", "requestId", j.requestID, "status", "error",
 		"durationMs", time.Since(j.started).Milliseconds(), "error", platform.ErrorText(err))
-	return fmt.Errorf("%s: %v", failure, err)
+	return fmt.Errorf("%s：%v", failure, err)
 }
 
 func (j *imageJob) finish(assets []store.AssetRef, err error) ([]store.AssetRef, error) {
@@ -582,7 +582,7 @@ func (j *imageJob) collect(ctx context.Context, resp *http.Response) ([]store.As
 	}
 	var payload any
 	if err := json.Unmarshal(raw, &payload); err != nil {
-		return nil, fmt.Errorf("解析图像响应失败: %v", err)
+		return nil, fmt.Errorf("解析图像响应失败：%v", err)
 	}
 	object, _ := payload.(map[string]any)
 	entries, _ := object["data"].([]any)
@@ -655,7 +655,7 @@ func (j *imageJob) decodeEntry(ctx context.Context, entry any, slot imageSlot) (
 		}
 		data, err := base64.StdEncoding.DecodeString(b64)
 		if err != nil {
-			return nil, fmt.Errorf("base64 解码失败: %v", err)
+			return nil, fmt.Errorf("base64 解码失败：%v", err)
 		}
 		return data, nil
 	}

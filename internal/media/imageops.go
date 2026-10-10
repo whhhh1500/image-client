@@ -140,7 +140,7 @@ func (s *Service) inspectImage(path string) (imageFileInfo, error) {
 	}
 	info, err := os.Stat(canonical)
 	if err != nil {
-		return imageFileInfo{}, fmt.Errorf("读取文件信息失败: %w", err)
+		return imageFileInfo{}, fmt.Errorf("读取文件信息失败：%w", err)
 	}
 	dir, name := filepath.Dir(canonical), filepath.Base(canonical)
 	stem, ext, hasExt := splitName(name)
@@ -171,14 +171,14 @@ func (s *Service) inspectImage(path string) (imageFileInfo, error) {
 func readSourceImage(path string) (image.Image, string, error) {
 	info, err := os.Stat(path)
 	if err != nil {
-		return nil, "", fmt.Errorf("读取原图失败: %w", err)
+		return nil, "", fmt.Errorf("读取原图失败：%w", err)
 	}
 	if info.Size() > MaxMediaAssetBytes {
 		return nil, "", errors.New("图片超过 512 MiB 大小限制")
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, "", fmt.Errorf("读取原图失败: %w", err)
+		return nil, "", fmt.Errorf("读取原图失败：%w", err)
 	}
 	if len(data) > MaxMediaAssetBytes {
 		return nil, "", errors.New("图片超过 512 MiB 大小限制")
@@ -255,7 +255,7 @@ func writeVariant(original, grade, ext string, data []byte, failure string) (str
 	name := fmt.Sprintf("%s-%s-%s.%s", originalStem(stem), grade, variantStamp(time.Now()), ext)
 	out := filepath.Join(filepath.Dir(original), name)
 	if err := os.WriteFile(out, data, 0o644); err != nil {
-		return "", fmt.Errorf("%s: %w", failure, err)
+		return "", fmt.Errorf("%s：%w", failure, err)
 	}
 	return out, nil
 }
@@ -290,12 +290,12 @@ func encodeCompressed(img image.Image, format, level string) ([]byte, string, er
 			return wrapEncode(data, "jpg", err, "JPEG 有损编码失败")
 		}
 	}
-	return nil, "", fmt.Errorf("不支持压缩该格式: %s", format)
+	return nil, "", fmt.Errorf("不支持压缩该格式：%s", format)
 }
 
 func wrapEncode(data []byte, ext string, err error, failure string) ([]byte, string, error) {
 	if err != nil {
-		return nil, "", fmt.Errorf("%s: %w", failure, err)
+		return nil, "", fmt.Errorf("%s：%w", failure, err)
 	}
 	return data, ext, nil
 }
@@ -325,10 +325,10 @@ func encodeConverted(img image.Image, format string) ([]byte, error) {
 		failure = "GIF 编码失败"
 		data, err = encodeGIF(img)
 	default:
-		return nil, fmt.Errorf("不支持的目标格式: %s", format)
+		return nil, fmt.Errorf("不支持的目标格式：%s", format)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", failure, err)
+		return nil, fmt.Errorf("%s：%w", failure, err)
 	}
 	return data, nil
 }

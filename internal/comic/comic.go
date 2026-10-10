@@ -237,7 +237,7 @@ func (s *Service) Close(ctx context.Context) error {
 	case <-done:
 		return nil
 	case <-ctx.Done():
-		return fmt.Errorf("等待漫画后台任务结束超时: %w", ctx.Err())
+		return fmt.Errorf("等待漫画后台任务结束超时：%w", ctx.Err())
 	}
 }
 

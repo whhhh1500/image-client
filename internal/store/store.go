@@ -41,13 +41,13 @@ func Open(path string) (*DB, error) {
 	_, statErr := os.Stat(path)
 	existed := statErr == nil
 	if err := platform.MkdirPrivate(filepath.Dir(path)); err != nil {
-		return nil, fmt.Errorf("创建数据库目录失败: %w", err)
+		return nil, fmt.Errorf("创建数据库目录失败：%w", err)
 	}
 
 	// Migrate on a dedicated connection before the pool hands out any.
 	conn, err := sqlite.OpenConn(path, sqlite.OpenReadWrite|sqlite.OpenCreate|sqlite.OpenWAL)
 	if err != nil {
-		return nil, fmt.Errorf("打开 SQLite 失败: %w", err)
+		return nil, fmt.Errorf("打开 SQLite 失败：%w", err)
 	}
 	// Each step runs only if the previous one succeeded; the first error wins.
 	err = prepareConn(conn)
@@ -61,13 +61,13 @@ func Open(path string) (*DB, error) {
 		err = closeErr
 	}
 	if err != nil {
-		return nil, fmt.Errorf("执行 SQLite 迁移失败: %w", err)
+		return nil, fmt.Errorf("执行 SQLite 迁移失败：%w", err)
 	}
 	platform.SecureFile(path)
 
 	pool, err := sqlitex.NewPool(path, sqlitex.PoolOptions{PoolSize: 4, PrepareConn: prepareConn})
 	if err != nil {
-		return nil, fmt.Errorf("打开 SQLite 连接池失败: %w", err)
+		return nil, fmt.Errorf("打开 SQLite 连接池失败：%w", err)
 	}
 	slog.Info("database.backend_open", "path", path, "driver", "zombiezen", "journalMode", "WAL")
 	return &DB{pool: pool, path: path, SessionID: uuid.NewString()}, nil
@@ -83,7 +83,7 @@ func (db *DB) Path() string { return db.path }
 func (db *DB) With(ctx context.Context, fn func(*sqlite.Conn) error) error {
 	conn, err := db.pool.Take(ctx)
 	if err != nil {
-		return fmt.Errorf("获取数据库连接失败: %w", err)
+		return fmt.Errorf("获取数据库连接失败：%w", err)
 	}
 	defer db.pool.Put(conn)
 	return fn(conn)
@@ -96,7 +96,7 @@ func (db *DB) Tx(ctx context.Context, fn func(*sqlite.Conn) error) error {
 	return db.With(ctx, func(conn *sqlite.Conn) (err error) {
 		end, err := sqlitex.ImmediateTransaction(conn)
 		if err != nil {
-			return fmt.Errorf("开始数据库事务失败: %w", err)
+			return fmt.Errorf("开始数据库事务失败：%w", err)
 		}
 		defer end(&err)
 		return fn(conn)

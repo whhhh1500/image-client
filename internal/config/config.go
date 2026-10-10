@@ -152,11 +152,11 @@ func readSnapshot(path string) (Settings, error) {
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return Settings{}, fmt.Errorf("读取后端配置失败: %w", err)
+		return Settings{}, fmt.Errorf("读取后端配置失败：%w", err)
 	}
 	var cfg Settings
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		return Settings{}, fmt.Errorf("解析后端配置失败: %w", err)
+		return Settings{}, fmt.Errorf("解析后端配置失败：%w", err)
 	}
 	return cfg, nil
 }
@@ -164,10 +164,10 @@ func readSnapshot(path string) (Settings, error) {
 func (s *Store) persist(cfg Settings) error {
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
-		return fmt.Errorf("序列化后端配置失败: %w", err)
+		return fmt.Errorf("序列化后端配置失败：%w", err)
 	}
 	if err := platform.WriteFileAtomic(s.paths.BackendConfig(), data); err != nil {
-		return fmt.Errorf("提交后端配置失败: %w", err)
+		return fmt.Errorf("提交后端配置失败：%w", err)
 	}
 	return nil
 }

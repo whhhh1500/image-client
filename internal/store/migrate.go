@@ -42,7 +42,7 @@ func loadMigrations() ([]migration, error) {
 		number, _, ok := strings.Cut(entry.Name(), "_")
 		version, err := strconv.Atoi(number)
 		if !ok || err != nil {
-			return nil, fmt.Errorf("迁移文件名无效: %s", entry.Name())
+			return nil, fmt.Errorf("迁移文件名无效：%s", entry.Name())
 		}
 		data, err := migrationFS.ReadFile("migrations/" + entry.Name())
 		if err != nil {
@@ -53,7 +53,7 @@ func loadMigrations() ([]migration, error) {
 	slices.SortFunc(list, func(a, b migration) int { return a.version - b.version })
 	for i, m := range list {
 		if m.version != i+1 {
-			return nil, fmt.Errorf("迁移版本不连续: %s", m.name)
+			return nil, fmt.Errorf("迁移版本不连续：%s", m.name)
 		}
 	}
 	return list, nil
@@ -74,7 +74,7 @@ func userVersion(conn *sqlite.Conn) (int, error) {
 		ResultFunc: func(stmt *sqlite.Stmt) error { version = stmt.ColumnInt(0); return nil },
 	})
 	if err != nil {
-		return 0, fmt.Errorf("读取 SQLite schema 版本失败: %w", err)
+		return 0, fmt.Errorf("读取 SQLite schema 版本失败：%w", err)
 	}
 	return version, nil
 }
@@ -126,11 +126,11 @@ func apply(conn *sqlite.Conn, m migration) (err error) {
 	}
 	end, err := sqlitex.ImmediateTransaction(conn)
 	if err != nil {
-		return fmt.Errorf("开始 SQLite %s 迁移事务失败: %w", label, err)
+		return fmt.Errorf("开始 SQLite %s 迁移事务失败：%w", label, err)
 	}
 	defer end(&err)
 	if err := sqlitex.ExecuteScript(conn, m.sql, nil); err != nil {
-		return fmt.Errorf("执行 %s SQLite 迁移失败: %w", label, err)
+		return fmt.Errorf("执行 %s SQLite 迁移失败：%w", label, err)
 	}
 	if tableRebuilds[m.version] {
 		violations := false
@@ -162,7 +162,7 @@ const (
 func backupBeforeMigration(src *sqlite.Conn, path string, version int) error {
 	dir := filepath.Join(filepath.Dir(path), "backups")
 	if err := platform.MkdirPrivate(dir); err != nil {
-		return fmt.Errorf("创建 SQLite 迁移前备份目录失败: %w", err)
+		return fmt.Errorf("创建 SQLite 迁移前备份目录失败：%w", err)
 	}
 	prefix := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)) + "-pre-migration-v"
 	final := filepath.Join(dir, fmt.Sprintf("%s%d-%d-%s.sqlite", prefix, version, time.Now().UnixNano(), uuid.NewString()))
@@ -171,11 +171,11 @@ func backupBeforeMigration(src *sqlite.Conn, path string, version int) error {
 	err := func() error {
 		dst, err := sqlite.OpenConn(tmp, sqlite.OpenReadWrite|sqlite.OpenCreate)
 		if err != nil {
-			return fmt.Errorf("创建 SQLite 迁移前备份临时文件失败: %w", err)
+			return fmt.Errorf("创建 SQLite 迁移前备份临时文件失败：%w", err)
 		}
 		copyErr := copyDatabase(dst, src)
 		if closeErr := dst.Close(); copyErr == nil && closeErr != nil {
-			copyErr = fmt.Errorf("关闭 SQLite 迁移前备份临时文件失败: %w", closeErr)
+			copyErr = fmt.Errorf("关闭 SQLite 迁移前备份临时文件失败：%w", closeErr)
 		}
 		if copyErr != nil {
 			return copyErr
@@ -184,10 +184,10 @@ func backupBeforeMigration(src *sqlite.Conn, path string, version int) error {
 			return err
 		}
 		if err := syncFile(tmp); err != nil {
-			return fmt.Errorf("同步 SQLite 迁移前备份临时文件失败: %w", err)
+			return fmt.Errorf("同步 SQLite 迁移前备份临时文件失败：%w", err)
 		}
 		if err := os.Rename(tmp, final); err != nil {
-			return fmt.Errorf("提交 SQLite 迁移前备份失败: %w", err)
+			return fmt.Errorf("提交 SQLite 迁移前备份失败：%w", err)
 		}
 		platform.SecureFile(final)
 		return pruneBackups(dir, prefix)
@@ -201,7 +201,7 @@ func backupBeforeMigration(src *sqlite.Conn, path string, version int) error {
 func copyDatabase(dst, src *sqlite.Conn) error {
 	backup, err := sqlite.NewBackup(dst, "main", src, "main")
 	if err != nil {
-		return fmt.Errorf("初始化 SQLite Online Backup 失败: %w", err)
+		return fmt.Errorf("初始化 SQLite Online Backup 失败：%w", err)
 	}
 	defer backup.Close()
 	deadline := time.Now().Add(backupLockTimeout)
@@ -218,7 +218,7 @@ func copyDatabase(dst, src *sqlite.Conn) error {
 			}
 			time.Sleep(backupRetryDelay)
 		default:
-			return fmt.Errorf("执行 SQLite Online Backup 失败: %w", err)
+			return fmt.Errorf("执行 SQLite Online Backup 失败：%w", err)
 		}
 	}
 }
@@ -226,7 +226,7 @@ func copyDatabase(dst, src *sqlite.Conn) error {
 func verifyBackup(path string, version int) error {
 	conn, err := sqlite.OpenConn(path, sqlite.OpenReadOnly)
 	if err != nil {
-		return fmt.Errorf("打开 SQLite 迁移前备份进行验证失败: %w", err)
+		return fmt.Errorf("打开 SQLite 迁移前备份进行验证失败：%w", err)
 	}
 	defer conn.Close()
 	integrity := ""
@@ -259,7 +259,7 @@ func syncFile(path string) error {
 func pruneBackups(dir, prefix string) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return fmt.Errorf("读取 SQLite 备份目录失败: %w", err)
+		return fmt.Errorf("读取 SQLite 备份目录失败：%w", err)
 	}
 	type backupFile struct {
 		name  string
@@ -287,7 +287,7 @@ func pruneBackups(dir, prefix string) error {
 	})
 	for _, old := range files[min(len(files), backupsKept):] {
 		if err := os.Remove(filepath.Join(dir, old.name)); err != nil {
-			return fmt.Errorf("清理过期 SQLite 迁移前备份失败: %w", err)
+			return fmt.Errorf("清理过期 SQLite 迁移前备份失败：%w", err)
 		}
 	}
 	return nil

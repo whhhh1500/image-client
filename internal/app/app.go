@@ -46,7 +46,7 @@ type App struct {
 // is read from it before the browser starts.
 func New(version string, paths platform.Paths, webviewDir string) (*App, error) {
 	if err := paths.Ensure(); err != nil {
-		return nil, fmt.Errorf("创建应用目录失败: %w", err)
+		return nil, fmt.Errorf("创建应用目录失败：%w", err)
 	}
 	logs, err := platform.OpenLogSink(paths.Logs())
 	if err != nil {

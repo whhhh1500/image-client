@@ -176,7 +176,7 @@ func within(root, path string) bool {
 func (s *Service) allowedPath(path, missingPrefix, outsideMsg string) (string, error) {
 	canonical, err := canonicalPath(path)
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", missingPrefix, err)
+		return "", fmt.Errorf("%s：%w", missingPrefix, err)
 	}
 	for _, root := range []string{s.paths.Root, s.outputDir()} {
 		if resolved, err := canonicalPath(root); err == nil && within(resolved, canonical) {

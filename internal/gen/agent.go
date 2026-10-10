@@ -56,7 +56,7 @@ func ValidateAgentTools(tools []AgentTool) error {
 		case utf8.RuneCountInString(tool.Name) > maxToolNameChars:
 			return fmt.Errorf("tools.name 超过 %d 个字符", maxToolNameChars)
 		case seen[name]:
-			return fmt.Errorf("tools.name 重复: %s", name)
+			return fmt.Errorf("tools.name 重复：%s", name)
 		case strings.TrimSpace(tool.Description) == "":
 			return errors.New("tools.description 不能为空")
 		case utf8.RuneCountInString(tool.Description) > maxToolDescriptionChars:

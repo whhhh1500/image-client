@@ -422,11 +422,11 @@ func TestVideoFailuresSurfaceTheProviderReason(t *testing.T) {
 		{postResponse{200, `{"id":"a/b"}`}, nil, postResponse{}, "创建响应中的任务 id 格式无效"},
 		{postResponse{200, `{"id":"t"}`}, []postResponse{{404, ""}}, postResponse{}, "查询任务返回 404 Not Found（task_id=t）"},
 		{postResponse{200, `{"id":"t"}`}, []postResponse{{200, `{"status":"failed","error":{"message":"bad ` + dataURL + `"}}`}}, postResponse{},
-			"视频任务失败（failed）: bad [已隐藏本地图片数据]"},
-		{postResponse{200, `{"id":"t"}`}, []postResponse{{200, `{"status":"expired"}`}}, postResponse{}, "视频任务失败（expired）: 服务端未返回失败原因"},
+			"视频任务失败（failed）：bad [已隐藏本地图片数据]"},
+		{postResponse{200, `{"id":"t"}`}, []postResponse{{200, `{"status":"expired"}`}}, postResponse{}, "视频任务失败（expired）：服务端未返回失败原因"},
 		{postResponse{200, `{"id":"t"}`}, []postResponse{{200, `{"status":"succeeded"}`}}, postResponse{200, "not a video"}, "视频接口返回的内容不是有效 MP4"},
-		{postResponse{200, `{"id":"t"}`}, []postResponse{{200, `{"status":"success"}`}}, postResponse{403, ""}, "下载视频失败: 403 Forbidden（task_id=t）"},
-		{postResponse{200, `{"id":"t"}`}, []postResponse{{200, `{"status":"success"}`}}, postResponse{502, ""}, "下载视频失败（已尝试 4 次）: 502 Bad Gateway（task_id=t）"},
+		{postResponse{200, `{"id":"t"}`}, []postResponse{{200, `{"status":"success"}`}}, postResponse{403, ""}, "下载视频失败：403 Forbidden（task_id=t）"},
+		{postResponse{200, `{"id":"t"}`}, []postResponse{{200, `{"status":"success"}`}}, postResponse{502, ""}, "下载视频失败（已尝试 4 次）：502 Bad Gateway（task_id=t）"},
 	}
 	for _, c := range cases {
 		gw := startVideoGateway(t, c.create, c.polls, c.content)

@@ -37,7 +37,7 @@ func TestReusesAStoredKeyOnlyForAnUnchangedAddress(t *testing.T) {
 			t.Errorf("err = %v, want %s", err, c.want)
 		}
 	}
-	if _, _, err := storedConnection(config.Settings{}, "audio"); err == nil || err.Error() != "未知的模型类型: audio" {
+	if _, _, err := storedConnection(config.Settings{}, "audio"); err == nil || err.Error() != "未知的模型类型：audio" {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -97,7 +97,7 @@ func TestFetchModelsReadsTheCatalogForTheTypedConnection(t *testing.T) {
 		}
 	}
 	if _, err := env.s.FetchModels(context.Background(), "ftp://x.example", "k", "video"); err == nil ||
-		err.Error() != "无法从地址推导模型目录（需要 http(s) 地址）: ftp://x.example" {
+		err.Error() != "无法从地址推导模型目录（需要 http(s) 地址）：ftp://x.example" {
 		t.Fatalf("err = %v", err)
 	}
 	if _, err := env.s.FetchModels(context.Background(), server.URL, "", "video"); err == nil || err.Error() != "请先填写 API Key" {
@@ -130,7 +130,7 @@ func TestVideoModelsTrustAConfiguredService(t *testing.T) {
 	}{
 		{403, "", "视频模型目录返回 403 Forbidden，请检查视频 API Key、权限和 Base URL"},
 		{200, `{"data":[]}`, "视频模型目录为空，请确认使用的是视频 API Key，并检查权限和 Base URL"},
-		{200, `nope`, "解析视频模型目录失败: invalid character 'o' in literal null (expecting 'u')"},
+		{200, `nope`, "解析视频模型目录失败：invalid character 'o' in literal null (expecting 'u')"},
 	} {
 		server := catalogServer(t, c.status, c.body, nil)
 		env := newTestService(t, func(s *config.Settings) { s.VideoAPIURL, s.VideoAPIKey = server.URL+"/v1/videos", "k" })

@@ -139,7 +139,7 @@ func (s *Service) listWorks(ctx context.Context, in ListWorksInput) ([]Work, err
 		})
 	})
 	if err != nil {
-		return nil, fmt.Errorf("查询小说列表失败: %w", err)
+		return nil, fmt.Errorf("查询小说列表失败：%w", err)
 	}
 	return works, nil
 }
@@ -230,7 +230,7 @@ func insertWork(conn *sqlite.Conn, projectID, title, description string) (Work, 
 	}
 	for _, step := range steps {
 		if err := sqlitex.Execute(conn, step.sql, &sqlitex.ExecOptions{Args: step.args}); err != nil {
-			return Work{}, fmt.Errorf("%s: %w", step.failure, err)
+			return Work{}, fmt.Errorf("%s：%w", step.failure, err)
 		}
 	}
 	err := sqlitex.Execute(conn,
@@ -238,7 +238,7 @@ func insertWork(conn *sqlite.Conn, projectID, title, description string) (Work, 
 		 current_analysis_lineage_id = ? WHERE id = ? AND project_id = ?`,
 		&sqlitex.ExecOptions{Args: []any{w.PublishedCanonVersionID, w.CurrentNovelStateVersionID, w.CurrentAnalysisLineageID, w.ID, w.ProjectID}})
 	if err != nil {
-		return Work{}, fmt.Errorf("设置小说初始 head 失败: %w", err)
+		return Work{}, fmt.Errorf("设置小说初始 head 失败：%w", err)
 	}
 	if conn.Changes() != 1 {
 		return Work{}, errors.New("创建小说时未能设置初始 head")
@@ -264,7 +264,7 @@ func getWork(conn *sqlite.Conn, projectID, workID string) (Work, error) {
 			work = scanWork(stmt)
 		})
 	if err != nil {
-		return Work{}, fmt.Errorf("读取小说失败: %w", err)
+		return Work{}, fmt.Errorf("读取小说失败：%w", err)
 	}
 	if !found {
 		return Work{}, errors.New("小说不存在或不属于当前项目")
@@ -354,7 +354,7 @@ func stateThroughSequence(conn *sqlite.Conn, stateVersionID string) (int64, erro
 		}
 	})
 	if err != nil {
-		return 0, fmt.Errorf("读取小说状态推进位置失败: %w", err)
+		return 0, fmt.Errorf("读取小说状态推进位置失败：%w", err)
 	}
 	return seq, nil
 }
@@ -372,7 +372,7 @@ func listVolumes(conn *sqlite.Conn, workID string) ([]Volume, error) {
 		})
 	})
 	if err != nil {
-		return nil, fmt.Errorf("查询卷列表失败: %w", err)
+		return nil, fmt.Errorf("查询卷列表失败：%w", err)
 	}
 	return volumes, nil
 }
@@ -385,7 +385,7 @@ func listChapters(conn *sqlite.Conn, workID string) ([]Chapter, error) {
 		chapters = append(chapters, scanChapter(stmt))
 	})
 	if err != nil {
-		return nil, fmt.Errorf("查询章节列表失败: %w", err)
+		return nil, fmt.Errorf("查询章节列表失败：%w", err)
 	}
 	return chapters, nil
 }
@@ -420,7 +420,7 @@ func listLineages(conn *sqlite.Conn, workID string) ([]Lineage, error) {
 		})
 	})
 	if err != nil {
-		return nil, fmt.Errorf("查询工作线列表失败: %w", err)
+		return nil, fmt.Errorf("查询工作线列表失败：%w", err)
 	}
 	return lineages, nil
 }
@@ -451,7 +451,7 @@ func listRevisions(conn *sqlite.Conn, workID string) ([]ChapterRevision, error) 
 			})
 		})
 	if err != nil {
-		return nil, fmt.Errorf("查询正文版本列表失败: %w", err)
+		return nil, fmt.Errorf("查询正文版本列表失败：%w", err)
 	}
 	return revisions, nil
 }
@@ -473,7 +473,7 @@ func listEntities(conn *sqlite.Conn, workID string) ([]Entity, error) {
 		})
 	})
 	if err != nil {
-		return nil, fmt.Errorf("查询小说实体列表失败: %w", err)
+		return nil, fmt.Errorf("查询小说实体列表失败：%w", err)
 	}
 	return entities, nil
 }

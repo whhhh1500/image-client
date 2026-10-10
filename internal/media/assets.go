@@ -47,12 +47,12 @@ func (s *Service) SaveText(label, text, model string) (store.AssetRef, error) {
 	slog.Info("asset.text_save.start", "label", label, "model", optionalString(model), "textStats", platform.TextStats(text))
 	dir := filepath.Join(s.outputDir(), "剧本", runTag(time.Now()))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return store.AssetRef{}, fmt.Errorf("创建剧本目录失败: %w", err)
+		return store.AssetRef{}, fmt.Errorf("创建剧本目录失败：%w", err)
 	}
 	id := uuid.NewString()
 	path := filepath.Join(dir, id+".md")
 	if err := os.WriteFile(path, []byte(text), 0o644); err != nil {
-		return store.AssetRef{}, fmt.Errorf("保存剧本失败: %w", err)
+		return store.AssetRef{}, fmt.Errorf("保存剧本失败：%w", err)
 	}
 	asset := store.AssetRef{ID: id, Kind: "text", Path: path, Format: "md"}
 	slog.Info("asset.text_save.end", "status", "success", "assetId", id, "path", path, "bytes", len(text))
@@ -78,22 +78,22 @@ func (s *Service) SaveMedia(kind, ext string, data []byte) (store.AssetRef, erro
 		allowed = ext == "mp4" || ext == "webm" || ext == "mov"
 	}
 	if !allowed {
-		return store.AssetRef{}, fmt.Errorf("不支持的媒体类型或扩展名: %s.%s", kind, ext)
+		return store.AssetRef{}, fmt.Errorf("不支持的媒体类型或扩展名：%s.%s", kind, ext)
 	}
 	if kind == "image" && DetectImageFormat(data) == "" {
 		return store.AssetRef{}, errors.New("图片资产内容格式校验失败")
 	}
 	if kind == "video" && !ValidVideo(data, ext) {
-		return store.AssetRef{}, fmt.Errorf("视频资产内容格式校验失败: %s", ext)
+		return store.AssetRef{}, fmt.Errorf("视频资产内容格式校验失败：%s", ext)
 	}
 	dir := filepath.Join(s.outputDir(), kindFolder(kind), "合成", runTag(time.Now()))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return store.AssetRef{}, fmt.Errorf("创建目录失败: %w", err)
+		return store.AssetRef{}, fmt.Errorf("创建目录失败：%w", err)
 	}
 	id := uuid.NewString()
 	path := filepath.Join(dir, id+"."+ext)
 	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return store.AssetRef{}, fmt.Errorf("写入文件失败: %w", err)
+		return store.AssetRef{}, fmt.Errorf("写入文件失败：%w", err)
 	}
 	slog.Info("asset.media_save.end", "status", "success", "assetId", id, "path", path, "bytes", len(data))
 	return store.AssetRef{ID: id, Kind: kind, Path: path, Format: ext}, nil
@@ -120,17 +120,17 @@ func (s *Service) readTextAsset(path string) (string, error) {
 	}
 	info, err := os.Stat(canonical)
 	if err != nil {
-		return "", fmt.Errorf("读取文档信息失败: %w", err)
+		return "", fmt.Errorf("读取文档信息失败：%w", err)
 	}
 	if info.Size() > MaxTextAssetBytes {
 		return "", errors.New("文档超过 20 MiB 大小限制")
 	}
 	data, err := os.ReadFile(canonical)
 	if err != nil {
-		return "", fmt.Errorf("读取文档失败: %w", err)
+		return "", fmt.Errorf("读取文档失败：%w", err)
 	}
 	if !utf8.Valid(data) {
-		return "", errors.New("读取文档失败: 文件不是有效的 UTF-8 文本")
+		return "", errors.New("读取文档失败：文件不是有效的 UTF-8 文本")
 	}
 	return string(data), nil
 }
@@ -186,7 +186,7 @@ func (s *Service) saveDocumentVersion(ctx context.Context, req documentVersionRe
 				return nil
 			}})
 		if err != nil {
-			return fmt.Errorf("读取文档当前版本失败: %w", err)
+			return fmt.Errorf("读取文档当前版本失败：%w", err)
 		}
 		if !req.AllowBranch && !sameOptional(req.ExpectedHeadAssetID, head) {
 			return errVersionConflict
@@ -198,7 +198,7 @@ func (s *Service) saveDocumentVersion(ctx context.Context, req documentVersionRe
 				return nil
 			}})
 		if err != nil {
-			return fmt.Errorf("分配文档版本失败: %w", err)
+			return fmt.Errorf("分配文档版本失败：%w", err)
 		}
 		object, ok := decodeObject(req.Params)
 		if !ok {
@@ -215,13 +215,13 @@ func (s *Service) saveDocumentVersion(ctx context.Context, req documentVersionRe
 			"source": label, "model": req.Model, "projectId": req.ProjectID, "params": object,
 		})
 		if err != nil {
-			return fmt.Errorf("序列化文档历史失败: %w", err)
+			return fmt.Errorf("序列化文档历史失败：%w", err)
 		}
 		err = sqlitex.Execute(conn, `INSERT INTO assets (id,kind,path,width,height,duration_s,format,created_at,metadata)
 			VALUES (?,?,?,NULL,NULL,NULL,?,?,?)`,
 			&sqlitex.ExecOptions{Args: []any{asset.ID, asset.Kind, asset.Path, asset.Format, time.Now().UnixMilli(), string(metadata)}})
 		if err != nil {
-			return fmt.Errorf("写入文档版本失败: %w", err)
+			return fmt.Errorf("写入文档版本失败：%w", err)
 		}
 		params = object
 		return nil

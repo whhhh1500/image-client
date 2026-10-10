@@ -168,7 +168,7 @@ func TestFrontendRejectsUnsafeStatements(t *testing.T) {
 		{name: "pragma", query: "PRAGMA user_version", errSub: "pragma"},
 		{name: "subquery", query: "SELECT value FROM settings WHERE key IN (SELECT key FROM settings)", errSub: "子查询"},
 		{name: "drop table via exec", query: "DROP TABLE settings", exec: true, errSub: "操作类型不允许"},
-		{name: "select from app_secrets", query: "SELECT value FROM app_secrets", errSub: "表不允许访问: app_secrets"},
+		{name: "select from app_secrets", query: "SELECT value FROM app_secrets", errSub: "表不允许访问：app_secrets"},
 		{name: "comma join app_secrets is denied by the authorizer", query: "SELECT value FROM settings, app_secrets"},
 		{name: "comma join assets then app_secrets", query: "SELECT value FROM assets, app_secrets"},
 		{name: "insert via select channel", query: "INSERT INTO settings (key, value) VALUES ('x', 'y')", errSub: "操作类型不允许"},

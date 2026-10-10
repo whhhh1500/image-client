@@ -53,12 +53,12 @@ func (r *Router) Invoke(ctx context.Context, name string, args json.RawMessage) 
 	h, ok := r.handlers[name]
 	r.mu.RUnlock()
 	if !ok {
-		return nil, fmt.Errorf("未知命令: %s", name)
+		return nil, fmt.Errorf("未知命令：%s", name)
 	}
 	defer func() {
 		if p := recover(); p != nil {
 			slog.Error("ipc.command.panic", "command", name, "panic", fmt.Sprint(p))
-			err = fmt.Errorf("命令 %s 内部错误: %v", name, p)
+			err = fmt.Errorf("命令 %s 内部错误：%v", name, p)
 		}
 	}()
 	return h(ctx, args)
@@ -71,7 +71,7 @@ func Typed[In, Out any](fn func(context.Context, In) (Out, error)) Handler {
 		var in In
 		if trimmed := bytes.TrimSpace(args); len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null")) {
 			if err := json.Unmarshal(trimmed, &in); err != nil {
-				return nil, fmt.Errorf("命令参数无效: %w", err)
+				return nil, fmt.Errorf("命令参数无效：%w", err)
 			}
 		}
 		return fn(ctx, in)

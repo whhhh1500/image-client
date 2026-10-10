@@ -135,11 +135,11 @@ func validateReferences(inputs []ImageReference, roots []string, limits referenc
 // lie inside one of roots.
 func allowedReferencePath(path string, roots []string) (string, error) {
 	if path == "" {
-		return "", fmt.Errorf("参考图文件不存在或不可访问: %v", os.ErrNotExist)
+		return "", fmt.Errorf("参考图文件不存在或不可访问：%v", os.ErrNotExist)
 	}
 	resolved, err := canonicalPath(path)
 	if err != nil {
-		return "", fmt.Errorf("参考图文件不存在或不可访问: %v", err)
+		return "", fmt.Errorf("参考图文件不存在或不可访问：%v", err)
 	}
 	for _, root := range roots {
 		if canonicalRoot, err := canonicalPath(root); err == nil && within(canonicalRoot, resolved) {

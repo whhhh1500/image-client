@@ -122,7 +122,7 @@ func insertChapterRevision(conn *sqlite.Conn, work Work, in ChapterRevisionInput
 	revisionNo, err = scalarInt(conn,
 		"SELECT COALESCE(MAX(version), 0) + 1 FROM novel_chapter_revisions WHERE novel_chapter_id = ?", chapter.ID)
 	if err != nil {
-		return ChapterRevision{}, fmt.Errorf("读取正文版本号失败: %w", err)
+		return ChapterRevision{}, fmt.Errorf("读取正文版本号失败：%w", err)
 	}
 
 	sum := sha256.Sum256([]byte(content))
@@ -146,7 +146,7 @@ func insertChapterRevision(conn *sqlite.Conn, work Work, in ChapterRevisionInput
 		nullable(revision.AssetID), nullable(revision.RequestedParentContextRevisionID), revision.SourceKind, revision.CreatedAt,
 	}})
 	if err != nil {
-		return ChapterRevision{}, fmt.Errorf("创建正文版本失败: %w", err)
+		return ChapterRevision{}, fmt.Errorf("创建正文版本失败：%w", err)
 	}
 
 	err = sqlitex.Execute(conn, `UPDATE novel_chapters SET current_revision_id = ?, title = ?, updated_at = ?
@@ -154,7 +154,7 @@ func insertChapterRevision(conn *sqlite.Conn, work Work, in ChapterRevisionInput
 		revision.ID, nullable(chapter.Title), ts, chapter.ID, work.ID,
 	}})
 	if err != nil {
-		return ChapterRevision{}, fmt.Errorf("更新章节当前版本失败: %w", err)
+		return ChapterRevision{}, fmt.Errorf("更新章节当前版本失败：%w", err)
 	}
 	if conn.Changes() != 1 {
 		return ChapterRevision{}, errors.New("创建正文版本时章节归属发生变化")
@@ -196,7 +196,7 @@ func resolveChapter(conn *sqlite.Conn, work Work, in ChapterRevisionInput, ts in
 		ok, err := scalarBool(conn,
 			"SELECT EXISTS(SELECT 1 FROM novel_volumes WHERE id = ? AND novel_work_id = ?)", *in.VolumeID, work.ID)
 		if err != nil {
-			return Chapter{}, fmt.Errorf("验证卷归属失败: %w", err)
+			return Chapter{}, fmt.Errorf("验证卷归属失败：%w", err)
 		}
 		if !ok {
 			return Chapter{}, errors.New("卷不存在或不属于当前小说")
@@ -226,7 +226,7 @@ func resolveChapter(conn *sqlite.Conn, work Work, in ChapterRevisionInput, ts in
 		nullable(chapter.Title), ts, ts,
 	}})
 	if err != nil {
-		return Chapter{}, fmt.Errorf("创建章节失败: %w", err)
+		return Chapter{}, fmt.Errorf("创建章节失败：%w", err)
 	}
 	return chapter, nil
 }
@@ -241,7 +241,7 @@ func chapterInWork(conn *sqlite.Conn, chapterID, workID string) (Chapter, error)
 		chapter = scanChapter(stmt)
 	})
 	if err != nil {
-		return Chapter{}, fmt.Errorf("读取章节失败: %w", err)
+		return Chapter{}, fmt.Errorf("读取章节失败：%w", err)
 	}
 	if !found {
 		return Chapter{}, errors.New("章节不存在或不属于当前小说")
@@ -257,7 +257,7 @@ func ensureAssetInProject(conn *sqlite.Conn, assetID, projectID string) error {
 		metadata = optionalText(stmt, 0)
 	})
 	if err != nil {
-		return fmt.Errorf("读取正文资产失败: %w", err)
+		return fmt.Errorf("读取正文资产失败：%w", err)
 	}
 	if metadata == nil {
 		return errors.New("正文资产不存在")
@@ -278,7 +278,7 @@ func ensureParentContext(conn *sqlite.Conn, contextID, workID string) error {
 		JOIN novel_analysis_lineages lineage ON lineage.id = context.novel_analysis_lineage_id
 		WHERE context.id = ? AND lineage.novel_work_id = ?)`, contextID, workID)
 	if err != nil {
-		return fmt.Errorf("验证冻结父上下文失败: %w", err)
+		return fmt.Errorf("验证冻结父上下文失败：%w", err)
 	}
 	if !ok {
 		return errors.New("冻结父上下文不存在或不属于当前小说")

@@ -100,7 +100,7 @@ func TestValidateAgentTools(t *testing.T) {
 		{nil, "tools 数量必须在 1 到 32 之间"},
 		{many, "tools 数量必须在 1 到 32 之间"},
 		{[]ToolDef{tool(strings.Repeat("n", 101))}, "tools.name 超过 100 个字符"},
-		{[]ToolDef{tool("a"), tool(" a ")}, "tools.name 重复: a"},
+		{[]ToolDef{tool("a"), tool(" a ")}, "tools.name 重复：a"},
 		{[]ToolDef{{Name: "a", Description: strings.Repeat("d", 2001), System: "s"}}, "tools.description 超过 2000 个字符"},
 	} {
 		err := validateAgentTools(tc.tools)

@@ -71,7 +71,7 @@ func (s *Service) VideoModels(ctx context.Context) ([]string, error) {
 	}
 	resp, err := s.getCatalog(ctx, endpoint, cfg.VideoAPIKey)
 	if err != nil {
-		return nil, fmt.Errorf("读取视频模型目录失败: %v", err)
+		return nil, fmt.Errorf("读取视频模型目录失败：%v", err)
 	}
 	if !isSuccess(resp) {
 		drain(resp)
@@ -79,7 +79,7 @@ func (s *Service) VideoModels(ctx context.Context) ([]string, error) {
 	}
 	catalog, err := readCatalog(resp)
 	if err != nil {
-		return nil, fmt.Errorf("解析视频模型目录失败: %v", err)
+		return nil, fmt.Errorf("解析视频模型目录失败：%v", err)
 	}
 	ids := dataIDs(catalog)
 	if len(ids) == 0 {
@@ -117,11 +117,11 @@ func (s *Service) FetchModels(ctx context.Context, apiURL, apiKey, kind string) 
 	}
 	endpoint := config.ModelsEndpointFor(target)
 	if endpoint == "" {
-		return nil, fmt.Errorf("无法从地址推导模型目录（需要 http(s) 地址）: %s", target)
+		return nil, fmt.Errorf("无法从地址推导模型目录（需要 http(s) 地址）：%s", target)
 	}
 	resp, err := s.getCatalog(ctx, endpoint, key)
 	if err != nil {
-		return nil, fmt.Errorf("读取模型目录失败: %v", err)
+		return nil, fmt.Errorf("读取模型目录失败：%v", err)
 	}
 	if !isSuccess(resp) {
 		drain(resp)
@@ -129,7 +129,7 @@ func (s *Service) FetchModels(ctx context.Context, apiURL, apiKey, kind string) 
 	}
 	catalog, err := readCatalog(resp)
 	if err != nil {
-		return nil, fmt.Errorf("解析模型目录失败: %v", err)
+		return nil, fmt.Errorf("解析模型目录失败：%v", err)
 	}
 	models := parseModelIDs(catalog)
 	if len(models) == 0 {
@@ -149,7 +149,7 @@ func storedConnection(cfg config.Settings, kind string) (string, string, error) 
 	case "llm":
 		return cfg.LLMAPIURL, cfg.LLMAPIKey, nil
 	}
-	return "", "", fmt.Errorf("未知的模型类型: %s", kind)
+	return "", "", fmt.Errorf("未知的模型类型：%s", kind)
 }
 
 // catalogCredentials picks the address and key for a catalog request. A

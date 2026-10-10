@@ -32,7 +32,7 @@ func (a *App) wireServices() error {
 	// Jobs left running by a previous process are marked interrupted before
 	// the frontend can see them; a failure here aborts startup, as before.
 	if _, err := comics.Recover(context.Background()); err != nil {
-		return fmt.Errorf("恢复漫画任务失败: %w", err)
+		return fmt.Errorf("恢复漫画任务失败：%w", err)
 	}
 	comics.Register(a.router)
 	a.onClose(comics.Close)
@@ -54,7 +54,7 @@ func (a *App) wireServices() error {
 		Files:   restFiles{media: files},
 	})
 	if err := api.Start(context.Background()); err != nil {
-		return fmt.Errorf("启动本地接口失败: %w", err)
+		return fmt.Errorf("启动本地接口失败：%w", err)
 	}
 	// Registered last so it runs first: stop taking API work before the
 	// services it calls shut down.
