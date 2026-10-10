@@ -77,7 +77,7 @@ function GuideContent() {
           <div><dt className="text-slate-300">显示“未配置”</dt><dd>打开设置，检查 API 地址、API Key 与模型名称并保存。</dd></div>
           <div><dt className="text-slate-300">任务失败</dt><dd>先查看错误提示，再点击底部“日志”打开日志目录定位原因。</dd></div>
           <div><dt className="text-slate-300">历史没有更新</dt><dd>点击顶部“刷新历史”，重新从本地数据库载入结果。</dd></div>
-          <div><dt className="text-slate-300">安全提示</dt><dd>不要在截图、文档或反馈中公开 API Key与本地隐私素材。</dd></div>
+          <div><dt className="text-slate-300">安全提示</dt><dd>不要在截图、文档或反馈中公开 API Key 与本地隐私素材。</dd></div>
         </dl>
       </section>
     </div>
@@ -87,6 +87,61 @@ function GuideContent() {
 function ChangelogContent() {
   return (
     <div className="space-y-3">
+      <section className={sectionClass}>
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h3 className="text-sm font-semibold text-slate-100">v0.3.1</h3>
+          <time dateTime="2026-10-11" className="text-[11px] text-slate-500">2026-10-11</time>
+        </div>
+        <div className="space-y-3 pt-1">
+          <div>
+            <h4 className="text-[11px] font-medium text-cyan-100/80">生成与计费</h4>
+            <ul className={`${copyClass} mt-1 list-disc space-y-1 pl-4`}>
+              <li>多镜头视频中途失败后可「继续生成剩余镜头」，只为没完成的镜头计费；已生成的视频在弱网下载中断时从断点续传。</li>
+              <li>按原参数重试、一次生成多个镜头或漫画多页前先确认；已重试过的失败任务标为「已重试」。</li>
+              <li>网关错误只显示原因，不再显示整段 JSON；「添加为参考图」改为追加并去重。</li>
+            </ul>
+          </div>
+          <div>
+            <h4 className="text-[11px] font-medium text-cyan-100/80">压缩与转格式</h4>
+            <ul className={`${copyClass} mt-1 list-disc space-y-1 pl-4`}>
+              <li>压缩结果不会比原图更大：无法再压小时直接说明原因，JPEG 不再提供名不副实的「无损压缩」。</li>
+              <li>压缩、转格式完成后提示大小变化（如 3.0 MB → 459 KB），失败原因显示在页面内；透明背景转 JPEG 时铺白底。</li>
+              <li>右键菜单按用途分组、隐藏与原图同格式的转换，并始终完整显示在窗口内；资产库中每个压缩/转换版本显示自己的图片。</li>
+            </ul>
+          </div>
+          <div>
+            <h4 className="text-[11px] font-medium text-cyan-100/80">交互</h4>
+            <ul className={`${copyClass} mt-1 list-disc space-y-1 pl-4`}>
+              <li>切换标签页或项目不再丢失筛选、当前步骤、页码、所选模板和表单草稿。</li>
+              <li>所有对话框可按 Esc 关闭（有未保存修改时仍先确认）；历史图片和参考图移除按钮可用键盘操作。</li>
+              <li>设置页保存结果显示在按钮旁，当前默认配置显示「已是默认」，支持 Ctrl/Cmd+S 保存；统一了界面用语和错误提示格式。</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section className={sectionClass}>
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h3 className="text-sm font-semibold text-slate-100">v0.3.0</h3>
+          <time dateTime="2026-10-10" className="text-[11px] text-slate-500">2026-10-10</time>
+        </div>
+        <div className="space-y-3 pt-1">
+          <div>
+            <h4 className="text-[11px] font-medium text-cyan-100/80">桌面外壳</h4>
+            <ul className={`${copyClass} mt-1 list-disc space-y-1 pl-4`}>
+              <li>由 Tauri 换成 Wails，后端用 Go 重写；数据库、配置、资产目录和本地接口原样沿用，旧版草稿与工作区状态自动迁移。</li>
+            </ul>
+          </div>
+          <div>
+            <h4 className="text-[11px] font-medium text-cyan-100/80">生成</h4>
+            <ul className={`${copyClass} mt-1 list-disc space-y-1 pl-4`}>
+              <li>图片下载弱网下自动重试并续传；按钮显示生成进度，新增「生成日志」。</li>
+              <li>支持 seedance2.5-A；视频的本地首帧和参考图上传前自动压缩。</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
       <section className={sectionClass}>
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <h3 className="text-sm font-semibold text-slate-100">v0.2.8</h3>
@@ -106,7 +161,7 @@ function ChangelogContent() {
             <ul className={`${copyClass} mt-1 list-disc space-y-1 pl-4`}>
               <li>修复资产库中漫画第 2 章起缺少文字资料、图片被误标「已过期」的问题。</li>
               <li>分页标题支持全角数字、中文数字和副标题；保存本章注入后界面即时刷新，不再导致出图版本冲突。</li>
-              <li>自定义 Agent Prompt重启后正常生效，不再在下次保存时覆盖旧版本；从历史版本编辑保存不再报冲突。</li>
+              <li>自定义 Agent Prompt 重启后正常生效，不再在下次保存时覆盖旧版本；从历史版本编辑保存不再报冲突。</li>
             </ul>
           </div>
           <div>
