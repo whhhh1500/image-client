@@ -142,6 +142,7 @@ func VideoModelCapabilities() []VideoModelCapability {
 		standard("video-ds-2.0-fast", "即梦 2.0 Fast"),
 		standard("as-sd2.0-fast", "即梦 2.0 Fast"),
 		seedance("seedance2.5", "即梦 2.5", "模型标识以当前 API Key 返回的目录为准。", "480p", "720p"),
+		seedance("seedance2.5-A", "即梦 2.5 · A 渠道", "网关 A 渠道的即梦 2.5；按秒计费。", "480p", "720p"),
 	}
 }
 
@@ -465,9 +466,6 @@ func (s *Service) GenerateVideo(ctx context.Context, req VideoRequest, outDir st
 	if !cfg.VideoReady() {
 		return nil, errors.New("未配置视频 API（请在设置中填写视频地址与 Key）")
 	}
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return nil, fmt.Errorf("创建目录失败: %v", err)
-	}
 	task := &videoTask{s: s, endpoint: cfg.VideoAPIURL, key: cfg.VideoAPIKey, requestID: uuid.NewString()}
 	started := time.Now()
 	if err := req.validate(); err != nil {
@@ -484,6 +482,11 @@ func (s *Service) GenerateVideo(ctx context.Context, req VideoRequest, outDir st
 		slog.Error("video.request.end", "requestId", task.requestID, "status", "error",
 			"durationMs", time.Since(started).Milliseconds(), "error", platform.ErrorText(err))
 		return nil, err
+	}
+	// The folder is created only for a finished video, so failed or rejected
+	// requests do not leave empty run folders behind.
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		return nil, fmt.Errorf("创建目录失败: %v", err)
 	}
 	path := filepath.Join(outDir, "video_"+uuid.NewString()+".mp4")
 	if err := os.WriteFile(path, data, 0o644); err != nil {

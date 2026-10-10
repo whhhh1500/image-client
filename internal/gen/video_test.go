@@ -253,7 +253,7 @@ func TestRecognizesLiveMinimaxAliasesAndFailsClosedForUnknownModels(t *testing.T
 
 func TestCapabilitiesSerializeForTheFrontend(t *testing.T) {
 	caps := VideoModelCapabilities()
-	if len(caps) != 16 {
+	if len(caps) != 17 {
 		t.Fatalf("%d capabilities", len(caps))
 	}
 	var decoded []map[string]any
@@ -563,5 +563,24 @@ func TestLocalImagesResolveToVerifiedDataURLsOfTheProject(t *testing.T) {
 	}
 	if got, err := env.s.resolveLocalImages(ctx, "", nil); err != nil || got == nil || len(got) != 0 {
 		t.Fatal("no sources resolve to nothing")
+	}
+}
+
+func TestFailedVideoRequestsLeaveNoRunFolder(t *testing.T) {
+	gw := startVideoGateway(t, postResponse{502, "bad gateway"}, nil, postResponse{200, mp4Bytes()})
+	env := newTestService(t, func(s *config.Settings) {
+		s.VideoAPIURL, s.VideoAPIKey = gw.server.URL+"/v1/videos", "video-key"
+	})
+	for _, req := range []VideoRequest{
+		{Model: "no-such-model", Prompt: "p", DurationS: 5},  // rejected before any request
+		{Model: "kling-video-v3", Prompt: "p", DurationS: 5}, // the gateway refuses the task
+	} {
+		dir := filepath.Join(env.output, "视频", "run-"+req.Model)
+		if _, err := env.s.GenerateVideo(context.Background(), req, dir); err == nil {
+			t.Fatalf("%s: expected an error", req.Model)
+		}
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Fatalf("%s: run folder exists after a failed request (err=%v)", req.Model, err)
+		}
 	}
 }
