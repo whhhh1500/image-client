@@ -3,7 +3,6 @@ package platform
 import (
 	"net/http"
 	"net/url"
-	"path"
 	"strings"
 	"sync"
 	"time"
@@ -88,20 +87,4 @@ func pickProxy(server, scheme string) string {
 		return "socks5://" + value
 	}
 	return ""
-}
-
-func bypassed(host string, rules []string) bool {
-	host = strings.ToLower(host)
-	for _, rule := range rules {
-		if rule == "<local>" {
-			if !strings.Contains(host, ".") {
-				return true
-			}
-			continue
-		}
-		if matched, _ := path.Match(rule, host); matched {
-			return true
-		}
-	}
-	return false
 }

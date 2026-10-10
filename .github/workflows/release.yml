@@ -46,6 +46,7 @@ jobs:
           go-version-file: go.mod
       - run: pnpm install --frozen-lockfile
       - run: node scripts/build-release.mjs --check-only --tag "${{ github.ref_name }}"
+      - run: pnpm typecheck
       - run: pnpm test
       - run: go test ./internal/...
 
@@ -64,7 +65,26 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - run: go install github.com/wailsapp/wails/v2/cmd/wails@${{ env.WAILS_VERSION }}
+          # A cache saved by a tag run is invisible to the next tag, so this
+          # job only restores the one cross-platform.yml keeps warm on main.
+          cache: false
+      - id: go-paths
+        shell: bash
+        run: |
+          echo "build=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+          echo "mod=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+          echo "bin=$(go env GOPATH)/bin" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v6
+        with:
+          path: |
+            ${{ steps.go-paths.outputs.build }}
+            ${{ steps.go-paths.outputs.mod }}
+            ${{ steps.go-paths.outputs.bin }}
+          key: go-windows-wails-${{ env.WAILS_VERSION }}-${{ hashFiles('go.sum') }}
+          restore-keys: go-windows-wails-${{ env.WAILS_VERSION }}-
+      - name: Install Wails CLI unless restored
+        shell: bash
+        run: command -v wails >/dev/null || go install github.com/wailsapp/wails/v2/cmd/wails@${{ env.WAILS_VERSION }}
       - run: pnpm install --frozen-lockfile
       - name: Build portable executable
         run: wails build -clean -skipbindings -platform windows/amd64

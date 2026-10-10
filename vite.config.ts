@@ -10,8 +10,9 @@ export default defineConfig(async () => ({
   test: {
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
     // Keep default and watch runs bounded on developer machines with many
-    // concurrent Vitest processes; the include above remains src-only.
-    maxWorkers: 2,
+    // concurrent Vitest processes; the include above remains src-only. A
+    // deliberate single run (the release script) raises it via the variable.
+    maxWorkers: Number(process.env.VITEST_MAX_WORKERS) || 2,
   },
 
   clearScreen: false,

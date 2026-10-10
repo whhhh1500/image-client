@@ -42,9 +42,55 @@ jobs:
         with:
           go-version-file: go.mod
       - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
       - run: pnpm test
       - run: go vet ./internal/...
+      - name: Vet the macOS-only code
+        run: CGO_ENABLED=0 GOOS=darwin go vet ./internal/...
       - run: go test ./internal/...
+
+  # Tag builds can restore caches saved on the default branch only, so main
+  # keeps the Windows release build warm: the Wails CLI, Go modules, the
+  # compiled dependencies of the desktop build and the pnpm store. The key
+  # changes with go.sum or the Wails version; an exact hit skips the build.
+  warm-windows-cache:
+    if: github.event_name == 'push'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - id: go-paths
+        shell: bash
+        run: |
+          echo "build=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+          echo "mod=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+          echo "bin=$(go env GOPATH)/bin" >> "$GITHUB_OUTPUT"
+      - id: go-cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ${{ steps.go-paths.outputs.build }}
+            ${{ steps.go-paths.outputs.mod }}
+            ${{ steps.go-paths.outputs.bin }}
+          key: go-windows-wails-${{ env.WAILS_VERSION }}-${{ hashFiles('go.sum') }}
+      - run: pnpm install --frozen-lockfile
+      - name: Build once with the release flags
+        if: steps.go-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@${{ env.WAILS_VERSION }}
+          wails build -skipbindings -platform windows/amd64
 
   # A full native build per release target, on demand. Builds take well
   # under a minute, so there is no cache to prewarm.

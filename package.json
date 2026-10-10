@@ -5,11 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "preview": "vite preview",
     "desktop:dev": "wails dev -skipbindings",
-    "desktop:build": "wails build -clean -skipbindings",
+    "desktop:build": "tsc --noEmit -p tsconfig.json && wails build -clean -skipbindings",
     "release:build": "node scripts/build-release.mjs",
     "release:check": "node scripts/build-release.mjs --check-only",
     "promptlib:build": "node scripts/build-promptlib.mjs"

@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && !darwin
 
 package platform
 
@@ -7,5 +7,5 @@ import (
 	"net/url"
 )
 
-// Outside Windows the environment variables are the system proxy settings.
+// On Linux the environment variables are the system proxy settings.
 func osProxy(*http.Request) (*url.URL, error) { return nil, nil }

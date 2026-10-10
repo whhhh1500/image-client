@@ -1,5 +1,6 @@
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { availableParallelism } from "node:os";
 import { resolve } from "node:path";
 import process from "node:process";
 
@@ -42,12 +43,36 @@ function run(command, commandArgs) {
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
-function runPnpm(commandArgs) {
-  if (process.platform === "win32" && process.env.npm_execpath) {
-    run(process.execPath, [process.env.npm_execpath, ...commandArgs]);
-    return;
+/** The command line that runs pnpm with `commandArgs`. */
+function pnpm(commandArgs) {
+  if (process.platform === "win32" && process.env.npm_execpath) return [process.execPath, [process.env.npm_execpath, ...commandArgs]];
+  return ["pnpm", commandArgs];
+}
+
+/**
+ * Runs independent checks side by side. Their output is buffered so it does
+ * not interleave; each check prints one line, and a failing one its full log.
+ */
+async function runChecks(checks) {
+  const results = await Promise.all(checks.map(({ label, command: [command, commandArgs], env }) => new Promise((done) => {
+    const started = Date.now();
+    let output = "";
+    const options = { cwd: root, env: { ...process.env, ...env } };
+    // Outside `pnpm run` on Windows, pnpm is a .cmd shim that needs a shell;
+    // the fixed script names are passed as one command line.
+    const child = process.platform === "win32" && command === "pnpm"
+      ? spawn(`pnpm ${commandArgs.join(" ")}`, { ...options, shell: true })
+      : spawn(command, commandArgs, options);
+    child.stdout.on("data", (chunk) => { output += chunk; });
+    child.stderr.on("data", (chunk) => { output += chunk; });
+    child.on("error", (error) => done({ label, ok: false, output: `${error}\n`, seconds: 0 }));
+    child.on("close", (code) => done({ label, ok: code === 0, output, seconds: (Date.now() - started) / 1000 }));
+  })));
+  for (const result of results) {
+    console.log(`${result.ok ? "✓" : "✗"} ${result.label}（${result.seconds.toFixed(1)}s）`);
+    if (!result.ok) process.stdout.write(result.output);
   }
-  run("pnpm", commandArgs);
+  if (results.some((result) => !result.ok)) process.exit(1);
 }
 
 // package.json is the frontend version, wails.json the one embedded in the
@@ -68,8 +93,13 @@ if (!existsSync(resolve(root, "build/windows/icon.ico"))) throw new Error("缺�
 console.log(`发布检查通过：Image-Client v${versions[0]}`);
 if (args.has("--check-only")) process.exit(0);
 
-runPnpm(["test"]);
-run("go", ["test", "./internal/..."]);
+// A release run is a single deliberate run, so the frontend tests may use
+// half the cores instead of the bounded default in vite.config.ts.
+await runChecks([
+  { label: "前端测试", command: pnpm(["test"]), env: { VITEST_MAX_WORKERS: String(Math.max(2, Math.floor(availableParallelism() / 2))) } },
+  { label: "类型检查", command: pnpm(["typecheck"]) },
+  { label: "Go 测试", command: ["go", ["test", "./internal/..."]] },
+]);
 
 const localPlatform = process.platform === "win32" && process.arch === "x64"
   ? "windows-x64"

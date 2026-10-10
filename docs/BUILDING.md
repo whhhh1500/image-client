@@ -36,7 +36,7 @@ pnpm release:check
 pnpm release:build
 ```
 
-脚本会依次执行前端测试、Go 测试和当前平台的便携发布打包（`wails build`，通常一分钟内完成）。最终文件位于忽略的 `release-exe/版本/` 下；脚本只接受 Windows x64 或 macOS Apple Silicon，其他平台当前不作为发布目标。
+脚本先并行执行前端测试、类型检查和 Go 测试（各自输出一行结果，失败时打印完整日志），再进行当前平台的便携发布打包（`wails build`）；在多核机器上整体约 20 秒。`pnpm build` 只做 Vite 打包，类型检查由 `pnpm typecheck` 单独执行，发布脚本、CI 和 `pnpm desktop:build` 都会先跑它。最终文件位于忽略的 `release-exe/版本/` 下；脚本只接受 Windows x64 或 macOS Apple Silicon，其他平台当前不作为发布目标。
 
 - Windows x64：`Image-Client_版本_x64_portable.exe`。单个可执行文件，不包含安装程序，也不随附 WebView2。
 - macOS Apple Silicon：`Image-Client_版本_aarch64.app.tar.gz`。解压后将 `.app` 移到 Applications 或其他目录。
@@ -50,6 +50,8 @@ pnpm release:build
 3. 创建并推送与版本一致的标签，例如 `v0.1.0`。
 4. `Publish release` 工作流会构建 Windows x64 portable.exe 并上传到 GitHub Release；macOS Apple Silicon 需要对该标签手动运行工作流并勾选 `macos`。
 
-发布流水线让 Linux 上的前后端测试与打包并行执行，全部成功后再一次性创建 Release，并在上传前通过文件名 allowlist 验证产物。主分支和 PR 只运行测试；手动触发 `Cross-platform verification` 会额外在 Windows 与 macOS 上完整构建一次。
+发布流水线让 Linux 上的前后端测试与打包并行执行，全部成功后再一次性创建 Release，并在上传前通过文件名 allowlist 验证产物。主分支和 PR 运行测试，并以 `GOOS=darwin` 交叉 vet 一次，确保 macOS 专用代码可编译；手动触发 `Cross-platform verification` 会额外在 Windows 与 macOS 上完整构建一次。
+
+标签触发的工作流只能读取当前标签或默认分支保存的缓存，因此每次推送 main 时会运行 `warm-windows-cache`：用发布参数构建一次，保存 Wails CLI、Go 模块与编译缓存（按 Wails 版本和 `go.sum` 命名，命中则跳过）以及 pnpm 存储。发布时的 Windows 构建只恢复这份缓存，不再每次从源码编译 Wails CLI。
 
 发布包当前没有商业代码签名或公证（macOS 包为临时签名）。正式分发前可在仓库 Secrets 中接入各平台签名凭据；不要将证书或密钥写进源码。
