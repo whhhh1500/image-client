@@ -1,4 +1,4 @@
-import { Component, lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Component, lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { FileInput, Image as ImageIcon, Library, Loader2, Sparkles, Upload, Wand2, X } from "lucide-react";
@@ -24,6 +24,7 @@ import { isCompressedAsset } from "../lib/imageCompress";
 import { importExternalAssets } from "../lib/externalAssetImport";
 import { useGenerationImportQueue } from "../store/useGenerationImportQueue";
 import { useRunStore } from "../store/useRunStore";
+import { progressButtonLabel, progressLogLevel, progressLogText, progressPercent, type ImageRunLogLevel } from "../lib/imageProgress";
 import { comicMdCatalogList } from "../lib/comic/markdownApi";
 import {
   createImportRecord,
@@ -131,6 +132,82 @@ function PromptTextarea({ className, placeholder, onEdit }: { className: string;
         setGen({ prompt: event.target.value });
       }}
     />
+  );
+}
+
+/** Current time, ticking every second while `active`, for elapsed-time labels. */
+function useNow(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [active]);
+  return now;
+}
+
+/**
+ * Owns the run-progress subscriptions so the once-a-second elapsed tick and
+ * byte updates re-render only the button. Known transfer sizes fill it.
+ */
+function GenerateButton({ count, canRun, onRun }: { count: number; canRun: boolean; onRun: () => void }) {
+  const busy = useRunStore((s) => s.imageBusy);
+  const progress = useRunStore((s) => s.imageProgress);
+  const startedAt = useRunStore((s) => s.imageRunStartedAt);
+  const now = useNow(busy);
+  const percent = busy ? progressPercent(progress) : null;
+  return (
+    <button
+      onClick={onRun}
+      disabled={!canRun}
+      className="relative flex w-full items-center justify-center gap-2 overflow-hidden rounded-lg bg-indigo-500 px-3 py-2.5 text-sm font-medium text-white transition hover:bg-indigo-400 disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      {percent !== null && (
+        <span aria-hidden className="absolute inset-y-0 left-0 bg-white/20 transition-[width] duration-300" style={{ width: `${percent}%` }} />
+      )}
+      <span className="relative flex items-center gap-2">
+        {busy ? <Loader2 size={15} className="animate-spin" /> : <Wand2 size={15} />}
+        {busy
+          ? progressButtonLabel(progress, now - (startedAt ?? now), count)
+          : (count > 1 ? `生成 ${count} 张` : "生成")}
+      </span>
+    </button>
+  );
+}
+
+const LOG_LEVEL_CLASS: Record<ImageRunLogLevel, string> = {
+  info: "text-slate-400",
+  warn: "text-amber-300",
+  error: "text-rose-300",
+  success: "text-emerald-300",
+};
+
+/** Steps of the latest run; kept after it ends so a failure can be read back. */
+function ImageRunLog() {
+  const log = useRunStore((s) => s.imageLog);
+  const busy = useRunStore((s) => s.imageBusy);
+  const listRef = useRef<HTMLOListElement>(null);
+  useEffect(() => {
+    const list = listRef.current;
+    if (list) list.scrollTop = list.scrollHeight;
+  }, [log.length]);
+  if (!log.length) return null;
+  return (
+    <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-2">
+      <div className="mb-1 flex items-center justify-between text-[10px] text-slate-500">
+        <span>生成日志</span>
+        {busy && <span>进行中</span>}
+      </div>
+      <ol ref={listRef} aria-label="生成日志" className="max-h-40 space-y-0.5 overflow-y-auto font-mono text-[10px] leading-4">
+        {log.map((entry, index) => (
+          <li key={index} className={`flex gap-2 ${LOG_LEVEL_CLASS[entry.level]}`}>
+            <span className="shrink-0 tabular-nums text-slate-600">+{(entry.offsetMs / 1000).toFixed(1)}s</span>
+            <span className="min-w-0 break-words">{entry.text}</span>
+          </li>
+        ))}
+      </ol>
+    </div>
   );
 }
 
@@ -304,7 +381,9 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
     // Read the live values at click time: this panel no longer subscribes to the
     // prompt string, and the user may have typed after the last render.
     const current = useGenerationStore.getState();
-    runs.patch({ imageBusy: true, imageError: null });
+    runs.patch({ imageBusy: true, imageError: null, imageProgress: null, imageRunStartedAt: Date.now(), imageLog: [] });
+    const hasReferences = (current.references?.length ?? 0) > 0 || current.referencePath.trim().length > 0;
+    runs.logImageRun("info", `开始${hasReferences ? "图生图" : "文生图"}：${current.model} · ${current.size.split("(")[0].trim()} · ${current.count} 张`);
     setError(null);
     try {
       const template = promptlibId ? promptlibEntry : undefined;
@@ -332,14 +411,22 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
         generationInput: current.prompt,
         sourceMaterials: sources.length ? sources : undefined,
         parentAssetIds: [...new Set((current.importedSources ?? []).flatMap((item) => item.assetIds))],
+      }, {
+        onProgress: (event) => {
+          const store = useRunStore.getState();
+          store.patch({ imageProgress: event });
+          store.logImageRun(progressLogLevel(event), progressLogText(event));
+        },
       }).then((created) => {
         // Remember this run's assets so the preview shows the whole batch.
         useRunStore.getState().patch({ imageBatchIds: created.map((asset) => asset.id) });
+        useRunStore.getState().logImageRun("success", `完成，已保存 ${created.length} 张`);
       });
     } catch (e) {
       useRunStore.getState().patch({ imageError: String(e) });
+      useRunStore.getState().logImageRun("error", `失败：${String(e)}`);
     } finally {
-      useRunStore.getState().patch({ imageBusy: false });
+      useRunStore.getState().patch({ imageBusy: false, imageProgress: null });
     }
   };
 
@@ -474,16 +561,8 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
 
         {(error ?? runError) && <div className="rounded-lg bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{error ?? runError}</div>}
 
-        <button
-          onClick={run}
-          disabled={!canRun}
-          className="flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-500 px-3 py-2.5 text-sm font-medium text-white transition hover:bg-indigo-400 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {busy ? <Loader2 size={15} className="animate-spin" /> : <Wand2 size={15} />}
-          {busy
-            ? (count > 1 ? `生成中…（${count} 张）` : "生成中…")
-            : (count > 1 ? `生成 ${count} 张` : "生成")}
-        </button>
+        <GenerateButton count={count} canRun={canRun} onRun={run} />
+        <ImageRunLog />
       </div>
 
       {/* Right: preview + history */}

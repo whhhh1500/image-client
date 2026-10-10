@@ -16,6 +16,7 @@ pub trait ModelProvider: Send + Sync {
         &self,
         req: &RunNodeRequest,
         out_dir: &Path,
+        progress: &gateway::ImageProgress,
     ) -> Result<Vec<AssetRef>, String>;
 }
 
@@ -41,11 +42,12 @@ impl ModelProvider for GatewayProvider {
         &self,
         req: &RunNodeRequest,
         out_dir: &Path,
+        progress: &gateway::ImageProgress,
     ) -> Result<Vec<AssetRef>, String> {
         // Clone under the lock so the guard is dropped before the await (keeps
         // the future Send).
         let cfg = self.cfg.read().unwrap().clone();
-        gateway::generate_image(&cfg, req, out_dir).await
+        gateway::generate_image(&cfg, req, out_dir, progress).await
     }
 }
 

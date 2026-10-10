@@ -3899,7 +3899,13 @@ pub fn comic_md_render(
                 config: json!({"prompt":effective_prompt.clone(),"references":materialized.reference_paths.clone(),"size":"1024x1536","quality":"high"}),
                 input_assets: vec![],
             };
-            let result = crate::gateway::generate_image(&cfg, &req, &cfg.output_path()).await;
+            let result = crate::gateway::generate_image(
+                &cfg,
+                &req,
+                &cfg.output_path(),
+                &crate::gateway::ImageProgress::none(),
+            )
+            .await;
             let saved = db::with_connection(&app.state::<DbState>(), |c| match &result {
                 Ok(assets) if !assets.is_empty() => {
                     let tx = c.unchecked_transaction().map_err(sql)?;

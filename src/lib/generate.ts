@@ -9,6 +9,7 @@ import { logEvent } from "./logger";
 import { createId } from "./id";
 import { createHistoryProvenance, snapshotAsset, type HistoryProvenance } from "./provenance";
 import { catalogMetadata } from "./assetCatalog";
+import { listenImageProgress, type ImageProgressEvent } from "./imageProgress";
 
 function importedSourceMaterials(params: GenParams) {
   return (params.importedSources ?? []).flatMap((record) => record.sourceMaterials);
@@ -68,10 +69,16 @@ function assertFreshGeneratedAssetIds(assets: AssetRef[], preexistingAssetIds: R
   }
 }
 
+export interface GenerateImageOptions {
+  /** Backend steps of this run (waiting, receiving, downloading, retrying, saving). */
+  onProgress?: (event: ImageProgressEvent) => void;
+}
+
 /** Generate an image via the active gateway config. Records project + params. */
 export async function generateImage(
   params: GenParams,
   provenanceInput: Partial<Omit<HistoryProvenance, "schemaVersion" | "recordedAt">> = {},
+  options: GenerateImageOptions = {},
 ): Promise<AssetRef[]> {
   const store = useLibraryStore.getState();
   const projectId = useProjectStore.getState().activeId ?? undefined;
@@ -175,9 +182,19 @@ export async function generateImage(
     } : {}),
   };
 
+  // Subscribed before dispatch so the first step is not missed. Progress is
+  // informational: a failed subscription must not block a paid run.
+  const { onProgress } = options;
+  const unlisten = onProgress
+    ? await listenImageProgress(taskId, onProgress).catch((error) => {
+      logEvent("warn", "generation.image.progress_listen_failed", { taskId, error: String(error) });
+      return undefined;
+    })
+    : undefined;
+
   try {
     await persistTask({ id: taskId, nodeId, providerId: "zzone", status: "running", label, model: params.model, projectId, kind: "image", createdAt, params: taskParams });
-    const result = await runNode(req);
+    const result = await (unlisten ? runNode(req, taskId) : runNode(req));
     assertFreshGeneratedAssetIds(result.assets, preexistingAssetIds);
     const finishedAt = Date.now();
     await persistAssets(result.assets, label, meta);
@@ -196,6 +213,8 @@ export async function generateImage(
       .catch((persistError) => logEvent("error", "generation.image.error_persist_failed", { taskId, error: String(persistError) }));
     logEvent("error", "generation.image.end", { taskId, status: "error", durationMs: performance.now() - started, error: msg });
     throw e;
+  } finally {
+    unlisten?.();
   }
 }
 

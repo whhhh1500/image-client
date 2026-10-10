@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { fetchModels, runNode } from "../lib/ipc";
 import { persistAssets, persistTask } from "../lib/dbWrite";
 import { useGenerationStore } from "../store/useGenerationStore";
@@ -10,6 +10,19 @@ import { useRunStore } from "../store/useRunStore";
 import GeneratePanel from "./GeneratePanel";
 
 vi.mock("@tauri-apps/api/core", () => ({ convertFileSrc: (path: string) => path }));
+const progressListeners = vi.hoisted(() => new Set<(event: { payload: unknown }) => void>());
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(async (_name: string, handler: (event: { payload: unknown }) => void) => {
+    progressListeners.add(handler);
+    return () => progressListeners.delete(handler);
+  }),
+}));
+/** Delivers a backend progress step to the run that `runNode` was tagged with. */
+function emitProgress(payload: Record<string, unknown>) {
+  const calls = vi.mocked(runNode).mock.calls;
+  const progressId = calls[calls.length - 1]?.[1];
+  for (const handler of progressListeners) handler({ payload: { progressId, ...payload } });
+}
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("../lib/ipc", () => ({
   fetchModels: vi.fn(),
@@ -25,7 +38,8 @@ beforeEach(() => {
   vi.mocked(persistTask).mockResolvedValue(undefined);
   useGenerationStore.getState().reset();
   useLibraryStore.setState({ assets: [], tasks: [] });
-  useRunStore.setState({ imageBusy: false, imageError: null, imageBatchIds: [] });
+  useRunStore.setState({ imageBusy: false, imageError: null, imageBatchIds: [], imageProgress: null, imageRunStartedAt: null, imageLog: [] });
+  progressListeners.clear();
   useProjectStore.setState({
     activeId: "p1",
     projects: [{
@@ -103,7 +117,7 @@ describe("GeneratePanel model switcher", () => {
     await waitFor(() => {
       expect(runNode).toHaveBeenCalledWith(expect.objectContaining({
         config: expect.objectContaining({ n: 3, prompt: "三只猫" }),
-      }));
+      }), expect.stringMatching(/^task/));
     });
     // The batch is rendered together in the preview instead of one newest card.
     expect(await screen.findByText("本次生成 3 张 · 点图放大")).toBeTruthy();
@@ -124,7 +138,7 @@ describe("GeneratePanel model switcher", () => {
     // Switching tabs unmounts the panel; coming back must not re-enable it.
     cleanup();
     render(<GeneratePanel />);
-    const locked = screen.getByRole("button", { name: "生成中…" }) as HTMLButtonElement;
+    const locked = screen.getByRole("button", { name: /^生成中…/ }) as HTMLButtonElement;
     expect(locked.disabled).toBe(true);
     fireEvent.click(locked);
     expect(runNode).toHaveBeenCalledTimes(1);
@@ -146,8 +160,51 @@ describe("GeneratePanel model switcher", () => {
 
     await waitFor(() => expect(runNode).toHaveBeenCalledWith(expect.objectContaining({
       config: expect.objectContaining({ n: 1 }),
-    })));
+    }), expect.stringMatching(/^task/)));
     await waitFor(() => expect(useLibraryStore.getState().assets).toHaveLength(1));
     expect(screen.queryByText(/本次生成 \d+ 张/)).toBeNull();
+  });
+});
+
+describe("GeneratePanel run progress", () => {
+  it("shows backend steps on the button and keeps them in the run log", async () => {
+    let finish: (value: { assets: { id: string; kind: "image"; path: string }[] }) => void = () => {};
+    vi.mocked(runNode).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    useGenerationStore.getState().set({ prompt: "一只猫", count: 1 });
+    render(<GeneratePanel />);
+    fireEvent.click(screen.getByRole("button", { name: "生成" }));
+    await waitFor(() => expect(runNode).toHaveBeenCalledTimes(1));
+
+    act(() => emitProgress({ stage: "waiting", message: "提交文生图请求，等待模型生成" }));
+    expect(screen.getByRole("button", { name: /^等待模型生成… \d+s$/ })).toBeTruthy();
+
+    act(() => emitProgress({ stage: "downloading", message: "下载第 1/1 张图片", receivedBytes: 1024, totalBytes: 4096, index: 1, count: 1 }));
+    expect(screen.getByRole("button", { name: "下载图片 25%" })).toBeTruthy();
+
+    act(() => emitProgress({ stage: "retrying", message: "第 1/1 张下载中断：超时；1 秒后续传（第 2/4 次）", receivedBytes: 2048, index: 1, count: 1 }));
+    act(() => emitProgress({ stage: "downloading", message: "下载第 1/1 张图片", receivedBytes: 3072, totalBytes: 4096, index: 1, count: 1 }));
+    expect(screen.getByRole("button", { name: "下载图片 75%" })).toBeTruthy();
+
+    finish({ assets: [{ id: "asset_logged", kind: "image", path: "C:/logged.png" }] });
+    await waitFor(() => expect((screen.getByRole("button", { name: "生成" }) as HTMLButtonElement).disabled).toBe(false));
+
+    const lines = [...screen.getByRole("list", { name: "生成日志" }).querySelectorAll("li")].map((item) => item.textContent ?? "");
+    expect(lines).toHaveLength(6);
+    expect(lines[0]).toMatch(/开始文生图：gpt-image-2 · 1024x1024 · 1 张$/);
+    expect(lines[1]).toMatch(/提交文生图请求，等待模型生成$/);
+    expect(lines[2]).toMatch(/下载第 1\/1 张图片$/);
+    expect(lines[3]).toMatch(/续传（第 2\/4 次）（已收到 2 KB）$/);
+    expect(lines[4]).toMatch(/下载第 1\/1 张图片$/);
+    expect(lines[5]).toMatch(/完成，已保存 1 张$/);
+    expect(useRunStore.getState().imageProgress).toBeNull();
+  });
+
+  it("logs the failure reason once the run ends", async () => {
+    vi.mocked(runNode).mockRejectedValue("下载图片失败（已尝试 4 次）: 503 Service Unavailable");
+    useGenerationStore.getState().set({ prompt: "一只猫", count: 1 });
+    render(<GeneratePanel />);
+    fireEvent.click(screen.getByRole("button", { name: "生成" }));
+
+    await waitFor(() => expect(screen.getByRole("list", { name: "生成日志" }).textContent).toContain("失败：下载图片失败（已尝试 4 次）"));
   });
 });

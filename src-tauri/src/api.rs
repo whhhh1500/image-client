@@ -1059,7 +1059,7 @@ async fn image(
         config: Value::Object(config),
         input_assets: vec![],
     };
-    let assets = gateway::generate_image(&cfg, &request, &dir)
+    let assets = gateway::generate_image(&cfg, &request, &dir, &gateway::ImageProgress::none())
         .await
         .map_err(err)?;
     let source = if reference_path

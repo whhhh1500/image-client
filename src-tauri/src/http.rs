@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 /// A loopback endpoint must bypass system proxies, otherwise a local model
 /// server can be routed through an HTTP proxy.
@@ -58,6 +59,65 @@ fn limit_label(limit: usize) -> String {
     }
 }
 
+/// Why a body read stopped early. A transfer failure may succeed on a retry;
+/// a body over the size limit never will.
+#[derive(Debug)]
+pub enum BodyReadError {
+    TooLarge(String),
+    Transfer(String),
+}
+
+impl BodyReadError {
+    pub fn message(self) -> String {
+        match self {
+            Self::TooLarge(message) | Self::Transfer(message) => message,
+        }
+    }
+}
+
+/// Append a response body to `body`, aborting as soon as the accumulated size
+/// exceeds `limit`.
+///
+/// With `idle_timeout`, only silence between chunks ends the read, so a slow
+/// transfer that keeps making progress is never cut off. Bytes received
+/// before a failure stay in `body`, which lets a caller resume with a Range
+/// request. `on_progress` sees the accumulated length after every chunk.
+pub async fn append_limited_bytes(
+    response: &mut reqwest::Response,
+    body: &mut Vec<u8>,
+    limit: usize,
+    label: &str,
+    idle_timeout: Option<Duration>,
+    on_progress: &mut (dyn FnMut(usize) + Send),
+) -> Result<(), BodyReadError> {
+    let too_large = || BodyReadError::TooLarge(format!("{label}超过大小限制（{}）", limit_label(limit)));
+    if response
+        .content_length()
+        .is_some_and(|length| body.len() as u64 + length > limit as u64)
+    {
+        return Err(too_large());
+    }
+    loop {
+        let next = match idle_timeout {
+            Some(idle) => match tokio::time::timeout(idle, response.chunk()).await {
+                Ok(result) => result.map_err(|error| error.to_string()),
+                Err(_) => Err(format!("超过 {} 秒没有收到新数据", idle.as_secs())),
+            },
+            None => response.chunk().await.map_err(|error| error.to_string()),
+        };
+        let Some(chunk) =
+            next.map_err(|error| BodyReadError::Transfer(format!("读取{label}失败: {error}")))?
+        else {
+            return Ok(());
+        };
+        if body.len() + chunk.len() > limit {
+            return Err(too_large());
+        }
+        body.extend_from_slice(&chunk);
+        on_progress(body.len());
+    }
+}
+
 /// Read a response body into memory, aborting as soon as the accumulated size
 /// exceeds `limit`.
 ///
@@ -69,23 +129,10 @@ pub async fn read_limited_bytes(
     limit: usize,
     label: &str,
 ) -> Result<Vec<u8>, String> {
-    if response
-        .content_length()
-        .is_some_and(|length| length > limit as u64)
-    {
-        return Err(format!("{label}超过大小限制（{}）", limit_label(limit)));
-    }
     let mut body = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
+    append_limited_bytes(&mut response, &mut body, limit, label, None, &mut |_| {})
         .await
-        .map_err(|error| format!("读取{label}失败: {error}"))?
-    {
-        if body.len() + chunk.len() > limit {
-            return Err(format!("{label}超过大小限制（{}）", limit_label(limit)));
-        }
-        body.extend_from_slice(&chunk);
-    }
+        .map_err(BodyReadError::message)?;
     Ok(body)
 }
 

@@ -1,13 +1,14 @@
 use std::collections::HashSet;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
 use base64::Engine;
 use image::{imageops, DynamicImage, ImageFormat, Rgba, RgbaImage};
 use reqwest::multipart::{Form, Part};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::assets;
 use crate::config::ConfigState;
@@ -23,6 +24,106 @@ const MAX_REFERENCE_IMAGE_BYTES: usize = 20 * 1024 * 1024;
 const MAX_REFERENCE_TOTAL_BYTES: usize = 50 * 1024 * 1024;
 const REFERENCE_TILE_EDGE: u32 = 512;
 const REFERENCE_TILE_GUTTER: u32 = 8;
+
+/// Generation can take minutes before the gateway answers. Once it does, the
+/// body (inline base64 images) is read under `IMAGE_TRANSFER_IDLE_TIMEOUT`
+/// instead: a flat deadline over wait + transfer cut paid results off on slow
+/// links while data was still arriving.
+const IMAGE_RESPONSE_WAIT: Duration = Duration::from_secs(240);
+const IMAGE_TRANSFER_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// Absolute ceiling per request, so a trickling connection still ends.
+const IMAGE_REQUEST_MAX_DURATION: Duration = Duration::from_secs(30 * 60);
+
+/// Downloads of `data[].url` results are plain GETs, so unlike the paid
+/// generation POST they can be retried, resuming from the bytes received.
+#[derive(Clone, Copy)]
+struct AssetDownloadPolicy {
+    attempts: u32,
+    response_wait: Duration,
+    idle_timeout: Duration,
+    max_duration: Duration,
+    /// Doubles after every failed attempt.
+    retry_delay: Duration,
+}
+
+const ASSET_DOWNLOAD_POLICY: AssetDownloadPolicy = AssetDownloadPolicy {
+    attempts: 4,
+    response_wait: Duration::from_secs(60),
+    idle_timeout: IMAGE_TRANSFER_IDLE_TIMEOUT,
+    max_duration: Duration::from_secs(15 * 60),
+    retry_delay: Duration::from_secs(1),
+};
+
+/// Byte counts are sent at most this often, so a fast link does not flood the
+/// UI with an event per chunk.
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(250);
+const GROK_FALLBACK_STEP: &str = "网关不接受 Grok 参数，已改用通用参数重新提交";
+
+/// One generation step, shown on the generate button and in its run log.
+/// `stage` is one of: waiting, receiving, downloading, retrying, saving.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageProgressEvent {
+    pub stage: &'static str,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub received_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_bytes: Option<u64>,
+    /// 1-based image number while downloading `data[].url` results.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub count: Option<u32>,
+}
+
+type ProgressSink = dyn Fn(ImageProgressEvent) + Send + Sync;
+
+/// Where generation steps go. The generate panel listens to them; the REST API
+/// and comic workers pass `ImageProgress::none()`.
+#[derive(Clone, Default)]
+pub struct ImageProgress(Option<Arc<ProgressSink>>);
+
+impl ImageProgress {
+    pub fn none() -> Self {
+        Self(None)
+    }
+
+    pub fn new(sink: impl Fn(ImageProgressEvent) + Send + Sync + 'static) -> Self {
+        Self(Some(Arc::new(sink)))
+    }
+
+    fn report(&self, event: ImageProgressEvent) {
+        if let Some(sink) = &self.0 {
+            sink(event);
+        }
+    }
+
+    fn step(&self, stage: &'static str, message: impl Into<String>) {
+        self.report(ImageProgressEvent {
+            stage,
+            message: message.into(),
+            ..Default::default()
+        });
+    }
+
+    /// Announces a transfer, then returns the per-chunk callback that repeats
+    /// `event` with the bytes received so far.
+    fn transfer(&self, event: ImageProgressEvent) -> impl FnMut(usize) + Send + '_ {
+        self.report(event.clone());
+        let mut last_sent = Instant::now();
+        move |received| {
+            if self.0.is_none() || last_sent.elapsed() < PROGRESS_INTERVAL {
+                return;
+            }
+            last_sent = Instant::now();
+            self.report(ImageProgressEvent {
+                received_bytes: Some(received as u64),
+                ..event.clone()
+            });
+        }
+    }
+}
 
 /// Requested image count ("n"). The gateway supports at most four images per
 /// request, so the app clamps instead of forwarding an out-of-range value.
@@ -317,6 +418,7 @@ pub async fn generate_image(
     cfg: &ConfigState,
     req: &RunNodeRequest,
     out_dir: &Path,
+    progress: &ImageProgress,
 ) -> Result<Vec<AssetRef>, String> {
     #[cfg(feature = "real-e2e-harness")]
     let generation_client = crate::harness_transport::generation_client()?;
@@ -331,6 +433,7 @@ pub async fn generate_image(
         out_dir,
         &generation_client,
         &asset_download_client,
+        progress,
     )
     .await
 }
@@ -341,6 +444,7 @@ async fn generate_image_with_clients(
     out_dir: &Path,
     generation_client: &reqwest::Client,
     asset_download_client: &reqwest::Client,
+    progress: &ImageProgress,
 ) -> Result<Vec<AssetRef>, String> {
     if cfg.image_api_url.is_empty() || cfg.image_api_key.is_empty() {
         return Err("未配置图像 API（请在设置中填写图像地址与 Key）".into());
@@ -423,6 +527,10 @@ async fn generate_image_with_clients(
 
         // "/v1/images/generations" -> "/v1/images/edits"
         let edits_url = edits_endpoint(&cfg.image_api_url)?;
+        progress.step(
+            "waiting",
+            format!("提交图生图请求（{} 张参考图），等待模型生成", references.len()),
+        );
         let mut resp = post_image_multipart(
             generation_client,
             &edits_url,
@@ -437,6 +545,7 @@ async fn generate_image_with_clients(
                 "image.request.grok_contract_fallback",
                 serde_json::json!({ "requestId": request_id, "status": resp.status().as_u16(), "mode": "image_to_image" }),
             );
+            progress.step("waiting", GROK_FALLBACK_STEP);
             resp = post_image_multipart(
                 generation_client,
                 &edits_url,
@@ -448,12 +557,13 @@ async fn generate_image_with_clients(
             .await?;
         }
         finish_request(
-            parse_and_save(resp, &asset_download_client, out_dir, count).await,
+            parse_and_save(resp, &asset_download_client, out_dir, count, progress).await,
             &request_id,
             started,
         )
     } else {
         let body = image_generation_body(&model, &prompt, &size, &selection, &quality, &background, count);
+        progress.step("waiting", "提交文生图请求，等待模型生成");
         let mut resp = post_image_json(
             generation_client,
             &cfg.image_api_url,
@@ -472,6 +582,7 @@ async fn generate_image_with_clients(
                 serde_json::json!({ "requestId": request_id, "status": resp.status().as_u16(), "mode": "text_to_image" }),
             );
             let fallback = openai_image_generation_body(&model, &prompt, &size, &quality, &background, count);
+            progress.step("waiting", GROK_FALLBACK_STEP);
             resp = post_image_json(
                 generation_client,
                 &cfg.image_api_url,
@@ -483,7 +594,7 @@ async fn generate_image_with_clients(
             .await?;
         }
         finish_request(
-            parse_and_save(resp, &asset_download_client, out_dir, count).await,
+            parse_and_save(resp, &asset_download_client, out_dir, count, progress).await,
             &request_id,
             started,
         )
@@ -501,17 +612,16 @@ async fn post_image_json(
     let send_started = Instant::now();
     #[cfg(feature = "real-e2e-harness")]
     crate::harness_transport::reserve_image_post()?;
-    let resp = client
+    let send = client
         .post(url)
         .bearer_auth(key)
         .json(body)
-        .timeout(Duration::from_secs(240))
-        .send()
-        .await
-        .map_err(|e| {
-            crate::logging::error("image.request.end", serde_json::json!({ "requestId": request_id, "status": "error", "durationMs": started.elapsed().as_millis(), "error": crate::logging::error_text(&e) }));
-            format!("请求图像接口失败: {e}")
-        })?;
+        .timeout(IMAGE_REQUEST_MAX_DURATION)
+        .send();
+    let resp = await_image_response(send).await.map_err(|e| {
+        crate::logging::error("image.request.end", serde_json::json!({ "requestId": request_id, "status": "error", "durationMs": started.elapsed().as_millis(), "error": crate::logging::error_text(&e) }));
+        format!("请求图像接口失败: {e}")
+    })?;
     #[cfg(feature = "real-e2e-harness")]
     crate::harness_transport::mark_image_http_received()?;
     crate::logging::debug(
@@ -532,17 +642,16 @@ async fn post_image_multipart(
     let send_started = Instant::now();
     #[cfg(feature = "real-e2e-harness")]
     crate::harness_transport::reserve_image_post()?;
-    let resp = client
+    let send = client
         .post(url)
         .bearer_auth(key)
         .multipart(form)
-        .timeout(Duration::from_secs(240))
-        .send()
-        .await
-        .map_err(|e| {
-            crate::logging::error("image.request.end", serde_json::json!({ "requestId": request_id, "status": "error", "durationMs": started.elapsed().as_millis(), "error": crate::logging::error_text(&e) }));
-            format!("请求图像编辑接口失败: {e}")
-        })?;
+        .timeout(IMAGE_REQUEST_MAX_DURATION)
+        .send();
+    let resp = await_image_response(send).await.map_err(|e| {
+        crate::logging::error("image.request.end", serde_json::json!({ "requestId": request_id, "status": "error", "durationMs": started.elapsed().as_millis(), "error": crate::logging::error_text(&e) }));
+        format!("请求图像编辑接口失败: {e}")
+    })?;
     #[cfg(feature = "real-e2e-harness")]
     crate::harness_transport::mark_image_http_received()?;
     crate::logging::debug(
@@ -550,6 +659,20 @@ async fn post_image_multipart(
         serde_json::json!({ "requestId": request_id, "durationMs": send_started.elapsed().as_millis(), "status": resp.status().as_u16() }),
     );
     Ok(resp)
+}
+
+/// Bounds only the wait for response headers; the body is read later under the
+/// transfer idle timeout.
+async fn await_image_response(
+    send: impl std::future::Future<Output = reqwest::Result<reqwest::Response>>,
+) -> Result<reqwest::Response, String> {
+    match tokio::time::timeout(IMAGE_RESPONSE_WAIT, send).await {
+        Ok(result) => result.map_err(|error| error.to_string()),
+        Err(_) => Err(format!(
+            "等待图像接口响应超过 {} 秒",
+            IMAGE_RESPONSE_WAIT.as_secs()
+        )),
+    }
 }
 
 fn finish_request(
@@ -808,11 +931,12 @@ async fn parse_and_save(
     client: &reqwest::Client,
     out_dir: &Path,
     count: u32,
+    progress: &ImageProgress,
 ) -> Result<Vec<AssetRef>, String> {
     if !resp.status().is_success() {
         let status = resp.status();
         let text = String::from_utf8_lossy(
-            &read_limited(resp, 1024 * 1024, "图像接口错误响应")
+            &read_limited(resp, 1024 * 1024, "图像接口错误响应", &mut |_| {})
                 .await
                 .unwrap_or_default(),
         )
@@ -824,7 +948,14 @@ async fn parse_and_save(
     }
 
     let response_limit = MAX_IMAGE_RESPONSE_BYTES * count.clamp(1, MAX_IMAGE_BATCH) as usize;
-    let response_bytes = read_limited(resp, response_limit, "图像接口响应").await?;
+    let mut on_progress = progress.transfer(ImageProgressEvent {
+        stage: "receiving",
+        message: "模型已返回，正在接收结果".into(),
+        total_bytes: resp.content_length(),
+        ..Default::default()
+    });
+    let response_bytes =
+        read_limited(resp, response_limit, "图像接口响应", &mut on_progress).await?;
     let json: serde_json::Value =
         serde_json::from_slice(&response_bytes).map_err(|e| format!("解析图像响应失败: {e}"))?;
 
@@ -839,8 +970,10 @@ async fn parse_and_save(
     // before writing, and fail only when none is usable.
     let mut payloads: Vec<(Vec<u8>, String)> = Vec::with_capacity(entries.len().min(MAX_IMAGE_BATCH as usize));
     let mut failures = Vec::new();
+    let usable = entries.len().min(MAX_IMAGE_BATCH as usize) as u32;
     for (index, entry) in entries.iter().take(MAX_IMAGE_BATCH as usize).enumerate() {
-        let decoded = decode_image_entry(entry, client).await.and_then(|bytes| {
+        let slot = ImageSlot { index: index as u32 + 1, count: usable };
+        let decoded = decode_image_entry(entry, client, progress, slot).await.and_then(|bytes| {
             let format = assets::detect_format_checked(&bytes)
                 .ok_or("图像接口返回的内容不是支持的图片格式")?
                 .to_string();
@@ -848,7 +981,10 @@ async fn parse_and_save(
         });
         match decoded {
             Ok(payload) => payloads.push(payload),
-            Err(error) => failures.push((index, error)),
+            Err(error) => {
+                progress.step("partial", format!("{slot}不可用：{error}"));
+                failures.push((index, error));
+            }
         }
     }
     if payloads.is_empty() {
@@ -868,6 +1004,7 @@ async fn parse_and_save(
         );
     }
 
+    progress.step("saving", format!("保存 {} 张图片", payloads.len()));
     let mut saved = Vec::with_capacity(payloads.len());
     for (bytes, format) in payloads {
         saved.push(assets::save_bytes(out_dir, "image", &bytes, &format)?);
@@ -875,10 +1012,25 @@ async fn parse_and_save(
     Ok(saved)
 }
 
+/// Position of one `data[]` entry, for progress messages ("第 2/4 张").
+#[derive(Clone, Copy)]
+struct ImageSlot {
+    index: u32,
+    count: u32,
+}
+
+impl std::fmt::Display for ImageSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "第 {}/{} 张", self.index, self.count)
+    }
+}
+
 /// One `data[]` entry: inline base64 or a URL to download.
 async fn decode_image_entry(
     entry: &serde_json::Value,
     client: &reqwest::Client,
+    progress: &ImageProgress,
+    slot: ImageSlot,
 ) -> Result<Vec<u8>, String> {
     if let Some(b64) = entry.get("b64_json").and_then(|b| b.as_str()) {
         if b64.is_empty() {
@@ -889,34 +1041,201 @@ async fn decode_image_entry(
             .map_err(|e| format!("base64 解码失败: {e}"));
     }
     if let Some(url) = entry.get("url").and_then(|u| u.as_str()) {
-        let download_started = Instant::now();
-        let r = client
-            .get(url)
-            .timeout(Duration::from_secs(240))
-            .send()
-            .await
-            .map_err(|e| format!("下载图片失败: {e}"))?;
-        if !r.status().is_success() {
-            return Err(format!("下载图片失败: {}", r.status()));
-        }
-        let bytes = read_limited(r, MAX_DOWNLOADED_IMAGE_BYTES, "图片下载").await?;
-        crate::logging::info(
-            "image.download",
-            serde_json::json!({ "durationMs": download_started.elapsed().as_millis(), "bytes": bytes.len(), "source": crate::logging::safe_url(url) }),
-        );
-        return Ok(bytes);
+        return download_image_url(client, url, ASSET_DOWNLOAD_POLICY, progress, slot).await;
     }
     Err("图像响应中没有 b64_json 或 url".into())
 }
 
+enum DownloadFailure {
+    /// Network errors, stalls, 408/429/5xx: worth another attempt.
+    Retryable(String),
+    /// Expired or forbidden URLs and oversized bodies: retrying cannot help.
+    Fatal(String),
+}
+
+/// Download a `data[].url` result. Transient failures are retried with
+/// exponential backoff, and each retry asks for the remaining bytes only, so a
+/// large image on a weak link does not restart from zero.
+async fn download_image_url(
+    client: &reqwest::Client,
+    url: &str,
+    policy: AssetDownloadPolicy,
+    progress: &ImageProgress,
+    slot: ImageSlot,
+) -> Result<Vec<u8>, String> {
+    let download_started = Instant::now();
+    let mut body = Vec::new();
+    let mut validator = None;
+    let mut resumed = false;
+    let mut last_error = String::new();
+    for attempt in 1..=policy.attempts {
+        resumed |= !body.is_empty();
+        match download_attempt(client, url, policy, &mut body, &mut validator, progress, slot).await {
+            Ok(()) => {
+                crate::logging::info(
+                    "image.download",
+                    serde_json::json!({ "durationMs": download_started.elapsed().as_millis(), "bytes": body.len(), "attempts": attempt, "resumed": resumed, "source": crate::logging::safe_url(url) }),
+                );
+                return Ok(body);
+            }
+            Err(DownloadFailure::Fatal(error)) => return Err(format!("下载图片失败: {error}")),
+            Err(DownloadFailure::Retryable(error)) => {
+                crate::logging::warn(
+                    "image.download.retry",
+                    serde_json::json!({ "attempt": attempt, "receivedBytes": body.len(), "error": crate::logging::error_text(&error), "source": crate::logging::safe_url(url) }),
+                );
+                if attempt < policy.attempts {
+                    let delay = policy.retry_delay * 2u32.pow(attempt - 1);
+                    progress.report(ImageProgressEvent {
+                        stage: "retrying",
+                        message: format!(
+                            "{slot}下载中断：{error}；{} 秒后{}（第 {}/{} 次）",
+                            delay.as_secs(),
+                            if body.is_empty() { "重试" } else { "续传" },
+                            attempt + 1,
+                            policy.attempts
+                        ),
+                        received_bytes: Some(body.len() as u64),
+                        index: Some(slot.index),
+                        count: Some(slot.count),
+                        ..Default::default()
+                    });
+                    tokio::time::sleep(delay).await;
+                }
+                last_error = error;
+            }
+        }
+    }
+    Err(format!(
+        "下载图片失败（已尝试 {} 次）: {last_error}",
+        policy.attempts
+    ))
+}
+
+/// One GET. `body` keeps the bytes received so far across attempts, and
+/// `validator` the ETag/Last-Modified that makes resuming them safe.
+async fn download_attempt(
+    client: &reqwest::Client,
+    url: &str,
+    policy: AssetDownloadPolicy,
+    body: &mut Vec<u8>,
+    validator: &mut Option<String>,
+    progress: &ImageProgress,
+    slot: ImageSlot,
+) -> Result<(), DownloadFailure> {
+    use reqwest::header::{CONTENT_RANGE, ETAG, IF_RANGE, LAST_MODIFIED, RANGE};
+    use reqwest::StatusCode;
+
+    let resuming = !body.is_empty();
+    let mut request = client.get(url).timeout(policy.max_duration);
+    if resuming {
+        request = request.header(RANGE, format!("bytes={}-", body.len()));
+        // Without a validator the bytes are still resumed: result URLs point at
+        // immutable files, and a server that ignores Range answers 200 anyway.
+        if let Some(value) = validator.as_deref() {
+            request = request.header(IF_RANGE, value);
+        }
+    }
+    let mut response = match tokio::time::timeout(policy.response_wait, request.send()).await {
+        Ok(Ok(response)) => response,
+        Ok(Err(error)) if error.is_builder() => return Err(DownloadFailure::Fatal(error.to_string())),
+        Ok(Err(error)) => return Err(DownloadFailure::Retryable(error.to_string())),
+        Err(_) => {
+            return Err(DownloadFailure::Retryable(format!(
+                "等待响应超过 {} 秒",
+                policy.response_wait.as_secs()
+            )))
+        }
+    };
+
+    let status = response.status();
+    let header = |name: reqwest::header::HeaderName| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned)
+    };
+    if status == StatusCode::PARTIAL_CONTENT && resuming {
+        // "bytes START-END/TOTAL": the part must continue exactly where the
+        // received bytes stop.
+        let content_range = header(CONTENT_RANGE).unwrap_or_default();
+        let start = content_range
+            .strip_prefix("bytes ")
+            .and_then(|range| range.split('-').next())
+            .and_then(|start| start.trim().parse::<usize>().ok());
+        if start != Some(body.len()) {
+            body.clear();
+            *validator = None;
+            return Err(DownloadFailure::Retryable(format!(
+                "续传范围不匹配: {content_range}"
+            )));
+        }
+    } else if status.is_success() {
+        // A full body: either the first attempt or a server that ignored Range.
+        body.clear();
+        // If-Range only accepts strong validators.
+        *validator = header(ETAG)
+            .filter(|etag| !etag.starts_with("W/"))
+            .or_else(|| header(LAST_MODIFIED));
+    } else if status == StatusCode::RANGE_NOT_SATISFIABLE && resuming {
+        body.clear();
+        *validator = None;
+        return Err(DownloadFailure::Retryable(status.to_string()));
+    } else if status == StatusCode::REQUEST_TIMEOUT
+        || status == StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error()
+    {
+        return Err(DownloadFailure::Retryable(status.to_string()));
+    } else {
+        return Err(DownloadFailure::Fatal(status.to_string()));
+    }
+
+    let mut on_progress = progress.transfer(ImageProgressEvent {
+        stage: "downloading",
+        message: format!("下载{slot}图片"),
+        received_bytes: Some(body.len() as u64),
+        // A 206 carries only the remaining bytes.
+        total_bytes: response.content_length().map(|length| body.len() as u64 + length),
+        index: Some(slot.index),
+        count: Some(slot.count),
+    });
+    crate::http::append_limited_bytes(
+        &mut response,
+        body,
+        MAX_DOWNLOADED_IMAGE_BYTES,
+        "图片下载",
+        Some(policy.idle_timeout),
+        &mut on_progress,
+    )
+    .await
+    .map_err(|error| match error {
+        crate::http::BodyReadError::TooLarge(message) => DownloadFailure::Fatal(message),
+        crate::http::BodyReadError::Transfer(message) => DownloadFailure::Retryable(message),
+    })
+}
+
 async fn read_limited(
-    response: reqwest::Response,
+    mut response: reqwest::Response,
     limit: usize,
     label: &str,
+    on_progress: &mut (dyn FnMut(usize) + Send),
 ) -> Result<Vec<u8>, String> {
     // Streams with a running size check; buffering the whole body first let a
-    // chunked response without Content-Length bypass the limit.
-    crate::http::read_limited_bytes(response, limit, label).await
+    // chunked response without Content-Length bypass the limit. Generation
+    // bodies carry inline images, so only silence ends the read.
+    let mut body = Vec::new();
+    crate::http::append_limited_bytes(
+        &mut response,
+        &mut body,
+        limit,
+        label,
+        Some(IMAGE_TRANSFER_IDLE_TIMEOUT),
+        on_progress,
+    )
+    .await
+    .map_err(crate::http::BodyReadError::message)?;
+    Ok(body)
 }
 
 fn edits_endpoint(api_url: &str) -> Result<String, String> {
@@ -939,10 +1258,11 @@ mod tests {
     };
 
     use super::{
-        edits_endpoint, generate_image_with_clients, grok_aspect_ratio, grok_resolution,
-        image_generation_body, is_grok_image_model, normalize_references,
+        download_image_url, edits_endpoint, generate_image_with_clients, grok_aspect_ratio,
+        grok_resolution, image_generation_body, is_grok_image_model, normalize_references,
         prepare_reference_upload, prompt_with_reference_roles, requested_image_count,
-        validate_reference_inputs, validate_reference_path, ReferenceInput, ReferenceLimits,
+        validate_reference_inputs, validate_reference_path, AssetDownloadPolicy,
+        ImageProgress, ImageProgressEvent, ImageSlot, ReferenceInput, ReferenceLimits,
         MAX_IMAGE_BATCH,
     };
     use base64::Engine as _;
@@ -1190,6 +1510,7 @@ mod tests {
                     &output,
                     &loopback_client(),
                     &loopback_client(),
+                    &ImageProgress::none(),
                 ),
             )
             .await
@@ -1356,6 +1677,7 @@ mod tests {
                 &root.join("output"),
                 &loopback_client(),
                 &loopback_client(),
+                &ImageProgress::none(),
             ),
         )
         .await
@@ -1412,6 +1734,7 @@ mod tests {
                 &root.join("output"),
                 &loopback_client(),
                 &loopback_client(),
+                &ImageProgress::none(),
             ),
         )
         .await
@@ -1459,6 +1782,7 @@ mod tests {
                 &output,
                 &loopback_client(),
                 &loopback_client(),
+                &ImageProgress::none(),
             ),
         )
         .await
@@ -1515,6 +1839,7 @@ mod tests {
                 &root.join("output"),
                 &loopback_client(),
                 &loopback_client(),
+                &ImageProgress::none(),
             ),
         )
         .await
@@ -1566,6 +1891,7 @@ mod tests {
                 &root.join("output"),
                 &loopback_client(),
                 &loopback_client(),
+                &ImageProgress::none(),
             ),
         )
         .await
@@ -1600,6 +1926,7 @@ mod tests {
                 &root.join("output"),
                 &loopback_client(),
                 &loopback_client(),
+                &ImageProgress::none(),
             ),
         )
         .await
@@ -1758,5 +2085,274 @@ mod tests {
         drop(guard);
         assert!(!board_path.exists());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Short waits so stalls and retries finish within a test run.
+    const FAST_DOWNLOAD_POLICY: AssetDownloadPolicy = AssetDownloadPolicy {
+        attempts: 4,
+        response_wait: Duration::from_secs(2),
+        idle_timeout: Duration::from_millis(150),
+        max_duration: Duration::from_secs(5),
+        retry_delay: Duration::from_millis(5),
+    };
+
+    const FIRST_SLOT: ImageSlot = ImageSlot { index: 1, count: 1 };
+
+    fn recording_progress() -> (ImageProgress, Arc<Mutex<Vec<ImageProgressEvent>>>) {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&events);
+        (
+            ImageProgress::new(move |event| sink.lock().unwrap().push(event)),
+            events,
+        )
+    }
+
+    #[tokio::test]
+    async fn generation_reports_each_step_to_the_progress_sink() {
+        let root = temp_root();
+        let asset = png_bytes([5, 6, 7, 255]);
+        let server = GatewayLoopback::start(asset.clone()).await;
+        let mut cfg = test_config(&root);
+        cfg.image_api_url = server.url.clone();
+        cfg.image_api_key = "local-test-key".into();
+        let (progress, events) = recording_progress();
+
+        timeout(
+            Duration::from_secs(3),
+            generate_image_with_clients(
+                &cfg,
+                &RunNodeRequest {
+                    node_type: "image".into(),
+                    category: "generate".into(),
+                    config: json!({ "prompt": "一只猫", "model": "gpt-image-2" }),
+                    input_assets: Vec::new(),
+                },
+                &root.join("output"),
+                &loopback_client(),
+                &loopback_client(),
+                &progress,
+            ),
+        )
+        .await
+        .expect("loopback image generation must return promptly")
+        .unwrap_or_else(|error| panic!("generation failed: {error}"));
+        server.finish().await;
+
+        let events = events.lock().unwrap();
+        let stages: Vec<&str> = events.iter().map(|event| event.stage).collect();
+        assert_eq!(stages, ["waiting", "receiving", "downloading", "saving"]);
+        let download = &events[2];
+        assert_eq!(download.message, "下载第 1/1 张图片");
+        assert_eq!((download.index, download.count), (Some(1), Some(1)));
+        assert_eq!(download.total_bytes, Some(asset.len() as u64));
+        assert_eq!(events[3].message, "保存 1 张图片");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn progress_events_serialize_for_the_frontend() {
+        let event = ImageProgressEvent {
+            stage: "downloading",
+            message: "下载第 2/4 张图片".into(),
+            received_bytes: Some(10),
+            total_bytes: Some(40),
+            index: Some(2),
+            count: Some(4),
+        };
+        assert_eq!(
+            serde_json::to_value(&event).unwrap(),
+            json!({ "stage": "downloading", "message": "下载第 2/4 张图片", "receivedBytes": 10, "totalBytes": 40, "index": 2, "count": 4 })
+        );
+        let step = ImageProgressEvent { stage: "saving", message: "保存 1 张图片".into(), ..Default::default() };
+        assert_eq!(
+            serde_json::to_value(&step).unwrap(),
+            json!({ "stage": "saving", "message": "保存 1 张图片" })
+        );
+    }
+
+    fn asset_payload() -> Vec<u8> {
+        (0..=255u8).cycle().take(4096).collect()
+    }
+
+    /// `content_length` is declared separately from `body`, so a step can
+    /// promise more bytes than it sends and simulate a dropped connection.
+    fn raw_response(status: &str, headers: &[String], content_length: usize, body: &[u8]) -> Vec<u8> {
+        let mut head = format!("HTTP/1.1 {status}\r\nContent-Length: {content_length}\r\nConnection: close\r\n");
+        for header in headers {
+            head.push_str(header);
+            head.push_str("\r\n");
+        }
+        head.push_str("\r\n");
+        let mut bytes = head.into_bytes();
+        bytes.extend_from_slice(body);
+        bytes
+    }
+
+    /// Serves one scripted step per connection: write the bytes, keep the
+    /// socket silent for `linger`, then close. Returns the URL and the request
+    /// heads, lowercased.
+    async fn scripted_asset_server(
+        steps: Vec<(Vec<u8>, Duration)>,
+    ) -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&requests);
+        tokio::spawn(async move {
+            for (bytes, linger) in steps {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                let captured = Arc::clone(&captured);
+                // Each connection gets its own task: a lingering step must not
+                // block the retry that follows it.
+                tokio::spawn(async move {
+                    let mut request = Vec::new();
+                    while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        let mut chunk = [0u8; 1024];
+                        match stream.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(read) => request.extend_from_slice(&chunk[..read]),
+                        }
+                    }
+                    captured
+                        .lock()
+                        .unwrap()
+                        .push(String::from_utf8_lossy(&request).to_lowercase());
+                    let _ = stream.write_all(&bytes).await;
+                    let _ = stream.flush().await;
+                    tokio::time::sleep(linger).await;
+                });
+            }
+        });
+        (format!("http://{address}/asset.png"), requests)
+    }
+
+    #[tokio::test]
+    async fn asset_download_retries_a_transient_status() {
+        let asset = asset_payload();
+        let (url, requests) = scripted_asset_server(vec![
+            (raw_response("503 Service Unavailable", &[], 4, b"busy"), Duration::ZERO),
+            (raw_response("200 OK", &[], asset.len(), &asset), Duration::ZERO),
+        ])
+        .await;
+        let bytes = download_image_url(&loopback_client(), &url, FAST_DOWNLOAD_POLICY, &ImageProgress::none(), FIRST_SLOT)
+            .await
+            .unwrap();
+        assert_eq!(bytes, asset);
+        assert_eq!(requests.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn asset_download_resumes_from_received_bytes_after_a_dropped_connection() {
+        let asset = asset_payload();
+        let half = asset.len() / 2;
+        let (url, requests) = scripted_asset_server(vec![
+            (
+                raw_response("200 OK", &["ETag: \"v1\"".into()], asset.len(), &asset[..half]),
+                Duration::ZERO,
+            ),
+            (
+                raw_response(
+                    "206 Partial Content",
+                    &[format!("Content-Range: bytes {half}-{}/{}", asset.len() - 1, asset.len())],
+                    asset.len() - half,
+                    &asset[half..],
+                ),
+                Duration::ZERO,
+            ),
+        ])
+        .await;
+        let (progress, events) = recording_progress();
+        let bytes = download_image_url(&loopback_client(), &url, FAST_DOWNLOAD_POLICY, &progress, FIRST_SLOT)
+            .await
+            .unwrap();
+        assert_eq!(bytes, asset);
+        let events = events.lock().unwrap();
+        let retry = events.iter().find(|event| event.stage == "retrying").expect("retry step");
+        assert!(retry.message.contains("续传（第 2/4 次）"), "{}", retry.message);
+        assert_eq!(retry.received_bytes, Some(half as u64));
+        let resumed = events.iter().filter(|event| event.stage == "downloading").last().unwrap();
+        assert_eq!(resumed.received_bytes, Some(half as u64));
+        assert_eq!(resumed.total_bytes, Some(asset.len() as u64));
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(!requests[0].contains("range:"));
+        assert!(requests[1].contains(&format!("range: bytes={half}-")));
+        assert!(requests[1].contains("if-range: \"v1\""));
+    }
+
+    #[tokio::test]
+    async fn asset_download_resumes_after_a_stalled_transfer() {
+        let asset = asset_payload();
+        let half = asset.len() / 2;
+        let (url, requests) = scripted_asset_server(vec![
+            // Silent far beyond the idle timeout, but well within max_duration.
+            (
+                raw_response("200 OK", &[], asset.len(), &asset[..half]),
+                Duration::from_secs(2),
+            ),
+            (
+                raw_response(
+                    "206 Partial Content",
+                    &[format!("Content-Range: bytes {half}-{}/{}", asset.len() - 1, asset.len())],
+                    asset.len() - half,
+                    &asset[half..],
+                ),
+                Duration::ZERO,
+            ),
+        ])
+        .await;
+        let started = std::time::Instant::now();
+        let bytes = download_image_url(&loopback_client(), &url, FAST_DOWNLOAD_POLICY, &ImageProgress::none(), FIRST_SLOT)
+            .await
+            .unwrap();
+        assert_eq!(bytes, asset);
+        // The idle timeout, not the server closing the stalled socket, ended
+        // the first attempt.
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert!(requests.lock().unwrap()[1].contains(&format!("range: bytes={half}-")));
+    }
+
+    #[tokio::test]
+    async fn asset_download_restarts_cleanly_when_the_server_ignores_range() {
+        let asset = asset_payload();
+        let half = asset.len() / 2;
+        let (url, _requests) = scripted_asset_server(vec![
+            (raw_response("200 OK", &[], asset.len(), &asset[..half]), Duration::ZERO),
+            (raw_response("200 OK", &[], asset.len(), &asset), Duration::ZERO),
+        ])
+        .await;
+        let bytes = download_image_url(&loopback_client(), &url, FAST_DOWNLOAD_POLICY, &ImageProgress::none(), FIRST_SLOT)
+            .await
+            .unwrap();
+        assert_eq!(bytes, asset);
+    }
+
+    #[tokio::test]
+    async fn asset_download_does_not_retry_an_expired_url() {
+        let (url, requests) = scripted_asset_server(vec![
+            (raw_response("403 Forbidden", &[], 0, b""), Duration::ZERO),
+            (raw_response("403 Forbidden", &[], 0, b""), Duration::ZERO),
+        ])
+        .await;
+        let error = download_image_url(&loopback_client(), &url, FAST_DOWNLOAD_POLICY, &ImageProgress::none(), FIRST_SLOT)
+            .await
+            .unwrap_err();
+        assert!(error.contains("403"), "{error}");
+        assert_eq!(requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn asset_download_gives_up_after_the_attempt_budget() {
+        let steps = (0..FAST_DOWNLOAD_POLICY.attempts)
+            .map(|_| (raw_response("503 Service Unavailable", &[], 0, b""), Duration::ZERO))
+            .collect();
+        let (url, requests) = scripted_asset_server(steps).await;
+        let error = download_image_url(&loopback_client(), &url, FAST_DOWNLOAD_POLICY, &ImageProgress::none(), FIRST_SLOT)
+            .await
+            .unwrap_err();
+        assert!(error.contains("已尝试 4 次"), "{error}");
+        assert_eq!(requests.lock().unwrap().len(), 4);
     }
 }

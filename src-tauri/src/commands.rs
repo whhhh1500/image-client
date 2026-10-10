@@ -1388,11 +1388,12 @@ pub(crate) async fn generate_active_image(
     state: &AppState,
     req: &RunNodeRequest,
     output_dir: &std::path::Path,
+    progress: &crate::gateway::ImageProgress,
 ) -> Result<Vec<AssetRef>, String> {
     state
         .registry
         .active()
-        .generate_image(req, output_dir)
+        .generate_image(req, output_dir, progress)
         .await
 }
 
@@ -1408,23 +1409,46 @@ pub(crate) async fn generate_provider_image(
         .registry
         .get(provider_id)
         .ok_or("VISUAL_PROVIDER_UNAVAILABLE")?
-        .generate_image(req, output_dir)
+        .generate_image(req, output_dir, &crate::gateway::ImageProgress::none())
         .await
+}
+
+/// Generation steps for the panel that started the run, matched by `progressId`.
+const IMAGE_PROGRESS_EVENT: &str = "image://progress";
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImageProgressPayload {
+    progress_id: String,
+    #[serde(flatten)]
+    event: crate::gateway::ImageProgressEvent,
 }
 
 #[tauri::command]
 pub async fn run_node(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     req: RunNodeRequest,
+    progress_id: Option<String>,
 ) -> Result<RunResult, String> {
     let cfg = state.cfg.read().unwrap().clone();
     let base = cfg.output_path();
     let tag = run_tag(&req.config);
+    let progress = match progress_id {
+        Some(progress_id) => crate::gateway::ImageProgress::new(move |event| {
+            use tauri::Emitter;
+            let payload = ImageProgressPayload { progress_id: progress_id.clone(), event };
+            if let Err(error) = app.emit(IMAGE_PROGRESS_EVENT, payload) {
+                crate::logging::warn("image.progress.emit_failed", json!({ "error": error.to_string() }));
+            }
+        }),
+        None => crate::gateway::ImageProgress::none(),
+    };
 
     match req.category.as_str() {
         "generate" | "ai_process" => {
             let dir = base.join(kind_folder("image")).join(&tag);
-            let assets = generate_active_image(&state, &req, &dir).await?;
+            let assets = generate_active_image(&state, &req, &dir, &progress).await?;
             Ok(RunResult { assets })
         }
         other => Err(format!("未知节点类别: {other}")),

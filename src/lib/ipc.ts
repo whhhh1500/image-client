@@ -127,8 +127,9 @@ export const listProviders = (): Promise<ProviderInfo[]> =>
 export const setActiveProvider = (id: string): Promise<ProviderInfo[]> =>
   loggedInvoke<ProviderInfo[]>("set_active_provider", { id });
 
-export const runNode = (req: RunNodeRequest): Promise<RunResult> =>
-  loggedInvoke<RunResult>("run_node", { req });
+/** With `progressId`, the backend reports each step as an `image://progress` event. */
+export const runNode = (req: RunNodeRequest, progressId?: string): Promise<RunResult> =>
+  loggedInvoke<RunResult>("run_node", progressId ? { req, progressId } : { req });
 
 export const runVideo = (req: RunNodeRequest): Promise<RunResult> =>
   loggedInvoke<RunResult>("run_video", { req });

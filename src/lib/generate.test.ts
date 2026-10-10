@@ -3,10 +3,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("./ipc", () => ({ runNode: vi.fn() }));
 vi.mock("./dbWrite", () => ({ persistAssets: vi.fn(), persistTask: vi.fn() }));
 vi.mock("./logger", () => ({ logEvent: vi.fn() }));
+vi.mock("./imageProgress", () => ({ listenImageProgress: vi.fn() }));
 
 import { persistAssets, persistTask } from "./dbWrite";
 import { generateImage } from "./generate";
 import { runNode } from "./ipc";
+import { listenImageProgress, type ImageProgressEvent } from "./imageProgress";
 import { useLibraryStore } from "../store/useLibraryStore";
 import { useProjectStore } from "../store/useProjectStore";
 
@@ -183,5 +185,61 @@ describe("generateImage asset persistence", () => {
     expect(runNode).toHaveBeenLastCalledWith(expect.objectContaining({
       config: expect.objectContaining({ n: 1 }),
     }));
+  });
+});
+
+describe("generateImage progress", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useProjectStore.setState({ activeId: "project_1" });
+    useLibraryStore.setState({ assets: [], tasks: [] });
+    vi.mocked(persistTask).mockResolvedValue();
+  });
+
+  it("subscribes before dispatch, tags the request with the task id and unsubscribes after", async () => {
+    const unlisten = vi.fn();
+    let emit: (event: ImageProgressEvent) => void = () => {};
+    vi.mocked(listenImageProgress).mockImplementation(async (_id, handler) => {
+      emit = handler;
+      return unlisten;
+    });
+    vi.mocked(runNode).mockImplementation(async () => {
+      expect(listenImageProgress).toHaveBeenCalledTimes(1);
+      emit({ stage: "waiting", message: "提交文生图请求，等待模型生成" });
+      return { assets: [{ id: "asset_progress", kind: "image", path: "C:/p.png" }] };
+    });
+    const onProgress = vi.fn();
+
+    await generateImage(params, {}, { onProgress });
+
+    const progressId = vi.mocked(listenImageProgress).mock.calls[0][0];
+    expect(progressId).toMatch(/^task/);
+    expect(runNode).toHaveBeenCalledWith(expect.objectContaining({ nodeType: "textToImage" }), progressId);
+    expect(onProgress).toHaveBeenCalledWith({ stage: "waiting", message: "提交文生图请求，等待模型生成" });
+    expect(unlisten).toHaveBeenCalledTimes(1);
+  });
+
+  it("unsubscribes when the run fails", async () => {
+    const unlisten = vi.fn();
+    vi.mocked(listenImageProgress).mockResolvedValue(unlisten);
+    vi.mocked(runNode).mockRejectedValue(new Error("下载图片失败（已尝试 4 次）"));
+
+    await expect(generateImage(params, {}, { onProgress: vi.fn() })).rejects.toThrow("已尝试 4 次");
+    expect(unlisten).toHaveBeenCalledTimes(1);
+  });
+
+  it("still runs without progress when the subscription fails", async () => {
+    vi.mocked(listenImageProgress).mockRejectedValue(new Error("event bridge unavailable"));
+    vi.mocked(runNode).mockResolvedValue({ assets: [{ id: "asset_quiet", kind: "image", path: "C:/q.png" }] });
+
+    await generateImage(params, {}, { onProgress: vi.fn() });
+    expect(vi.mocked(runNode).mock.calls[0]).toHaveLength(1);
+  });
+
+  it("does not subscribe when the caller shows no progress", async () => {
+    vi.mocked(runNode).mockResolvedValue({ assets: [{ id: "asset_plain", kind: "image", path: "C:/plain.png" }] });
+    await generateImage(params);
+    expect(listenImageProgress).not.toHaveBeenCalled();
+    expect(vi.mocked(runNode).mock.calls[0]).toHaveLength(1);
   });
 });
