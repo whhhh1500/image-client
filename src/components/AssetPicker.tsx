@@ -6,7 +6,7 @@ import { useProjectStore } from "../store/useProjectStore";
 import AssetDetailModal from "./AssetDetailModal";
 import { getDocumentDisplayVersion, getDocumentMeta } from "../lib/documents";
 import { readTextAsset } from "../lib/ipc";
-import { useEscapeKey } from "../lib/useEscapeKey";
+import { useModalLayer } from "../lib/useEscapeKey";
 import { errorText } from "../lib/errors";
 
 type PickerKind = "text" | "image" | "video";
@@ -87,7 +87,8 @@ export default function AssetPicker({
   const requestClose = () => {
     if (!isPicking) onClose();
   };
-  useEscapeKey(requestClose, open);
+  const dialogRef = useRef<HTMLElement>(null);
+  useModalLayer(dialogRef, requestClose, open);
 
   if (!open) return null;
 
@@ -118,7 +119,7 @@ export default function AssetPicker({
   return (
     <>
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#020617]/80 p-4 backdrop-blur-md" onClick={requestClose}>
-        <section role="dialog" aria-modal="true" aria-label={title} className="dream-dialog flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-cyan-200/15 bg-slate-950/92" onClick={(event) => event.stopPropagation()}>
+        <section ref={dialogRef} role="dialog" aria-modal="true" aria-label={title} className="dream-dialog flex max-h-[88vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-cyan-200/15 bg-slate-950/92" onClick={(event) => event.stopPropagation()}>
           <header className="flex items-center gap-3 border-b border-white/5 px-5 py-4">
             <div className="min-w-0 flex-1">
               <div className="text-sm font-semibold text-slate-100">{title}</div>

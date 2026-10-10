@@ -16,7 +16,7 @@ import type { PromptLibraryPick } from "../components/PromptLibrary";
 import OptimizePromptDialog from "../components/OptimizePromptDialog";
 import { logEvent } from "../lib/logger";
 import { errorText } from "../lib/errors";
-import { useEscapeKey } from "../lib/useEscapeKey";
+import { useModalLayer } from "../lib/useEscapeKey";
 import AssetDetailModal from "../components/AssetDetailModal";
 import WorkflowGuide from "../components/WorkflowGuide";
 import type { SourceMaterialSnapshot } from "../lib/provenance";
@@ -49,11 +49,12 @@ export function promptLibraryBoundaryView(hasError: boolean, libraryOpen: boolea
 
 /** Shown in place of the template library when its code failed to load. */
 function PromptLibraryLoadError({ onClose }: { onClose: () => void }) {
-  useEscapeKey(onClose);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalLayer(dialogRef, onClose);
   const titleId = useId();
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
-      <div role="dialog" aria-modal="true" aria-labelledby={titleId} className="max-w-sm rounded-xl border border-rose-300/20 bg-slate-900 p-5 text-center shadow-2xl">
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId} className="max-w-sm rounded-xl border border-rose-300/20 bg-slate-900 p-5 text-center shadow-2xl">
         <div id={titleId} className="text-sm font-semibold text-rose-200">模板库加载失败</div>
         <p className="mt-2 text-xs leading-5 text-slate-400">模板资源未能加载，当前生成页仍可使用。请刷新页面后重试。</p>
         <div className="mt-4 flex justify-center gap-2">

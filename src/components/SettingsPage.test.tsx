@@ -253,6 +253,34 @@ describe("SettingsPage", () => {
     expect(saveButton().disabled).toBe(false);
   });
 
+  it("shows no form until the settings are read, and offers a retry instead of an empty form when reading fails", async () => {
+    const load = vi.spyOn(settingsLib, "loadSettings").mockRejectedValueOnce(new Error("database is locked"));
+    const saveSpy = vi.spyOn(settingsLib, "saveSettings").mockResolvedValue(null);
+
+    render(<SettingsPage open onClose={vi.fn()} onSaved={vi.fn()} status={null} />);
+    expect(screen.getByText("正在读取配置…")).toBeTruthy();
+    expect(await screen.findByRole("alert")).toHaveProperty("textContent", "读取配置失败：database is locked");
+    expect(screen.queryByDisplayValue("D:/assets")).toBeNull();
+    expect(saveButton().disabled).toBe(true);
+    expect(button("新增配置").disabled).toBe(true);
+    fireEvent.keyDown(window, { key: "s", ctrlKey: true });
+    expect(saveSpy).not.toHaveBeenCalled();
+
+    load.mockResolvedValue({ configs: [profile(), backup()], activeId: "p1", outputDir: "D:/assets", llmUrl: "", llmKey: "", llmModel: "gemini-3.7-flash" });
+    fireEvent.click(button("重试"));
+    expect(await screen.findByDisplayValue("默认配置")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("marks the first profile as default when none is chosen, as the backend does", async () => {
+    vi.spyOn(settingsLib, "loadSettings").mockResolvedValue({ configs: [profile(), backup()], activeId: null, outputDir: "", llmUrl: "", llmKey: "", llmModel: "gemini-3.7-flash" });
+    render(<SettingsPage open onClose={vi.fn()} onSaved={vi.fn()} status={null} />);
+    await waitFor(() => expect(screen.getByDisplayValue("默认配置")).toBeTruthy());
+    expect(button(/已是默认/).disabled).toBe(true);
+    fireEvent.click(row("备用线路"));
+    expect(button(/^设为默认$/).disabled).toBe(false);
+  });
+
   it("keeps edits made while a save is in flight unsaved", async () => {
     loadTwoProfiles();
     let finish!: () => void;

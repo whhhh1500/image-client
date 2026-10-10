@@ -4,7 +4,7 @@ import { confirmAction } from "../lib/confirm";
 import { errorText } from "../lib/errors";
 import { LLM_MODELS } from "../lib/models";
 import { optimizeImagePrompt } from "../lib/optimizePrompt";
-import { useEscapeKey } from "../lib/useEscapeKey";
+import { useModalLayer } from "../lib/useEscapeKey";
 
 const inputCls =
   "w-full rounded-lg border border-slate-600 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400/40";
@@ -58,7 +58,8 @@ export default function OptimizePromptDialog({
     if (warning && !(await confirmAction(warning))) return;
     onClose();
   };
-  useEscapeKey(() => void attemptClose(), open);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalLayer(dialogRef, () => void attemptClose(), open);
 
   if (!open) return null;
 
@@ -97,7 +98,7 @@ export default function OptimizePromptDialog({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={() => void attemptClose()}>
-      <div role="dialog" aria-modal="true" aria-labelledby="optimize-prompt-title" className="w-full max-w-2xl rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="optimize-prompt-title" className="w-full max-w-2xl rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="mb-3 flex items-center justify-between">
           <div id="optimize-prompt-title" className="text-sm font-semibold">AI 优化成中文提示词</div>
           <button type="button" aria-label="关闭" onClick={() => void attemptClose()} className="rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-white"><X size={16} /></button>

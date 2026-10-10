@@ -1,7 +1,7 @@
 import { confirmAction } from "../lib/confirm";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { fileSrc } from "../lib/desktop";
-import { useEscapeKey } from "../lib/useEscapeKey";
+import { useModalLayer } from "../lib/useEscapeKey";
 import { Copy, FilePenLine, Image as ImageIcon, Loader2, Save, Sparkles, Video, X } from "lucide-react";
 import { configStatus, llmChat, readTextAsset } from "../lib/ipc";
 import { errorText } from "../lib/errors";
@@ -236,7 +236,8 @@ export default function AssetDetailModal({
     if (dirty && !(await confirmAction("当前有未保存修改，确定关闭吗？"))) return;
     onClose();
   };
-  useEscapeKey(() => void attemptClose(), open);
+  const dialogRef = useRef<HTMLElement>(null);
+  useModalLayer(dialogRef, () => void attemptClose(), open);
 
   if (!selected) return null;
 
@@ -411,7 +412,7 @@ export default function AssetDetailModal({
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-[#020617]/85 p-4 backdrop-blur-md" onClick={attemptClose}>
-      <section role="dialog" aria-modal="true" aria-labelledby={titleId} className="dream-dialog flex max-h-[94vh] w-full max-w-6xl overflow-hidden rounded-2xl border border-cyan-200/15 bg-slate-950/90" onClick={(event) => event.stopPropagation()}>
+      <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId} className="dream-dialog flex max-h-[94vh] w-full max-w-6xl overflow-hidden rounded-2xl border border-cyan-200/15 bg-slate-950/90" onClick={(event) => event.stopPropagation()}>
         {documentMeta && versions.length > 0 && (
           <aside className="hidden w-56 shrink-0 border-r border-white/5 bg-slate-950/45 p-3 md:block">
             <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500">版本历史</div>

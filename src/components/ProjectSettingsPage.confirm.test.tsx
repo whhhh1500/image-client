@@ -83,6 +83,8 @@ it("does not prompt confirmation when closing after automatic resolution alignme
   };
   render(<ProjectSettingsPage open project={project} onClose={onClose} />);
   await waitFor(() => expect(screen.getByRole("status").textContent).toContain("已切换为 2K"));
+  // The corrected resolution can be saved on its own.
+  expect((screen.getByRole("button", { name: /保存并应用/ }) as HTMLButtonElement).disabled).toBe(false);
 
   fireEvent.click(screen.getByRole("button", { name: "取消" }));
   expect(confirmAction).not.toHaveBeenCalled();
@@ -126,7 +128,10 @@ it("reports a failed save once, without an Error: prefix", async () => {
       aspectRatio: "16:9", imageModel: "gpt-image-2", imageQuality: "high", videoModel: "grok-imagine-video", videoResolution: "720p",
     };
     render(<ProjectSettingsPage open project={project} onClose={onClose} />);
-    fireEvent.click(screen.getByRole("button", { name: /保存并应用/ }));
+    const save = screen.getByRole("button", { name: /保存并应用/ }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    fireEvent.change(screen.getByDisplayValue("项目"), { target: { value: "新项目" } });
+    fireEvent.click(save);
 
     expect((await screen.findByRole("alert")).textContent).toBe("保存失败：磁盘已满");
     expect(screen.getAllByRole("alert")).toHaveLength(1);

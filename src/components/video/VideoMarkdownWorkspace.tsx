@@ -6,7 +6,7 @@ import { useProjectStore } from "../../store/useProjectStore";
 import { useViewState } from "../../store/useViewStore";
 import { llmChat } from "../../lib/ipc";
 import { confirmAction } from "../../lib/confirm";
-import { useEscapeKey } from "../../lib/useEscapeKey";
+import { useModalLayer } from "../../lib/useEscapeKey";
 import {
   documentChangeLabel,
   getDocumentMeta,
@@ -331,7 +331,7 @@ export default function VideoMarkdownWorkspace({ llmModel, onEditPrompt, onSendT
 
   const closeDiscardDialog = () => setDiscardConfirmOpen(false);
   // Escape keeps the draft (继续编辑) wherever focus is, not only inside the dialog.
-  useEscapeKey(closeDiscardDialog, discardConfirmOpen);
+  useModalLayer(discardDialogRef, closeDiscardDialog, discardConfirmOpen);
   const openDiscardDialog = (trigger: HTMLButtonElement) => {
     discardReturnFocusRef.current = trigger;
     setDiscardConfirmOpen(true);

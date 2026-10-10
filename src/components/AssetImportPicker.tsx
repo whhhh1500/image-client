@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FileText, Image as ImageIcon, Search, Video, X } from "lucide-react";
 import { useLibraryStore } from "../store/useLibraryStore";
 import { useProjectStore } from "../store/useProjectStore";
@@ -11,7 +11,7 @@ import {
   type ImportEntry,
 } from "../lib/assetImport";
 import { classifyAssetCatalog, type AssetCatalogCategory } from "../lib/assetCatalog";
-import { useEscapeKey } from "../lib/useEscapeKey";
+import { useModalLayer } from "../lib/useEscapeKey";
 import { errorText } from "../lib/errors";
 
 export type AssetImportAction = "prompt" | "merge_prompt" | "reference";
@@ -118,7 +118,8 @@ export default function AssetImportPicker({
   const [categoryFilter, setCategoryFilter] = useState<AssetCatalogCategory | "all">("all");
   const [groupFilter, setGroupFilter] = useState<string>("all");
   const [groupContent, setGroupContent] = useState<"all" | "page_prompt" | "image">("all");
-  useEscapeKey(onClose, open);
+  const dialogRef = useRef<HTMLElement>(null);
+  useModalLayer(dialogRef, onClose, open);
 
   const matchesActiveProject = useCallback((entry: ImportEntry) => {
     if (!strictProject) return true;
@@ -207,8 +208,8 @@ export default function AssetImportPicker({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="dialog" aria-modal="true" aria-label={title}>
-      <section className="flex max-h-[80vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+      <section ref={dialogRef} role="dialog" aria-modal="true" aria-label={title} className="flex max-h-[80vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
         <header className="flex items-center gap-3 border-b border-slate-800 px-5 py-4">
           <div className="min-w-0 flex-1"><h2 className="text-sm font-semibold text-white">{title}</h2><p className="mt-0.5 text-[11px] text-slate-500">选择后先预览操作；应用不会自动开始生成。</p></div>
           <button type="button" onClick={onClose} className="rounded p-1 text-slate-400 hover:text-white" aria-label="关闭导入"><X size={16} /></button>

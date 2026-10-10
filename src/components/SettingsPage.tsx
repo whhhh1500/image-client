@@ -24,10 +24,12 @@ import {
   type ConfigProfile,
 } from "../lib/settings";
 import { errorText } from "../lib/errors";
-import { useEscapeKey } from "../lib/useEscapeKey";
+import { logEvent } from "../lib/logger";
+import { useModalLayer } from "../lib/useEscapeKey";
 
 /** How long 「已保存」 stays beside the save button. */
 const SAVED_NOTICE_MS = 4000;
+const SAVE_SHORTCUT = /Mac|iPhone|iPad/.test(globalThis.navigator?.platform ?? "") ? "⌘S" : "Ctrl+S";
 
 const inputCls =
   "w-full rounded-lg border border-slate-600 bg-slate-900/70 px-3 py-2 text-sm text-slate-100 outline-none transition focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400/40";
@@ -237,11 +239,41 @@ export default function SettingsPage({
     setDirty(value);
   };
 
+  // The form stays hidden until the stored settings are read: edits made
+  // before would be overwritten, and saving a form that failed to load would
+  // replace every stored profile with an empty list.
+  const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const loadRequest = useRef(0);
+  const loadForm = () => {
+    const request = ++loadRequest.current;
+    setLoaded(false);
+    setLoadError(null);
+    loadSettings()
+      .then((s) => {
+        if (request !== loadRequest.current) return;
+        setConfigs(s.configs);
+        setActiveId(s.activeId);
+        setSelectedId(s.activeId ?? s.configs[0]?.id ?? "global");
+        setOutputDir(s.outputDir ?? "");
+        if (s.llmUrl) setLlmUrl(s.llmUrl);
+        if (s.llmModel) setLlmModel(s.llmModel);
+        setDirty(false);
+        setLoaded(true);
+      })
+      .catch((error) => {
+        if (request !== loadRequest.current) return;
+        logEvent("error", "settings.load_failed", { error: String(error) });
+        setLoadError(errorText(error));
+      });
+  };
+
   useEffect(() => {
     if (!open) return;
     setSaveStatus(null);
     setDirty(false);
     setProfileRemoved(false);
+    setConfigs([]);
     setOutputDir("");
     setLlmUrl("");
     setLlmModel(status?.llmModel ?? "gemini-3.7-flash");
@@ -249,15 +281,7 @@ export default function SettingsPage({
     imageCatalog.clearMessage();
     videoCatalog.clearMessage();
     llmCatalog.clearMessage();
-    loadSettings().then((s) => {
-      setConfigs(s.configs);
-      setActiveId(s.activeId);
-      setSelectedId(s.activeId ?? s.configs[0]?.id ?? "global");
-      setOutputDir(s.outputDir ?? "");
-      if (s.llmUrl) setLlmUrl(s.llmUrl);
-      if (s.llmModel) setLlmModel(s.llmModel);
-      setDirty(false);
-    });
+    loadForm();
     // Seed the dropdowns from the saved configuration; 「获取模型」 is the
     // explicit refresh for whatever the form currently holds.
     listVideoModels()
@@ -281,9 +305,11 @@ export default function SettingsPage({
 
   const isGlobalSelected = selectedId === "global" || (selectedId === null && configs.length === 0);
   const selected = isGlobalSelected ? null : configs.find((c) => c.id === selectedId) ?? null;
-  const isSelectedDefault = selected !== null && selected.id === activeId;
+  // With no default chosen the backend uses the first profile, so show that.
+  const defaultId = activeId ?? configs[0]?.id ?? null;
+  const isSelectedDefault = selected !== null && selected.id === defaultId;
   const hasChanges = dirty || profileRemoved;
-  const canSave = hasChanges && !busy;
+  const canSave = hasChanges && !busy && loaded;
   // 「已保存」 describes the saved form, so the next edit retires it.
   const shownStatus = saveStatus && !saveStatus.error && hasChanges ? null : saveStatus;
 
@@ -291,7 +317,7 @@ export default function SettingsPage({
   const backendHoldsKey = (profile: NonNullable<typeof selected>, kind: "image" | "video") => {
     const ready = kind === "image" ? status?.imageReady : status?.videoReady;
     const url = kind === "image" ? status?.imageApiUrl : status?.videoApiUrl;
-    return profile.id === activeId && Boolean(ready) && url === profile[kind].url.trim();
+    return profile.id === defaultId && Boolean(ready) && url === profile[kind].url.trim();
   };
 
   /**
@@ -390,7 +416,8 @@ export default function SettingsPage({
     onClose();
   };
 
-  useEscapeKey(() => void attemptClose(), open);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalLayer(dialogRef, () => void attemptClose(), open);
 
   // Ctrl/Cmd+S saves wherever focus is (it may sit on <body> after a row is
   // deleted); the listener reads the latest form through this ref.
@@ -417,6 +444,7 @@ export default function SettingsPage({
     <div className="fixed inset-0 z-50 flex flex-col bg-[#020617]/80 backdrop-blur-md" onClick={attemptClose}>
       <div className="flex h-full w-full p-6">
         <div
+          ref={dialogRef}
           role="dialog"
           aria-modal="true"
           aria-label="设置"
@@ -459,6 +487,7 @@ export default function SettingsPage({
               <button
                 type="button"
                 onClick={addConfig}
+                disabled={!loaded}
                 title="新增配置"
                 aria-label="新增配置"
                 className="flex h-6 w-6 items-center justify-center rounded border border-slate-600 text-slate-200 transition hover:bg-slate-800"
@@ -467,7 +496,7 @@ export default function SettingsPage({
               </button>
             </div>
             <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto p-3 pt-0">
-              {configs.length === 0 && (
+              {loaded && configs.length === 0 && (
                 <div className="rounded-lg border border-dashed border-slate-700 p-4 text-center text-xs text-slate-500">
                   暂无接口配置
                   <button
@@ -499,14 +528,14 @@ export default function SettingsPage({
                     >
                       <span className="min-w-0">
                         <span className="flex items-center gap-1">
-                          {c.id === activeId && (
+                          {c.id === defaultId && (
                             <Star size={11} className="shrink-0 text-amber-400" fill="currentColor" />
                           )}
                           <span className="truncate font-medium text-slate-100">{c.name}</span>
                         </span>
                         <span className="block truncate text-[10px] text-slate-500">{c.image.model}</span>
                       </span>
-                      {c.id === activeId && (
+                      {c.id === defaultId && (
                         <span className="shrink-0 rounded bg-amber-400/10 px-1 py-0.5 text-[9px] text-amber-300">
                           默认
                         </span>
@@ -543,7 +572,18 @@ export default function SettingsPage({
               </button>
             </div>
 
-            {isGlobalSelected ? (
+            {!loaded ? (
+              <div className="flex flex-1 flex-col items-center justify-center gap-3 p-5 text-sm text-slate-400">
+                {loadError ? (
+                  <>
+                    <p role="alert" className="max-w-md break-words text-center text-rose-300">读取配置失败：{loadError}</p>
+                    <button type="button" onClick={loadForm} className="rounded-lg border border-slate-600 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-800">重试</button>
+                  </>
+                ) : (
+                  <p className="flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> 正在读取配置…</p>
+                )}
+              </div>
+            ) : isGlobalSelected ? (
               <div className="min-h-0 flex-1 overflow-y-auto p-5">
                 <div className="mb-4 text-xs text-slate-400">
                   全局通用配置项，所有生成任务与剧本/分镜 Agent 共享。
@@ -648,7 +688,7 @@ export default function SettingsPage({
               <button
                 type="button"
                 onClick={() => selected && void setDefault(selected)}
-                disabled={!selected || isSelectedDefault || busy}
+                disabled={!selected || isSelectedDefault || busy || !loaded}
                 title={selected && !isSelectedDefault && hasChanges ? "同时保存当前所有未保存的修改" : undefined}
                 className={`flex shrink-0 items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-medium transition disabled:opacity-50 ${
                   isSelectedDefault
@@ -680,7 +720,7 @@ export default function SettingsPage({
                   type="button"
                   onClick={() => void persist()}
                   disabled={!canSave}
-                  title="Ctrl+S"
+                  title={SAVE_SHORTCUT}
                   className="flex items-center gap-1.5 rounded-lg bg-indigo-500 px-4 py-2 text-xs font-medium text-white transition hover:bg-indigo-400 disabled:opacity-50"
                 >
                   {busy ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}

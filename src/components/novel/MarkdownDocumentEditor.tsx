@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { revealItemInDir } from "../../lib/desktop";
 import { comicMdDocumentSave, comicMdDocumentHistory, comicMdExport, comicMdOptimize, mdLabels, mdTemplate, mdReady, type MdDocument, type MdHistory, type MdKind, type MdScope, type MdJob } from "../../lib/comic/markdownApi";
 import { button, primary, field, draftKey, hasMdDraftChanges, savedDraftChanged, useLocalValue, type MdDraft } from "./mdWorkspaceState";
+import { useViewState } from "../../store/useViewStore";
 import { errorText } from "../../lib/errors";
 
 export default function MarkdownDocumentEditor({ scope, kind, pageNo, document, pageDocuments, workspaceDocuments, missingPageNos, jobs, refresh, renderingDisabled, onRender, beforeOptimize, injection }: {
@@ -10,15 +11,18 @@ export default function MarkdownDocumentEditor({ scope, kind, pageNo, document, 
 }) {
   const [draft, update, storageError] = useLocalValue<MdDraft | null>(draftKey(scope, kind, pageNo), null);
   const [history, setHistory] = useState<MdHistory[]>([]);
-  const [selectedVersion, selectVersion] = useState<number | null>(null);
-  const [historyDrafts, setHistoryDrafts] = useState<Record<number, MdDraft>>({});
+  // Which version is open, edits made on older versions and the preview toggle
+  // outlive a tab switch; they are kept per document for the session.
+  const viewKey = `comic-md:editor:${draftKey(scope, kind, pageNo)}`;
+  const [selectedVersion, selectVersion] = useViewState<number | null>(`${viewKey}:version`, null);
+  const [historyDrafts, setHistoryDrafts] = useViewState<Record<number, MdDraft>>(`${viewKey}:history-drafts`, {});
   const [historyError, setHistoryError] = useState("");
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const active = useRef(true);
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
   const [message, setMessage] = useState("");
-  const [preview, setPreview] = useState(false);
+  const [preview, setPreview] = useViewState(`${viewKey}:preview`, false);
   const [exportPath, setExportPath] = useState("");
   const [optimizeAll, setOptimizeAll] = useState(false);
   const historyRequest = useRef(0);

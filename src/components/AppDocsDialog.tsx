@@ -1,5 +1,6 @@
 import { BookOpenText, History, X } from "lucide-react";
-import { useEscapeKey } from "../lib/useEscapeKey";
+import { useRef } from "react";
+import { useModalLayer } from "../lib/useEscapeKey";
 
 export type AppDocsView = "guide" | "changelog";
 
@@ -328,7 +329,8 @@ function ChangelogContent() {
 }
 
 export default function AppDocsDialog({ view, onClose }: { view: AppDocsView | null; onClose: () => void }) {
-  useEscapeKey(onClose, view !== null);
+  const dialogRef = useRef<HTMLElement>(null);
+  useModalLayer(dialogRef, onClose, view !== null);
 
   if (!view) return null;
 
@@ -341,6 +343,7 @@ export default function AppDocsDialog({ view, onClose }: { view: AppDocsView | n
       onClick={(event) => { if (event.currentTarget === event.target) onClose(); }}
     >
       <section
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="app-docs-title"

@@ -1,9 +1,9 @@
 import { confirmAction } from "../lib/confirm";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { agentLabel, agentSystem, useAgentStore, AGENT_DEFAULTS, type AgentVersion } from "../store/useAgentStore";
 import { logEvent } from "../lib/logger";
-import { useEscapeKey } from "../lib/useEscapeKey";
+import { useModalLayer } from "../lib/useEscapeKey";
 import { errorText } from "../lib/errors";
 
 // zustand v5 + React 19 要求 selector 返回稳定引用；
@@ -48,7 +48,8 @@ export default function PromptManager({
     if (dirty && !(await confirmAction("Prompt 有未保存修改，确定关闭吗？"))) return;
     onClose();
   };
-  useEscapeKey(() => void attemptClose(), open);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalLayer(dialogRef, () => void attemptClose(), open);
 
   if (!open) return null;
 
@@ -102,7 +103,7 @@ export default function PromptManager({
   return (
     <div className="fixed inset-0 z-50 flex bg-[#020617]/80 backdrop-blur-md" onClick={attemptClose}>
       <div className="flex h-full w-full p-6">
-        <div role="dialog" aria-modal="true" aria-labelledby="prompt-manager-title" className="dream-dialog mx-auto flex h-full w-full max-w-5xl overflow-hidden rounded-2xl border border-cyan-200/15 bg-slate-950/90" onClick={(event) => event.stopPropagation()}>
+        <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="prompt-manager-title" className="dream-dialog mx-auto flex h-full w-full max-w-5xl overflow-hidden rounded-2xl border border-cyan-200/15 bg-slate-950/90" onClick={(event) => event.stopPropagation()}>
           {/* Left: six agents */}
           <aside className="flex w-56 shrink-0 flex-col border-r border-slate-800 bg-slate-900/60">
             <div id="prompt-manager-title" className="px-4 py-3 text-sm font-semibold">Prompt 管理</div>

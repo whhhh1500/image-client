@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render } from "@testing-library/react";
-import { useEscapeKey } from "./useEscapeKey";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useRef } from "react";
+import { useEscapeKey, useModalLayer } from "./useEscapeKey";
 
 function Layer({ name, onEscape, active = true }: { name: string; onEscape: (name: string) => void; active?: boolean }) {
   useEscapeKey(() => onEscape(name), active);
@@ -57,5 +58,53 @@ describe("useEscapeKey", () => {
     press();
     expect(first).not.toHaveBeenCalled();
     expect(second).toHaveBeenCalledWith("modal");
+  });
+});
+
+function Modal({ name, onClose }: { name: string; onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useModalLayer(ref, onClose);
+  return (
+    <div ref={ref} role="dialog" aria-label={name}>
+      <button type="button">{name} 第一</button>
+      <button type="button" disabled>{name} 禁用</button>
+      <button type="button">{name} 最后</button>
+    </div>
+  );
+}
+
+const tab = (shiftKey = false) => fireEvent.keyDown(document.activeElement ?? window, { key: "Tab", shiftKey });
+
+describe("useModalLayer", () => {
+  afterEach(() => cleanup());
+
+  it("moves focus in, keeps Tab inside and returns focus to the opener", async () => {
+    render(<button type="button">打开</button>);
+    const opener = screen.getByRole("button", { name: "打开" });
+    opener.focus();
+    const modal = render(<Modal name="对话框" onClose={() => {}} />);
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "对话框 第一" })));
+
+    tab(true);
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "对话框 最后" }));
+    tab();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "对话框 第一" }));
+
+    modal.unmount();
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it("lets only the newest dialog hold Tab and Escape", async () => {
+    const closed: string[] = [];
+    render(<Modal name="外层" onClose={() => closed.push("外层")} />);
+    const inner = render(<Modal name="内层" onClose={() => closed.push("内层")} />);
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "内层 第一" })));
+
+    screen.getByRole("button", { name: "外层 最后" }).focus();
+    tab();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "内层 第一" }));
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(closed).toEqual(["内层"]);
+    inner.unmount();
   });
 });

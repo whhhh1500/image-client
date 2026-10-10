@@ -1,8 +1,8 @@
 import { confirmAction } from "../lib/confirm";
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { FolderCog, Save, X } from "lucide-react";
 import { errorText } from "../lib/errors";
-import { useEscapeKey } from "../lib/useEscapeKey";
+import { useModalLayer } from "../lib/useEscapeKey";
 import { ART_STYLES, ASPECT_RATIOS, STORY_STYLES, applyProjectProfile } from "../lib/projectProfile";
 import { IMAGE_MODELS, VIDEO_MODELS } from "../lib/models";
 import { listVideoModelCapabilities, listVideoModels, type VideoModelCapability } from "../lib/ipc";
@@ -39,6 +39,9 @@ export default function ProjectSettingsPage({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
+  // A resolution corrected for the chosen model: worth saving, but not a user
+  // edit, so closing does not ask about it.
+  const [autoAdjusted, setAutoAdjusted] = useState(false);
   const imageCatalog = useModelCatalog("image", IMAGE_MODELS);
   const videoCatalog = useModelCatalog("video", VIDEO_MODELS);
   const [videoCapabilities, setVideoCapabilities] = useState<VideoModelCapability[]>([]);
@@ -50,6 +53,7 @@ export default function ProjectSettingsPage({
     setDraft(project);
     setError(null);
     setDirty(false);
+    setAutoAdjusted(false);
     setVideoCapabilityNotice(null);
   }, [project, open]);
 
@@ -89,6 +93,7 @@ export default function ProjectSettingsPage({
     const nextResolution = preferredResolution(selectedVideoCapability.resolutions);
     const previousResolution = draft.videoResolution;
     setDraft((current) => current ? { ...current, videoResolution: nextResolution } : current);
+    setAutoAdjusted(true);
     setVideoCapabilityNotice(`${selectedVideoCapability.label} 不支持 ${previousResolution}，已切换为 ${nextResolution}。保存后会用于质检和每个视频任务。`);
   }, [draft, selectedVideoCapability]);
 
@@ -96,7 +101,8 @@ export default function ProjectSettingsPage({
     if (dirty && !(await confirmAction("项目生产档案有未保存修改，确定关闭吗？"))) return;
     onClose();
   };
-  useEscapeKey(() => void attemptClose(), open && draft !== null);
+  const dialogRef = useRef<HTMLElement>(null);
+  useModalLayer(dialogRef, () => void attemptClose(), open && draft !== null);
 
   if (!open || !draft) return null;
 
@@ -133,7 +139,7 @@ export default function ProjectSettingsPage({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#020617]/80 p-4 backdrop-blur-md" onClick={attemptClose}>
-      <section role="dialog" aria-modal="true" aria-labelledby={titleId} className="dream-dialog w-full max-w-2xl rounded-2xl border border-cyan-200/15 bg-slate-950/90" onClick={(e) => e.stopPropagation()}>
+      <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId} className="dream-dialog w-full max-w-2xl rounded-2xl border border-cyan-200/15 bg-slate-950/90" onClick={(e) => e.stopPropagation()}>
         <header className="flex items-center gap-2 border-b border-slate-800 px-5 py-4">
           <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-indigo-500"><FolderCog size={16} /></span>
           <div>
@@ -223,7 +229,7 @@ export default function ProjectSettingsPage({
 
         <footer className="flex justify-end gap-2 border-t border-slate-800 px-5 py-3">
           <button onClick={attemptClose} className="rounded-lg border border-slate-600 px-4 py-2 text-xs text-slate-300 hover:bg-slate-800">取消</button>
-          <button onClick={save} disabled={busy || !draft.name.trim()} className="flex items-center gap-1.5 rounded-lg bg-indigo-500 px-4 py-2 text-xs font-medium text-white hover:bg-indigo-400 disabled:opacity-50">
+          <button type="button" onClick={save} disabled={busy || !(dirty || autoAdjusted) || !draft.name.trim()} className="flex items-center gap-1.5 rounded-lg bg-indigo-500 px-4 py-2 text-xs font-medium text-white hover:bg-indigo-400 disabled:opacity-50">
             <Save size={13} /> {busy ? "保存中…" : "保存并应用"}
           </button>
         </footer>

@@ -203,6 +203,26 @@ describe("Markdown comic workflow", () => {
     expect((screen.getByLabelText("本章剧本 Markdown") as HTMLTextAreaElement).value).toBe("未保存当前草稿");
     expect((screen.getByLabelText("AI 优化要求") as HTMLTextAreaElement).value).toBe("未保存当前要求");
   });
+  it("keeps the open version, edits made on it and the preview toggle across a tab switch", async () => {
+    data.documents = [{ id: "d", kind: "script", pageNo: null, markdown: "当前剧本", optimizationInstruction: "当前要求", revision: 3, stale: false, issues: [], updatedAt: 3 }];
+    api.history.mockResolvedValue([{ revision: 2, markdown: "历史剧本", optimizationInstruction: "历史要求", createdAt: 2 }]);
+    await open(); fireEvent.click(screen.getByRole("button", { name: "3. 本章剧本" }));
+    await screen.findByRole("option", { name: "第 2 版" });
+    fireEvent.change(screen.getByLabelText("文档版本"), { target: { value: "2" } });
+    fireEvent.change(screen.getByLabelText("本章剧本 Markdown"), { target: { value: "在第 2 版上改了一半" } });
+    cleanup();
+
+    // The workspace reopens on the step the user left, not on 小说原文.
+    render(<MarkdownComicWorkspace />);
+    await screen.findByRole("option", { name: "第 2 版" });
+    expect((screen.getByLabelText("文档版本") as HTMLSelectElement).value).toBe("2");
+    expect((screen.getByLabelText("本章剧本 Markdown") as HTMLTextAreaElement).value).toBe("在第 2 版上改了一半");
+    fireEvent.click(screen.getByRole("button", { name: "阅读预览" }));
+    cleanup();
+
+    render(<MarkdownComicWorkspace />);
+    expect(await screen.findByRole("button", { name: "返回编辑" })).toBeTruthy();
+  });
   it("allows export and rendering when selecting the already-current head without a live draft", async () => {
     data.documents = [{ id: "d", kind: "page_prompt", pageNo: 1, markdown: "当前Prompt", optimizationInstruction: "要求", revision: 3, stale: false, issues: [], updatedAt: 3 }];
     await open(); fireEvent.click(screen.getByRole("button", { name: "5. 每页 Prompt" }));

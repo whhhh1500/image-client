@@ -18,7 +18,7 @@ import {
 } from "../lib/promptlib";
 import { usePromptlibStore } from "../store/usePromptlibStore";
 import { useViewState } from "../store/useViewStore";
-import { useEscapeKey } from "../lib/useEscapeKey";
+import { useModalLayer } from "../lib/useEscapeKey";
 import type { LibAsset } from "../store/useLibraryStore";
 import { errorText } from "../lib/errors";
 
@@ -67,7 +67,8 @@ export default function PromptLibrary({
   // entry meanwhile must not let "save back" overwrite that one with it.
   const selectedIdRef = useRef<string | undefined>(undefined);
   selectedIdRef.current = selected?.id;
-  useEscapeKey(onClose, open);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useModalLayer(dialogRef, onClose, open);
 
   useEffect(() => {
     sessionRef.current += 1;
@@ -188,6 +189,7 @@ export default function PromptLibrary({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="prompt-library-title"

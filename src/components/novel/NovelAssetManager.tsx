@@ -10,7 +10,7 @@ import {
   type NovelSnapshot,
   type NovelWork,
 } from "../../lib/novel/api";
-import { useEscapeKey } from "../../lib/useEscapeKey";
+import { useModalLayer } from "../../lib/useEscapeKey";
 import { errorText } from "../../lib/errors";
 
 export interface NovelAssetSelection {
@@ -260,7 +260,8 @@ export default function NovelAssetManager({ projectId, open, onClose, mode: mana
   }, [draft, editingScope, mode, open, projectId]);
 
   // Same path as the 关闭 button: drafts are kept locally, a running save is not abandoned.
-  useEscapeKey(() => { if (!saving) onClose(); }, open);
+  const dialogRef = useRef<HTMLElement>(null);
+  useModalLayer(dialogRef, () => { if (!saving) onClose(); }, open);
 
   if (!open) return null;
 
@@ -402,7 +403,7 @@ export default function NovelAssetManager({ projectId, open, onClose, mode: mana
   };
 
   return <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/80 p-4 backdrop-blur-sm" onMouseDown={(event) => { if (event.target === event.currentTarget && !saving) onClose(); }}>
-    <section role="dialog" aria-modal="true" aria-labelledby="novel-source-picker-title" className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-cyan-300/20 bg-slate-950 shadow-2xl">
+    <section ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="novel-source-picker-title" className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-cyan-300/20 bg-slate-950 shadow-2xl">
       <header className="flex items-start justify-between gap-4 border-b border-slate-800 px-5 py-4">
           <div><h2 id="novel-source-picker-title" className="text-base font-semibold text-slate-100">{managerMode === "select" ? "选择小说原文资产" : "管理小说原文资产"}</h2><p className="mt-1 text-xs leading-5 text-slate-500">{managerMode === "select" ? "选择已保存的小说章节；原文与各工作台的改编内容分别保存。" : "在此维护共享小说、章节和原文版本；保存不会替换各工作台已保存的改编稿或原文快照。"}</p></div>
         <button className={button} disabled={saving} onClick={onClose} autoFocus>关闭</button>

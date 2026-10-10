@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { LibAsset } from "../store/useLibraryStore";
 import { createEmptyStoryboardShot, serializeStoryboard } from "../lib/video/storyboard";
 import { useLibraryStore } from "../store/useLibraryStore";
@@ -59,6 +59,7 @@ import VideoPanel, {
 } from "./VideoPanel";
 
 afterEach(() => {
+  cleanup();
   picker.onApply = null;
   modelCatalog.fetch.mockReset();
   mediaHosting.get.mockReset().mockResolvedValue({ endpoint: "https://host.example/upload", fileField: "file", urlField: "url", authMode: "bearer", hasToken: true, configured: true });
@@ -83,7 +84,7 @@ describe("VideoPanel storyboard import", () => {
 
     render(<VideoPanel />);
     await waitFor(() => expect(picker.kinds).toContain("video"));
-    act(() => picker.onApply?.({ action: "reference", referenceMode: "replace", entries: [{ entryType: "library_asset", asset: video }] }));
+    await act(async () => { await picker.onApply?.({ action: "reference", referenceMode: "replace", entries: [{ entryType: "library_asset", asset: video }] }); });
 
     expect(useVideoStore.getState()).toMatchObject({
       mode: "reference",
@@ -413,9 +414,9 @@ describe("VideoPanel storyboard import", () => {
     ] });
     render(<VideoPanel />);
     await waitFor(() => expect(picker.onApply).not.toBeNull());
-    act(() => picker.onApply?.({ action: "prompt", referenceMode: "replace", entries: [{ entryType: "library_asset", asset: first }] }));
+    await act(async () => { await picker.onApply?.({ action: "prompt", referenceMode: "replace", entries: [{ entryType: "library_asset", asset: first }] }); });
     fireEvent.change(screen.getByLabelText("导入目标镜头"), { target: { value: "shot-2" } });
-    act(() => picker.onApply?.({ action: "prompt", referenceMode: "replace", entries: [{ entryType: "library_asset", asset: second }] }));
+    await act(async () => { await picker.onApply?.({ action: "prompt", referenceMode: "replace", entries: [{ entryType: "library_asset", asset: second }] }); });
     expect(useVideoStore.getState().importedSources).toEqual(expect.arrayContaining([
       expect.objectContaining({ targetShotId: "shot-1", assetIds: ["prompt-one"] }),
       expect.objectContaining({ targetShotId: "shot-2", assetIds: ["prompt-two"] }),

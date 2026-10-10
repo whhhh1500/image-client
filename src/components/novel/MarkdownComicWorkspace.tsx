@@ -5,7 +5,7 @@ import { useProjectStore } from "../../store/useProjectStore";
 import { useLibraryStore } from "../../store/useLibraryStore";
 import { useComicMdWorkspace } from "../../store/useComicMdWorkspace";
 import { useViewState } from "../../store/useViewStore";
-import { useEscapeKey } from "../../lib/useEscapeKey";
+import { useModalLayer } from "../../lib/useEscapeKey";
 import { novelWorkGet, novelWorkList, type NovelChapter, type NovelWork } from "../../lib/novel/api";
 import { comicMdExport, comicMdGenerate, comicMdRender, comicMdRenderOptionsSave, comicMdSync, comicMdWorkVisualExtract, comicMdWorkVisualSave, mdLabels, mdStageBlock, type MdDocument, type MdScope, type MdStage, type MdStyleReference, type MdWorkspace } from "../../lib/comic/markdownApi";
 import { comicStyleReferenceKey, isComicStyleReferenceCandidate, normalizeComicStyleReferences } from "../../lib/comic/styleReferences";
@@ -363,7 +363,8 @@ function ImageGallery({ scope, workspace, onRender, disabled }: { scope: MdScope
   const [rerunInjections, setRerunInjections, rerunStorageError] = useLocalValue<Record<string, string>>(`comic-md:rerun-injections:${scopeKey(scope)}`, {});
   const [error, setError] = useState("");
   const [largeImage, setLargeImage] = useState<{ path: string; pageNo: number } | null>(null);
-  useEscapeKey(() => setLargeImage(null), largeImage !== null);
+  const largeImageRef = useRef<HTMLDivElement>(null);
+  useModalLayer(largeImageRef, () => setLargeImage(null), largeImage !== null);
   const pages = [...new Set(workspace.images.map((image) => image.pageNo))].sort((a, b) => a - b);
   if (!pages.length) return <p className="py-8 text-sm text-slate-400">还没有漫画图片。先准备每页 Prompt，再点击生成；也可以复制 Prompt 到其他工具画图。</p>;
   const updateRerunInjection = (pageNo: number, value: string) => {
@@ -374,7 +375,7 @@ function ImageGallery({ scope, workspace, onRender, disabled }: { scope: MdScope
   };
   return <>
     {(error || rerunStorageError) && <p role="status" className="text-sm text-amber-200">{error || "本次重画注入草稿无法写入本地，请先复制内容。"}</p>}
-    {largeImage && <div role="dialog" aria-modal="true" aria-label={`第${largeImage.pageNo}页原图`} className="fixed inset-0 z-50 flex flex-col bg-slate-950/95 p-6"><div className="flex justify-between gap-4 pb-4 text-slate-200"><span>第{largeImage.pageNo}页 · 原图</span><button autoFocus className={button} onClick={() => setLargeImage(null)}>关闭大图</button></div><div className="min-h-0 flex-1 overflow-auto"><img src={fileSrc(largeImage.path)} alt={`第${largeImage.pageNo}页漫画原图`} className="mx-auto h-auto" /></div></div>}
+    {largeImage && <div ref={largeImageRef} role="dialog" aria-modal="true" aria-label={`第${largeImage.pageNo}页原图`} className="fixed inset-0 z-50 flex flex-col bg-slate-950/95 p-6"><div className="flex justify-between gap-4 pb-4 text-slate-200"><span>第{largeImage.pageNo}页 · 原图</span><button autoFocus className={button} onClick={() => setLargeImage(null)}>关闭大图</button></div><div className="min-h-0 flex-1 overflow-auto"><img src={fileSrc(largeImage.path)} alt={`第${largeImage.pageNo}页漫画原图`} className="mx-auto h-auto" /></div></div>}
     <div className="grid gap-6 lg:grid-cols-2">{pages.map((pageNo) => {
     const versions = workspace.images.filter((image) => image.pageNo === pageNo).sort((a, b) => b.createdAt - a.createdAt);
     const chosen = versions.find((image) => image.id === selections[pageNo]) ?? versions[0];
