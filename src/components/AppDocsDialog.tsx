@@ -90,6 +90,35 @@ function ChangelogContent() {
     <div className="space-y-3">
       <section className={sectionClass}>
         <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <h3 className="text-sm font-semibold text-slate-100">v0.3.2</h3>
+          <time dateTime="2026-10-11" className="text-[11px] text-slate-500">2026-10-11</time>
+        </div>
+        <div className="space-y-3 pt-1">
+          <div>
+            <h4 className="text-[11px] font-medium text-cyan-100/80">设置与配置</h4>
+            <ul className={`${copyClass} mt-1 list-disc space-y-1 pl-4`}>
+              <li>设置和媒体托管配置读取完成前不显示可编辑表单，读取失败时可重试，不再可能用空白表单覆盖已保存的接口配置。</li>
+              <li>没有改动时保存按钮置灰，有未保存修改时关闭先确认；未设默认配置时标出实际生效的配置。</li>
+            </ul>
+          </div>
+          <div>
+            <h4 className="text-[11px] font-medium text-cyan-100/80">交互</h4>
+            <ul className={`${copyClass} mt-1 list-disc space-y-1 pl-4`}>
+              <li>对话框打开时焦点移入，Tab 只在对话框内循环，关闭后回到原位置。</li>
+              <li>漫画文档编辑器中查看的历史版本、在历史版本上的未保存修改和阅读预览，切换标签页后保留。</li>
+            </ul>
+          </div>
+          <div>
+            <h4 className="text-[11px] font-medium text-cyan-100/80">macOS</h4>
+            <ul className={`${copyClass} mt-1 list-disc space-y-1 pl-4`}>
+              <li>读取系统设置中的代理（如 ClashX 的系统代理），从访达或程序坞启动时不再绕过代理直连。</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section className={sectionClass}>
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
           <h3 className="text-sm font-semibold text-slate-100">v0.3.1</h3>
           <time dateTime="2026-10-11" className="text-[11px] text-slate-500">2026-10-11</time>
         </div>
