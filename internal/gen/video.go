@@ -883,6 +883,7 @@ func (s *Service) resolveLocalImages(ctx context.Context, projectID string, sour
 		if err != nil {
 			return nil, err
 		}
+		data, mime = compactForUpload(data, mime)
 		images = append(images, "data:"+mime+";base64,"+base64.StdEncoding.EncodeToString(data))
 	}
 	return images, nil
