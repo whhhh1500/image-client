@@ -208,3 +208,46 @@ describe("GeneratePanel run progress", () => {
     await waitFor(() => expect(screen.getByRole("list", { name: "生成日志" }).textContent).toContain("失败：下载图片失败（已尝试 4 次）"));
   });
 });
+
+describe("GeneratePanel run model and shortcut", () => {
+  it("states which model the next run uses, including the configured fallback", () => {
+    const { rerender } = render(<GeneratePanel defaultImageModel="gpt-image-1.5" />);
+    expect(screen.getByText("本次使用：gpt-image-2")).toBeTruthy();
+
+    fireEvent.change(screen.getByRole("combobox", { name: "图像模型" }), { target: { value: "自填图像模型" } });
+    expect(screen.getByText("本次使用：自填图像模型")).toBeTruthy();
+
+    // An empty toolbar field sends no model; the backend uses the configured default.
+    act(() => useGenerationStore.getState().set({ model: "" }));
+    expect(screen.getByText("本次使用：gpt-image-1.5（工具栏留空，使用设置中的默认图像模型）")).toBeTruthy();
+    rerender(<GeneratePanel />);
+    expect(screen.getByText("本次使用：设置中的默认图像模型（工具栏留空）")).toBeTruthy();
+  });
+
+  it("generates on Ctrl/Cmd+Enter in the prompt only while the button is enabled", async () => {
+    let finish: (value: { assets: { id: string; kind: "image"; path: string }[] }) => void = () => {};
+    vi.mocked(runNode).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    render(<GeneratePanel />);
+    const prompt = screen.getByPlaceholderText(/描述你想生成的画面/);
+
+    // Empty prompt: the button is disabled, so the shortcut does nothing.
+    fireEvent.keyDown(prompt, { key: "Enter", ctrlKey: true });
+    fireEvent.change(prompt, { target: { value: "一只猫" } });
+    // Plain Enter still adds a line.
+    fireEvent.keyDown(prompt, { key: "Enter" });
+    expect(runNode).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(prompt, { key: "Enter", ctrlKey: true });
+    await waitFor(() => expect(runNode).toHaveBeenCalledTimes(1));
+    expect(runNode).toHaveBeenCalledWith(expect.objectContaining({ config: expect.objectContaining({ prompt: "一只猫" }) }), expect.stringMatching(/^task/));
+
+    // While the paid request runs, another press must not start a second one.
+    fireEvent.keyDown(prompt, { key: "Enter", metaKey: true });
+    expect(runNode).toHaveBeenCalledTimes(1);
+
+    finish({ assets: [{ id: "asset_shortcut", kind: "image", path: "C:/shortcut.png" }] });
+    await waitFor(() => expect((screen.getByRole("button", { name: "生成" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.keyDown(prompt, { key: "Enter", metaKey: true });
+    await waitFor(() => expect(runNode).toHaveBeenCalledTimes(2));
+  });
+});

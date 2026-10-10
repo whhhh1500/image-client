@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { fileSrc, revealItemInDir } from "../../lib/desktop";
+import { confirmAction } from "../../lib/confirm";
 import { useProjectStore } from "../../store/useProjectStore";
 import { useLibraryStore } from "../../store/useLibraryStore";
 import { useComicMdWorkspace } from "../../store/useComicMdWorkspace";
@@ -261,6 +262,11 @@ function ChapterWorkspace({ scope, chapter, refreshChapters, onChooseChapter, so
       ...(rerunPromptInjection.trim() ? { rerunPromptInjection } : {}),
     });
   });
+  // Batch buttons bill once per page; a page count that grows with the chapter gets a confirmation first.
+  const renderChoice = async (documents: MdDocument[]) => {
+    if (documents.length > 1 && !(await confirmAction(`将生成 ${documents.length} 页图片，每页单独计费，继续？`))) return;
+    await renderPages(documents);
+  };
   const renderChoices: { selection: RenderSelection; label: string }[] = [{ selection: "first", label: "生成第一页" }, { selection: "first_three", label: "生成前三页" }, { selection: "remaining", label: "生成剩余页" }, ...((styleReferences.length || constitution.trim()) ? [{ selection: "all" as const, label: "按当前画风重画全部" }] : [])];
   return <div className="flex min-h-0 flex-1 flex-col">
     <nav aria-label="制作步骤" className="flex shrink-0 flex-wrap gap-1 border-b border-slate-800 px-4 py-1">{views.map((item, index) => <button key={item.id} aria-current={view === item.id ? "step" : undefined} className={`${button} !py-1 ${view === item.id ? "border-indigo-400 bg-indigo-500/20 text-white" : "border-transparent"}`} onClick={() => setView(item.id)}>{index + 1}. {item.label}</button>)}</nav>
@@ -307,7 +313,7 @@ function ChapterWorkspace({ scope, chapter, refreshChapters, onChooseChapter, so
         <p className="text-sm text-slate-400">注入内容优先于每页 Prompt 中相冲突的要求；本章所有生图入口统一应用。修改后，旧规则生成的图片会标记需要更新。</p>
         {injectionDraft && injectionDraft.expectedRevision !== renderOptions.revision && <p role="alert" className="text-sm text-amber-200">注入规则已有较新版本，你的修改保留。<button className={`${button} ml-2`} onClick={() => setInjectionDraft(injection === renderOptions.promptInjection ? null : { promptInjection: injection, expectedRevision: renderOptions.revision })}>以当前注入版本为基准</button></p>}
         {injectionStorageError && <p role="alert" className="text-sm text-amber-200">注入草稿无法写入本地，请先复制内容。</p>}
-        <div className="flex flex-wrap gap-3">{renderChoices.map(({ selection, label }) => { const choice = selectRenderPages(scope, workspace, selection, injection); return <div key={selection} className="max-w-72 space-y-1"><button className={primary} disabled={disabled || !!choice.reason} onClick={() => void renderPages(choice.documents)}>{label}{choice.documents.length ? `（${choice.documents.length} 页）` : ""}</button>{choice.reason && <p className="text-xs leading-5 text-amber-200">{choice.reason}</p>}</div>; })}</div>
+        <div className="flex flex-wrap gap-3">{renderChoices.map(({ selection, label }) => { const choice = selectRenderPages(scope, workspace, selection, injection); return <div key={selection} className="max-w-72 space-y-1"><button className={primary} disabled={disabled || !!choice.reason} onClick={() => void renderChoice(choice.documents)}>{label}{choice.documents.length ? `（${choice.documents.length} 页）` : ""}</button>{choice.reason && <p className="text-xs leading-5 text-amber-200">{choice.reason}</p>}</div>; })}</div>
         <p className="text-sm text-slate-400">点击生成会调用已配置的图片服务，可能计费。画风参考的变更只应用于新生成或主动重画的页面；旧图片会保留并标记需要更新。</p>
         <ImageGallery key={scopeKey(scope)} scope={scope} workspace={workspace} onRender={renderPages} disabled={disabled} />
       </> : <>

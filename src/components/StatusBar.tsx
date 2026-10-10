@@ -7,6 +7,13 @@ import { logEvent } from "../lib/logger";
 export const ZZONE_INVITE_URL = "https://oenai.cc.cd/j/i1.cmVzZWxsZXIAZmQxeVp2TEY1V3hJb0JWeDltNDYwYlpS.cn5C6uhqhbNTFeR46uZf1TPAP-3Uf7-zsIcsDZovdK8";
 export const GITHUB_REPO_URL = "https://github.com/whhhh1500/image-client";
 
+/** Opens the log directory next to the database; a failure is only logged. */
+export function openLogsFolder() {
+  void logsDir()
+    .then((path) => openPath(path))
+    .catch((error) => logEvent("error", "logs.open_failed", { error: String(error) }));
+}
+
 function item(ok: boolean, label: string, extra?: string) {
   return (
     <div className="flex items-center gap-1.5">
@@ -22,6 +29,7 @@ function item(ok: boolean, label: string, extra?: string) {
 export default function StatusBar({
   appInfo,
   dbReady,
+  startupFailed = false,
   configStatus,
   providers,
   onOpenSettings,
@@ -30,6 +38,8 @@ export default function StatusBar({
 }: {
   appInfo: AppInfo | null;
   dbReady: boolean;
+  /** The startup load failed; App shows the reason and a retry in a banner. */
+  startupFailed?: boolean;
   configStatus: ConfigStatus | null;
   providers: ProviderInfo[] | null;
   onOpenSettings: () => void;
@@ -42,19 +52,20 @@ export default function StatusBar({
     <footer className="flex items-center gap-5 overflow-x-auto border-t border-slate-800 bg-slate-900/70 px-4 py-1.5 text-[11px] text-slate-400">
       {item(!!appInfo, "后端", appInfo ? `v${appInfo.version}` : "连接中…")}
       {item(true, "媒体处理", "内置")}
-      {item(dbReady, "数据库", dbReady ? "就绪" : "初始化中…")}
+      {item(dbReady, "数据库", dbReady ? "就绪" : startupFailed ? "加载失败" : "初始化中…")}
+      {/* The configured default (设置 › 接口配置). The 图像生成 toolbar can pick
+          another model per run; comic rendering always uses this one. */}
       <button
         onClick={onOpenSettings}
+        title="设置 › 接口配置中的默认图像模型：小说漫画渲染，以及图像生成页工具栏留空时使用"
         className={`flex items-center gap-1.5 ${configStatus?.imageReady ? "text-slate-400" : "text-amber-300"}`}
       >
         <span className={`h-2 w-2 rounded-full ${configStatus?.imageReady ? "bg-emerald-500" : "bg-rose-500"}`} />
-        图像 {configStatus?.imageReady ? `${configStatus.imageModel}` : "未配置"}
+        默认图像模型 · {configStatus?.imageReady ? configStatus.imageModel : "未配置"}
         <span className="text-[10px] text-slate-600">配置</span>
       </button>
       <button
-        onClick={() => void logsDir()
-          .then((path) => openPath(path))
-          .catch((error) => logEvent("error", "logs.open_failed", { error: String(error) }))}
+        onClick={openLogsFolder}
         className="text-slate-500 transition hover:text-slate-200"
         title="打开与数据库同级的日志目录"
       >

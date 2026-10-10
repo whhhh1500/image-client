@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fileSrc } from "../lib/desktop";
 import { generationParamsSummary, inspectImageCached, latestDisplayPath, subscribeImageInfo } from "../lib/imageCompress";
 import { logEvent } from "../lib/logger";
@@ -16,10 +16,29 @@ export default function HistoryImageCard({
   onMenu: (x: number, y: number) => void;
   tall?: boolean;
 }) {
+  const rootRef = useRef<HTMLDivElement>(null);
   const [info, setInfo] = useState<ImageFileInfo | null>(null);
   const [hover, setHover] = useState(false);
+  // A history grid holds hundreds of cards and each inspection is an IPC round
+  // trip that reads the file: only inspect once the card nears the viewport.
+  // Without IntersectionObserver (e.g. jsdom) every card counts as visible.
+  const [visible, setVisible] = useState(() => typeof IntersectionObserver === "undefined");
 
   useEffect(() => {
+    if (visible) return;
+    const node = rootRef.current;
+    if (!node) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      observer.disconnect();
+      setVisible(true);
+    }, { rootMargin: "200px" });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [visible]);
+
+  useEffect(() => {
+    if (!visible) return;
     let cancelled = false;
     const load = () => {
       void inspectImageCached(asset.asset.path)
@@ -36,7 +55,7 @@ export default function HistoryImageCard({
       cancelled = true;
       unsubscribe();
     };
-  }, [asset.asset.path]);
+  }, [asset.asset.path, visible]);
 
   const displayPath = info ? latestDisplayPath(info) : asset.asset.path;
   const shown = info?.variants.find((item) => item.path === displayPath) ?? info?.variants[0];
@@ -44,6 +63,7 @@ export default function HistoryImageCard({
 
   return (
     <div
+      ref={rootRef}
       className={`relative flex items-center justify-center overflow-hidden rounded-lg border border-slate-700 bg-slate-800/60 ${tall ? "min-h-[320px]" : "aspect-square"}`}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
@@ -51,6 +71,8 @@ export default function HistoryImageCard({
       <img
         src={fileSrc(displayPath)}
         alt={asset.source}
+        loading="lazy"
+        decoding="async"
         onClick={() => onOpen(displayPath)}
         onContextMenu={(event) => {
           event.preventDefault();

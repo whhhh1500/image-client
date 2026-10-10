@@ -15,6 +15,7 @@ import AssetImportPicker from "../components/AssetImportPicker";
 import type { PromptLibraryPick } from "../components/PromptLibrary";
 import OptimizePromptDialog from "../components/OptimizePromptDialog";
 import { logEvent } from "../lib/logger";
+import { errorText } from "../lib/errors";
 import AssetDetailModal from "../components/AssetDetailModal";
 import WorkflowGuide from "../components/WorkflowGuide";
 import type { SourceMaterialSnapshot } from "../lib/provenance";
@@ -113,10 +114,22 @@ function Field({ label, children, hint }: { label: string; children: React.React
 const readGenerationPrompt = () => useGenerationStore.getState().prompt;
 
 /**
+ * Which model the next run is billed on. An empty toolbar field sends no model
+ * and the backend falls back to the default from 设置 › 接口配置.
+ */
+export function imageModelUsageLabel(model: string, defaultModel?: string): string {
+  const chosen = model.trim();
+  if (chosen) return `本次使用：${chosen}`;
+  return defaultModel
+    ? `本次使用：${defaultModel}（工具栏留空，使用设置中的默认图像模型）`
+    : "本次使用：设置中的默认图像模型（工具栏留空）";
+}
+
+/**
  * Owns the prompt subscription so a keystroke re-renders only this textarea
  * instead of the whole generation panel.
  */
-function PromptTextarea({ className, placeholder, onEdit }: { className: string; placeholder: string; onEdit?: () => void }) {
+function PromptTextarea({ className, placeholder, onEdit, onSubmit }: { className: string; placeholder: string; onEdit?: () => void; onSubmit?: () => void }) {
   const prompt = useGenerationStore((s) => s.prompt);
   const setGen = useGenerationStore((s) => s.set);
   return (
@@ -129,6 +142,13 @@ function PromptTextarea({ className, placeholder, onEdit }: { className: string;
         // "AI 优化" and "存回模板" no longer use that template's rules.
         onEdit?.();
         setGen({ prompt: event.target.value });
+      }}
+      onKeyDown={(event) => {
+        // Ctrl/Cmd+Enter runs like the 生成 button; plain Enter still adds a
+        // line, and an IME composition keeps its own Enter.
+        if (event.key !== "Enter" || !(event.ctrlKey || event.metaKey) || event.nativeEvent.isComposing || !onSubmit) return;
+        event.preventDefault();
+        onSubmit();
       }}
     />
   );
@@ -210,7 +230,11 @@ function ImageRunLog() {
   );
 }
 
-export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
+export default function GeneratePanel({ llmModel, defaultImageModel }: {
+  llmModel?: string;
+  /** The configured default image model (设置 › 接口配置), when it is ready. */
+  defaultImageModel?: string;
+}) {
   const references = useGenerationStore((s) => s.references);
   const referencePath = useGenerationStore((s) => s.referencePath);
   const importedSources = useGenerationStore((s) => s.importedSources);
@@ -228,6 +252,9 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
   // Kept in the run store so a run that fails after a remount still reports it.
   const runError = useRunStore((s) => s.imageError);
   const [error, setError] = useState<string | null>(null);
+  // Neutral outcome of the last import (e.g. some items were skipped). It is
+  // not a failure, so it must neither look like one nor hide a run error.
+  const [notice, setNotice] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; asset: LibAsset } | null>(null);
   const [previewAsset, setPreviewAsset] = useState<LibAsset | null>(null);
   // Assets produced by the most recent run, so a multi-image request is shown
@@ -320,7 +347,27 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
     });
   };
 
+  /**
+   * "添加为参考图" from the history menu or the detail view adds one image to
+   * the current references. Replacing them is the picker's explicit choice only.
+   */
+  const addReferenceAsset = (asset: LibAsset) => {
+    setNotice(null);
+    setError(null);
+    if (activeReferences.some((item) => item.path === asset.asset.path)) {
+      setNotice("该图片已在参考图中，未重复添加。");
+      return;
+    }
+    try {
+      applyReferenceEntries([libraryImportEntry(asset)], "append");
+    } catch (cause) {
+      setError(errorText(cause));
+    }
+  };
+
   const applyImport = ({ action, referenceMode, entries }: { action: "prompt" | "merge_prompt" | "reference"; referenceMode: "replace" | "append"; entries: ImportEntry[] }) => {
+    setNotice(null);
+    setError(null);
     if (action === "reference") {
       applyReferenceEntries(entries, referenceMode);
       return;
@@ -337,11 +384,13 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
         ? [...(importedSources ?? []).filter((item) => item.action === "reference"), record]
         : [...(importedSources ?? []), record],
     });
-    if (excluded.length) setError(`已排除 ${excluded.length} 项没有可见正文/已保存提示词的资源：${excluded.map((entry) => entry.entryType === "library_asset" ? entry.asset.source : entry.title).join("、")}`);
+    if (excluded.length) setNotice(`已排除 ${excluded.length} 项没有可见正文/已保存提示词的资源：${excluded.map((entry) => entry.entryType === "library_asset" ? entry.asset.source : entry.title).join("、")}`);
     clearPromptLibrarySelection();
   };
 
   const importExternalReferences = async () => {
+    setNotice(null);
+    setError(null);
     const projectId = activeId ?? defaultId;
     if (!projectId) throw new Error("请先选择项目，再将外部图片导入资产库。");
     const chosen = await openDialog({ multiple: true, filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg", "webp"] }] });
@@ -384,6 +433,7 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
     const hasReferences = (current.references?.length ?? 0) > 0 || current.referencePath.trim().length > 0;
     runs.logImageRun("info", `开始${hasReferences ? "图生图" : "文生图"}：${current.model} · ${current.size.split("(")[0].trim()} · ${current.count} 张`);
     setError(null);
+    setNotice(null);
     try {
       const template = promptlibId ? promptlibEntry : undefined;
       const sources: SourceMaterialSnapshot[] = [
@@ -422,8 +472,8 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
         useRunStore.getState().logImageRun("success", `完成，已保存 ${created.length} 张`);
       });
     } catch (e) {
-      useRunStore.getState().patch({ imageError: String(e) });
-      useRunStore.getState().logImageRun("error", `失败：${String(e)}`);
+      useRunStore.getState().patch({ imageError: errorText(e) });
+      useRunStore.getState().logImageRun("error", `失败：${errorText(e)}`);
     } finally {
       useRunStore.getState().patch({ imageBusy: false, imageProgress: null });
     }
@@ -459,7 +509,7 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
             placeholder="例如 gpt-image-2"
           />
         </div>
-        <span className="ml-auto text-[11px] text-slate-500">切换后本次生成使用所选模型；也可直接输入列表以外的模型名</span>
+        <span className="ml-auto text-[11px] text-slate-500">初始值取自项目生产档案，在此修改不会写回档案；可直接输入列表以外的模型名，留空则用设置中的默认图像模型</span>
       </div>
       <WorkflowGuide current="整理提示词与参考图" next="生成后点击历史查看完整参数，必要时加载并修改后重做" detail="文档和图片资源可从项目历史搜索导入" />
 
@@ -476,7 +526,12 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
 
         <div>
           <Field label="提示词">
-            <PromptTextarea className={`${inputCls} h-24 resize-y leading-snug`} placeholder="描述你想生成的画面…" onEdit={clearPromptLibrarySelection} />
+            <PromptTextarea
+              className={`${inputCls} h-24 resize-y leading-snug`}
+              placeholder="描述你想生成的画面…（Ctrl+Enter 生成）"
+              onEdit={clearPromptLibrarySelection}
+              onSubmit={() => { if (canRun) void run(); }}
+            />
           </Field>
           <div className="mt-1 flex flex-wrap gap-2">
             <button type="button" onClick={() => { setLibraryLoaded(true); setLibraryOpen(true); }} className="flex items-center gap-1 text-[10px] text-indigo-300 hover:text-white"><Library size={11} /> 模板库</button>
@@ -501,7 +556,7 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
                   <button type="button" onClick={() => setPickerOpen(true)} className="rounded px-2 py-1 text-[10px] text-indigo-300 hover:bg-slate-800">
                     更换/追加
                   </button>
-                  <button type="button" onClick={() => void importExternalReferences().catch((cause) => setError(String(cause)))} className="rounded px-2 py-1 text-[10px] text-cyan-200 hover:bg-slate-800">
+                  <button type="button" onClick={() => void importExternalReferences().catch((cause) => setError(errorText(cause)))} className="rounded px-2 py-1 text-[10px] text-cyan-200 hover:bg-slate-800">
                     上传并入库
                   </button>
                   <button type="button" onClick={() => setGen({ referencePath: "", references: [], importedSources: (importedSources ?? []).filter((item) => item.action !== "reference") })} className="rounded px-1 py-1 text-slate-500 hover:text-rose-300">
@@ -521,7 +576,7 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
           ) : (
             <button
               type="button"
-              onClick={() => void importExternalReferences().catch((cause) => setError(String(cause)))}
+              onClick={() => void importExternalReferences().catch((cause) => setError(errorText(cause)))}
               className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-slate-600 bg-slate-800/40 px-3 py-3 text-xs text-slate-300 transition hover:border-slate-400 hover:text-white"
             >
               <Upload size={13} />
@@ -558,8 +613,13 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
           </select>
         </Field>
 
-        {(error ?? runError) && <div className="rounded-lg bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{error ?? runError}</div>}
+        {notice && <div role="status" className="rounded-lg border border-slate-700 bg-slate-800/50 px-3 py-2 text-xs text-slate-300">{notice}</div>}
+        {error && <div role="alert" className="rounded-lg bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{error}</div>}
+        {runError && runError !== error && <div role="alert" className="rounded-lg bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{runError}</div>}
 
+        <div className="text-[10px] text-slate-400" title="图像生成页顶部工具栏选择的模型；与状态栏的默认图像模型、项目生产档案的默认图像模型分开">
+          {imageModelUsageLabel(model, defaultImageModel)}
+        </div>
         <GenerateButton count={count} canRun={canRun} onRun={run} />
         <ImageRunLog />
       </div>
@@ -635,7 +695,7 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
           items={imageHistoryMenu({
             asset: menu.asset,
             onPreview: setPreviewAsset,
-            onReference: (asset) => applyReferenceEntries([libraryImportEntry(asset)]),
+            onReference: addReferenceAsset,
           })}
         />
       )}
@@ -643,7 +703,7 @@ export default function GeneratePanel({ llmModel }: { llmModel?: string }) {
         asset={previewAsset}
         onClose={() => setPreviewAsset(null)}
         onLoadAsset={(asset) => { loadGen({ ...(asset.params ?? {}), ...(asset.model ? { model: asset.model } : {}) } as Partial<GenParams>); clearPromptLibrarySelection(); }}
-        onUseReference={(asset) => applyReferenceEntries([libraryImportEntry(asset)])}
+        onUseReference={addReferenceAsset}
       />
 
       <AssetImportPicker

@@ -2,7 +2,9 @@ import { confirmAction } from "../lib/confirm";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fileSrc } from "../lib/desktop";
 import { Copy, FilePenLine, Image as ImageIcon, Loader2, Save, Sparkles, Video, X } from "lucide-react";
-import { llmChat, readTextAsset } from "../lib/ipc";
+import { configStatus, llmChat, readTextAsset } from "../lib/ipc";
+import { errorText } from "../lib/errors";
+import { ADD_REFERENCE_LABEL } from "../lib/historyMenu";
 import { LLM_MODELS } from "../lib/models";
 import ModelCombobox from "./ModelCombobox";
 import { useModelCatalog } from "../lib/useModelCatalog";
@@ -48,6 +50,13 @@ function sourcePreview(material: SourceMaterialSnapshot) {
   return material.kind === "video"
     ? <video src={src} controls className="mt-2 max-h-52 w-full rounded-lg bg-black object-contain" />
     : <img src={src} alt={material.label} className="mt-2 max-h-52 w-full rounded-lg bg-black/20 object-contain" />;
+}
+
+/** Raw params for the 技术参数 dump; the provenance is already shown in full below. */
+function technicalParams(params: Record<string, unknown> | undefined): Record<string, unknown> {
+  const rest = { ...(params ?? {}) };
+  delete rest.provenance;
+  return rest;
 }
 
 function ProvenancePanel({ asset }: { asset: LibAsset }) {
@@ -134,7 +143,11 @@ export default function AssetDetailModal({
   const [draft, setDraft] = useState("");
   const [shots, setShots] = useState<StoryboardShot[]>([]);
   const [editing, setEditing] = useState(false);
-  const [model, setModel] = useState("gemini-3.7-flash");
+  // Optimization model. Empty unless the user picks one: the backend then uses
+  // the text model configured in 设置.
+  const [model, setModel] = useState("");
+  // Name of that configured model, shown in the field; display only.
+  const [configuredModel, setConfiguredModel] = useState<string | null>(null);
   const llmCatalog = useModelCatalog("llm", LLM_MODELS);
   const [instruction, setInstruction] = useState("优化结构、可执行性和表达，保留原有核心内容；只返回完整修改稿。");
   const [busy, setBusy] = useState<"save" | "copy" | "optimize" | null>(null);
@@ -164,8 +177,22 @@ export default function AssetDetailModal({
   }, [allAssets, dirty, selected]);
 
   useEffect(() => {
-    if (asset) setNotice(null);
+    if (!asset) return;
+    setNotice(null);
+    // A pick is kept while switching versions of this asset, not for the next one.
+    setModel("");
   }, [asset]);
+
+  const open = selected !== null;
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void Promise.resolve()
+      .then(() => configStatus())
+      .then((status) => { if (!cancelled) setConfiguredModel(status.llmModel?.trim() || null); })
+      .catch((cause) => logEvent("warn", "config.status_failed", { error: errorText(cause) }));
+    return () => { cancelled = true; };
+  }, [open]);
 
   useEffect(() => {
     let cancelled = false;
@@ -181,11 +208,9 @@ export default function AssetDetailModal({
     setMediaChangeType("manual");
     setDirty(false);
     setTitle(meta?.title ?? selected.source);
-    setModel(selected.model || "gemini-3.7-flash");
     if (selected.asset.kind !== "text") {
       setDraft("");
       setShots([]);
-      setModel("gemini-3.7-flash");
       setMediaPrompt(assetPrompt(selected));
       return;
     }
@@ -195,7 +220,7 @@ export default function AssetDetailModal({
       setDraft(text);
       setShots(meta?.shots?.length ? meta.shots : parseStoryboardShots(text));
     };
-    void load().catch((cause) => !cancelled && setError(String(cause)));
+    void load().catch((cause) => !cancelled && setError(errorText(cause)));
     return () => { cancelled = true; };
   }, [selected]);
 
@@ -234,7 +259,9 @@ export default function AssetDetailModal({
       const saved = await saveDocumentVersion({
         title: changeType === "copy" ? `${title.replace(/\s*·\s*副本$/, "")} · 副本` : title,
         text: content,
-        model,
+        // The version records the model that wrote it: the optimizer (the
+        // configured one when the field is empty) after an AI draft, the parent's otherwise.
+        model: model.trim() || (draftChangeType === "ai_optimized" ? configuredModel : selected.model) || undefined,
         projectId: selected.projectId ?? projectId,
         documentType: documentMeta.documentType,
         parent: selected,
@@ -250,7 +277,7 @@ export default function AssetDetailModal({
       setRevisionInstruction(undefined);
       setNotice(`已保存为 v${getDocumentDisplayVersion(saved, useLibraryStore.getState().assets)}，旧版本仍保留。`);
     } catch (cause) {
-      setError(String(cause));
+      setError(errorText(cause));
     } finally {
       setBusy(null);
     }
@@ -266,7 +293,7 @@ export default function AssetDetailModal({
         ? "必须返回完整的视频分镜 Markdown，以 # 视频分镜 开头；每镜使用 ## 第N镜，并保留所有固定的 ### 字段标题、时长、锚点、起始状态、动作过程、结束状态、承接镜头和视频 Prompt。只返回 Markdown。"
         : "只返回优化后的完整正文，不输出分析过程。";
       const system = `你是专业的${documentTypeLabel(documentMeta.documentType)}编辑器。${storyboardRule}`;
-      const result = stripThinking(await llmChat(system, `【优化要求】\n${instruction}\n\n【原内容】\n${draft}`, model));
+      const result = stripThinking(await llmChat(system, `【优化要求】\n${instruction}\n\n【原内容】\n${draft}`, model.trim() || undefined));
       if (selectedIdRef.current !== startedFor) return;
       if (documentMeta.documentType === "storyboard") {
         const parsed = parseStoryboardShots(result);
@@ -280,7 +307,7 @@ export default function AssetDetailModal({
       setDirty(true);
       setNotice("优化草稿已生成。请检查内容，确认后保存为新版本。");
     } catch (cause) {
-      setError(String(cause));
+      setError(errorText(cause));
     } finally {
       setBusy(null);
     }
@@ -296,7 +323,7 @@ export default function AssetDetailModal({
       const result = stripThinking(await llmChat(
         `你是专业的${mediaKind}生成提示词编辑器。只返回优化后的完整提示词，不要解释。`,
         `【优化要求】\n${mediaInstruction}\n\n【原提示词】\n${mediaPrompt}`,
-        model,
+        model.trim() || undefined,
       ));
       if (selectedIdRef.current !== startedFor) return;
       setMediaPrompt(result);
@@ -304,7 +331,7 @@ export default function AssetDetailModal({
       setDirty(true);
       setNotice("优化后的提示词已生成。可继续手改，或加载到生成页重新生成。");
     } catch (cause) {
-      setError(String(cause));
+      setError(errorText(cause));
     } finally {
       setBusy(null);
     }
@@ -346,7 +373,7 @@ export default function AssetDetailModal({
       setDirty(false);
       setNotice("资源标题和提示词已保存。生成参数仍可加载到生成页继续修改。");
     } catch (cause) {
-      setError(String(cause));
+      setError(errorText(cause));
     } finally {
       setBusy(null);
     }
@@ -356,6 +383,27 @@ export default function AssetDetailModal({
     const content = documentMeta?.documentType === "storyboard" && shots.length ? serializeStoryboard(shots) : draft;
     void navigator.clipboard?.writeText(content).catch((cause) => logEvent("warn", "clipboard.write_failed", { error: String(cause) }));
   };
+
+  const modelField = (
+    <ModelCombobox
+      compact
+      label="优化模型"
+      value={model}
+      options={llmCatalog.options}
+      onChange={setModel}
+      onFetch={() => void llmCatalog.refresh()}
+      fetching={llmCatalog.loading}
+      placeholder={configuredModel ? `默认：${configuredModel}` : "默认：设置中的文本模型"}
+      status={llmCatalog.message ? { text: llmCatalog.message, error: llmCatalog.error } : null}
+      hint={model.trim() ? undefined : `留空将使用设置中的文本模型${configuredModel ? `（${configuredModel}）` : ""}`}
+    />
+  );
+  const technicalParamsPanel = (
+    <details className="rounded-xl border border-white/5 bg-slate-950/50 p-3">
+      <summary className="cursor-pointer text-[11px] text-slate-500">技术参数</summary>
+      <pre className="mt-2 max-h-80 overflow-auto whitespace-pre-wrap break-all text-[11px] text-slate-400">{JSON.stringify(technicalParams(selected.params), null, 2)}</pre>
+    </details>
+  );
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-[#020617]/85 p-4 backdrop-blur-md" onClick={attemptClose}>
@@ -403,16 +451,7 @@ export default function AssetDetailModal({
                   </label>
                   <label>
                     <span className="mb-1 block text-[10px] font-medium text-slate-500">优化模型</span>
-                    <ModelCombobox
-                      compact
-                      label="优化模型"
-                      value={model}
-                      options={llmCatalog.options}
-                      onChange={setModel}
-                      onFetch={() => void llmCatalog.refresh()}
-                      fetching={llmCatalog.loading}
-                      status={llmCatalog.message ? { text: llmCatalog.message, error: llmCatalog.error } : null}
-                    />
+                    {modelField}
                   </label>
                 </div>
 
@@ -438,10 +477,10 @@ export default function AssetDetailModal({
                 <label><span className="mb-1 block text-[10px] text-slate-500">资源标题（可修改）</span><input value={title} onChange={(event) => { setTitle(event.target.value); setDirty(true); }} className={inputCls} /></label>
                 <div className="grid gap-3 md:grid-cols-[1fr_220px]">
                   <label><span className="mb-1 block text-[10px] text-slate-500">视频提示词（可修改）</span><textarea value={mediaPrompt} onChange={(event) => { setMediaPrompt(event.target.value); setMediaChangeType("manual"); setDirty(true); }} className={`${inputCls} min-h-28 resize-y text-xs`} /></label>
-                  <label><span className="mb-1 block text-[10px] text-slate-500">优化模型</span><ModelCombobox compact label="优化模型" value={model} options={llmCatalog.options} onChange={setModel} onFetch={() => void llmCatalog.refresh()} fetching={llmCatalog.loading} status={llmCatalog.message ? { text: llmCatalog.message, error: llmCatalog.error } : null} /></label>
+                  <label><span className="mb-1 block text-[10px] text-slate-500">优化模型</span>{modelField}</label>
                 </div>
                 <div className="rounded-xl border border-violet-300/10 bg-violet-300/[0.035] p-3"><textarea value={mediaInstruction} onChange={(event) => setMediaInstruction(event.target.value)} className={`${inputCls} min-h-16 resize-y text-xs`} /><button onClick={() => void optimizeMediaPrompt()} disabled={busy !== null || !mediaPrompt.trim()} className="mt-2 rounded-lg border border-violet-300/15 px-3 py-1.5 text-xs text-violet-200 disabled:opacity-40">{busy === "optimize" ? "优化中…" : "智能优化提示词"}</button></div>
-                <pre className="overflow-auto rounded-xl border border-white/5 bg-slate-950/50 p-3 text-[11px] text-slate-400">{JSON.stringify(selected.params ?? {}, null, 2)}</pre>
+                {technicalParamsPanel}
               </div>
             ) : (
               <div className="space-y-4">
@@ -449,10 +488,10 @@ export default function AssetDetailModal({
                 <label><span className="mb-1 block text-[10px] text-slate-500">资源标题（可修改）</span><input value={title} onChange={(event) => { setTitle(event.target.value); setDirty(true); }} className={inputCls} /></label>
                 <div className="grid gap-3 md:grid-cols-[1fr_220px]">
                   <label><span className="mb-1 block text-[10px] text-slate-500">图片提示词（可修改）</span><textarea value={mediaPrompt} onChange={(event) => { setMediaPrompt(event.target.value); setMediaChangeType("manual"); setDirty(true); }} className={`${inputCls} min-h-28 resize-y text-xs`} /></label>
-                  <label><span className="mb-1 block text-[10px] text-slate-500">优化模型</span><ModelCombobox compact label="优化模型" value={model} options={llmCatalog.options} onChange={setModel} onFetch={() => void llmCatalog.refresh()} fetching={llmCatalog.loading} status={llmCatalog.message ? { text: llmCatalog.message, error: llmCatalog.error } : null} /></label>
+                  <label><span className="mb-1 block text-[10px] text-slate-500">优化模型</span>{modelField}</label>
                 </div>
                 <div className="rounded-xl border border-violet-300/10 bg-violet-300/[0.035] p-3"><textarea value={mediaInstruction} onChange={(event) => setMediaInstruction(event.target.value)} className={`${inputCls} min-h-16 resize-y text-xs`} /><button onClick={() => void optimizeMediaPrompt()} disabled={busy !== null || !mediaPrompt.trim()} className="mt-2 rounded-lg border border-violet-300/15 px-3 py-1.5 text-xs text-violet-200 disabled:opacity-40">{busy === "optimize" ? "优化中…" : "智能优化提示词"}</button></div>
-                <pre className="overflow-auto rounded-xl border border-white/5 bg-slate-950/50 p-3 text-[11px] text-slate-400">{JSON.stringify(selected.params ?? {}, null, 2)}</pre>
+                {technicalParamsPanel}
               </div>
             )}
             <div className="mt-4"><ProvenancePanel asset={selected} /></div>
@@ -475,7 +514,7 @@ export default function AssetDetailModal({
                 </>
               ) : (
                 <>
-                  {selected.asset.kind === "image" && onUseReference && <button onClick={() => { onUseReference(selected); onClose(); }} className="rounded-lg border border-cyan-300/20 px-3 py-1.5 text-xs text-cyan-200">设为参考图</button>}
+                  {selected.asset.kind === "image" && onUseReference && <button onClick={() => { onUseReference(selected); onClose(); }} className="rounded-lg border border-cyan-300/20 px-3 py-1.5 text-xs text-cyan-200">{ADD_REFERENCE_LABEL}</button>}
                   <button onClick={() => void saveMediaMetadata()} disabled={busy !== null || !dirty} className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-slate-200 disabled:opacity-40">{busy === "save" ? "保存中…" : "保存资源信息"}</button>
                   {onLoadAsset && <button onClick={() => { onLoadAsset(modifiedMediaAsset()); onClose(); }} className="rounded-lg border border-cyan-300/20 bg-cyan-300/10 px-3 py-1.5 text-xs text-cyan-100">加载修改参数并继续</button>}
                 </>

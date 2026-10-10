@@ -69,3 +69,20 @@ it("opens the GitHub repository in the system browser", () => {
   fireEvent.click(screen.getByRole("button", { name: "GitHub 仓库" }));
   expect(opener.openUrl).toHaveBeenCalledWith(GITHUB_REPO_URL);
 });
+
+it("labels the configured default image model and a failed startup load", () => {
+  const props = { appInfo: null, providers: null, onOpenSettings: vi.fn(), onOpenGuide: vi.fn(), onOpenChangelog: vi.fn() };
+  const status = { imageReady: true, videoReady: false, llmReady: false, imageModel: "gpt-image-2", videoModel: "", llmModel: "", outputDir: "", source: "db" as const };
+  const { rerender } = render(<StatusBar {...props} dbReady configStatus={status} />);
+
+  // The default from 设置 › 接口配置, named so it is not mistaken for the
+  // model the 图像生成 toolbar uses for the next run.
+  expect(screen.getByText("默认图像模型 · gpt-image-2")).toBeTruthy();
+  expect(screen.getByText("就绪")).toBeTruthy();
+
+  rerender(<StatusBar {...props} dbReady={false} startupFailed configStatus={{ ...status, imageReady: false }} />);
+  expect(screen.getByText("默认图像模型 · 未配置")).toBeTruthy();
+  // A failed load no longer looks like a startup that is still running.
+  expect(screen.getByText("加载失败")).toBeTruthy();
+  expect(screen.queryByText("初始化中…")).toBeNull();
+});

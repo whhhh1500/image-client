@@ -3,10 +3,17 @@ import { menuIcons, type MenuItem } from "../components/ContextMenu";
 import { compressHistoryImage, convertHistoryImage, refreshImageInfo } from "./imageCompress";
 import type { ConvertFormat } from "./ipc";
 import { logEvent } from "./logger";
+import { errorText } from "./errors";
 import type { LibAsset } from "../store/useLibraryStore";
 
 /** Writes that are already running, keyed by asset path + operation. */
 const inFlightWrites = new Set<string>();
+
+/**
+ * Label of the single-asset reference action. It appends to the current
+ * references (never replaces them), so every entry point should use this text.
+ */
+export const ADD_REFERENCE_LABEL = "添加为参考图";
 
 export function imageHistoryMenu(input: {
   asset: LibAsset;
@@ -29,7 +36,7 @@ export function imageHistoryMenu(input: {
       .then(afterWrite)
       .catch((error) => {
         logEvent("warn", eventName, { error: String(error) });
-        window.alert(`${failureLabel}失败：${error}`);
+        window.alert(`${failureLabel}失败：${errorText(error)}`);
       })
       .finally(() => inFlightWrites.delete(key));
   };
@@ -55,7 +62,7 @@ export function imageHistoryMenu(input: {
   });
   return [
     { label: "放大预览", icon: menuIcons.preview, onClick: () => input.onPreview(input.asset) },
-    ...(input.onReference ? [{ label: "添加为参考图", icon: menuIcons.reference, onClick: () => input.onReference?.(input.asset) }] : []),
+    ...(input.onReference ? [{ label: ADD_REFERENCE_LABEL, icon: menuIcons.reference, onClick: () => input.onReference?.(input.asset) }] : []),
     compress("无损压缩", "lossless"),
     compress("有损压缩 80%", "q80"),
     compress("有损压缩 60%", "q60"),

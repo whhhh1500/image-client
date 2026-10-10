@@ -231,4 +231,62 @@ describe("generateVideo independent shots", () => {
     expect(vi.mocked(runVideo).mock.calls[0][0].config).toMatchObject({ prompt: "镜头二" });
     expect(persistAssets).toHaveBeenCalledTimes(1);
   });
+
+  it("reports shot progress and, on a partial failure, the group and saved shots to resume from", async () => {
+    const providerError = "第 2 镜生成超时";
+    vi.mocked(runVideo).mockReset()
+      .mockResolvedValueOnce({ assets: [{ id: "segment_1", kind: "video", path: "C:/1.mp4", durationS: 3 }] })
+      .mockRejectedValueOnce(providerError);
+    const onProgress = vi.fn();
+    // The thrown value is untouched so other callers (asset-center retry) keep their contract.
+    await expect(generateVideo(params, {}, { onProgress })).rejects.toBe(providerError);
+    const reports = onProgress.mock.calls.map(([progress]) => progress);
+    const shotGroupId = reports[0].shotGroupId;
+    expect(shotGroupId).toMatch(/^video_shots/);
+    expect(reports).toEqual([
+      { shotGroupId, total: 2, doneShotNos: [], currentShotNo: null },
+      { shotGroupId, total: 2, doneShotNos: [], currentShotNo: 1 },
+      { shotGroupId, total: 2, doneShotNos: [1], currentShotNo: null },
+      { shotGroupId, total: 2, doneShotNos: [1], currentShotNo: 2 },
+    ]);
+    expect(useLibraryStore.getState().assets[0].params).toMatchObject({ shotGroupId, shotNo: 1 });
+
+    vi.mocked(runVideo).mockResolvedValueOnce({ assets: [{ id: "segment_2", kind: "video", path: "C:/2.mp4", durationS: 3 }] });
+    onProgress.mockClear();
+    await expect(generateVideo(params, {}, { resumeShotGroupId: shotGroupId, onProgress })).resolves.toHaveLength(1);
+    expect(runVideo).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(runVideo).mock.calls[2][0].config).toMatchObject({ prompt: "镜头二" });
+    expect(onProgress.mock.calls[0][0]).toEqual({ shotGroupId, total: 2, doneShotNos: [1], currentShotNo: null });
+    expect(onProgress.mock.calls[onProgress.mock.calls.length - 1][0]).toEqual({ shotGroupId, total: 2, doneShotNos: [1, 2], currentShotNo: null });
+  });
+
+  it("files the run under an explicit project, or under no project for null, instead of the open one", async () => {
+    await generateVideo({ ...params, shots: [params.shots[0]] }, {}, { projectId: "project_other" });
+    expect(vi.mocked(runVideo).mock.calls[0][0].config).toMatchObject({ project_id: "project_other" });
+    expect(useLibraryStore.getState().tasks[0]).toMatchObject({ projectId: "project_other", status: "success" });
+    expect(vi.mocked(persistTask).mock.calls.map(([task]) => task.projectId)).toEqual(["project_other", "project_other"]);
+    expect(vi.mocked(persistAssets).mock.calls[0][2]).toMatchObject({ projectId: "project_other" });
+    expect(useLibraryStore.getState().assets[0].projectId).toBe("project_other");
+
+    vi.clearAllMocks();
+    useLibraryStore.setState({ assets: [], tasks: [] });
+    vi.mocked(runVideo).mockResolvedValueOnce({ assets: [{ id: "segment_unassigned", kind: "video", path: "C:/u.mp4", durationS: 3 }] });
+    await generateVideo({ ...params, shots: [params.shots[0]] }, {}, { projectId: null });
+    expect(vi.mocked(runVideo).mock.calls[0][0].config.project_id).toBeUndefined();
+    expect(useLibraryStore.getState().tasks[0].projectId).toBeUndefined();
+    expect(vi.mocked(persistTask).mock.calls.every(([task]) => task.projectId === undefined)).toBe(true);
+    expect(useLibraryStore.getState().assets[0].projectId).toBeUndefined();
+  });
+
+  it("still requires an open project when no project is given", async () => {
+    useProjectStore.setState({ activeId: null });
+    await expect(generateVideo({ ...params, shots: [params.shots[0]] })).rejects.toThrow("请先选择当前项目");
+    expect(runVideo).not.toHaveBeenCalled();
+  });
+
+  it("does not fail a paid run when its progress listener throws", async () => {
+    const onProgress = vi.fn(() => { throw new Error("listener bug"); });
+    await expect(generateVideo(params, {}, { onProgress })).resolves.toHaveLength(2);
+    expect(useLibraryStore.getState().tasks[0].status).toBe("success");
+  });
 });

@@ -44,6 +44,10 @@ describe("App primary navigation", () => {
     expect(appSource).toContain('mode: "text"');
     expect(appSource).toContain("useGenerationImportQueue.getState().discard();");
     expect(appSource).toContain("clearProjectScopedGenerationState();");
+    // Cleared fields come back from the incoming project's own stash, if any
+    // (behaviour covered in App.projects.test.tsx).
+    expect(appSource).toContain("stashProjectDrafts();");
+    expect(appSource).toContain("restoreProjectDrafts(project?.id ?? null);");
   });
 
   it("hands Markdown storyboard shots to the isolated video workspace", () => {

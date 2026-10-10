@@ -173,6 +173,38 @@ describe("generateImage asset persistence", () => {
     expect(useLibraryStore.getState().assets.map((item) => item.asset.id)).toEqual(["asset_1", "asset_2", "asset_3"]);
   });
 
+  it("records the run under a passed project instead of the active one", async () => {
+    const asset = { id: "asset_owned", kind: "image" as const, path: "C:/owned.png" };
+    vi.mocked(runNode).mockResolvedValue({ assets: [asset] });
+
+    await generateImage(params, {}, { projectId: "project_owner" });
+
+    expect(persistAssets).toHaveBeenCalledWith([asset], "文生图", expect.objectContaining({ projectId: "project_owner" }));
+    expect(persistTask).toHaveBeenCalledWith(expect.objectContaining({ status: "success", projectId: "project_owner" }));
+    expect(useLibraryStore.getState().assets[0]).toMatchObject({ asset, projectId: "project_owner" });
+    expect(useLibraryStore.getState().tasks[0]).toMatchObject({ projectId: "project_owner" });
+  });
+
+  it("keeps an explicitly unassigned run out of the active project and reports its task id", async () => {
+    const asset = { id: "asset_unassigned", kind: "image" as const, path: "C:/unassigned.png" };
+    vi.mocked(runNode).mockResolvedValue({ assets: [asset] });
+    const onTaskCreated = vi.fn();
+
+    await generateImage(params, {}, { projectId: null, onTaskCreated });
+
+    expect(persistAssets).toHaveBeenCalledWith([asset], "文生图", expect.objectContaining({ projectId: undefined }));
+    expect(useLibraryStore.getState().assets[0].projectId).toBeUndefined();
+    const task = useLibraryStore.getState().tasks[0];
+    expect(task.projectId).toBeUndefined();
+    expect(onTaskCreated).toHaveBeenCalledWith(task.id);
+  });
+
+  it("stores a readable task error without the Error prefix", async () => {
+    vi.mocked(runNode).mockRejectedValue(new Error("网关超时"));
+    await expect(generateImage(params)).rejects.toThrow("网关超时");
+    expect(useLibraryStore.getState().tasks[0]).toMatchObject({ status: "error", error: "网关超时" });
+  });
+
   it("clamps an out-of-range count before it reaches the gateway", async () => {
     vi.mocked(runNode).mockResolvedValue({ assets: [{ id: "asset_high", kind: "image", path: "C:/high.png" }] });
     await generateImage({ ...params, count: 99 });

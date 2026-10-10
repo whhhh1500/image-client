@@ -4,7 +4,9 @@ import { Check, Clapperboard, FileInput, Loader2, Plus, Send, Trash2, Upload, X 
 import { productionManifestMismatch, useVideoStore, type VideoGenerationItem, type VideoLocalImageReference, type VideoParams } from "../store/useVideoStore";
 import { useLibraryStore, type LibAsset } from "../store/useLibraryStore";
 import { useProjectStore } from "../store/useProjectStore";
-import { concatVideoAssets, generateVideo } from "../lib/generateVideo";
+import { concatVideoAssets, generateVideo, type VideoRunProgress } from "../lib/generateVideo";
+import { confirmAction } from "../lib/confirm";
+import { errorText } from "../lib/errors";
 import {
   listVideoModels,
   listVideoModelCapabilities,
@@ -29,7 +31,8 @@ import { isPublicHttpsUrl } from "../lib/video/referenceUrl";
 import { importExternalAssets } from "../lib/externalAssetImport";
 import { comicMdCatalogList } from "../lib/comic/markdownApi";
 import { useGenerationImportQueue } from "../store/useGenerationImportQueue";
-import { useRunStore, type VideoRunPhase } from "../store/useRunStore";
+import { useRunStore, type VideoRunPhase, type VideoRunProgressState } from "../store/useRunStore";
+import { formsProjectId } from "../store/projectDrafts";
 import {
   createImportRecord,
   importEntryAssetId,
@@ -197,11 +200,94 @@ function UrlListField({
   );
 }
 
-function workflowStepClass(phase: WorkflowPhase, index: number): string {
-  const activeIndex = phase === "submitting" ? 0 : phase === "processing" ? 1 : phase === "completed" ? 3 : -1;
-  if (phase === "failed") return index === 0 ? "border-rose-300/40 bg-rose-300/10 text-rose-100" : "border-slate-800 text-slate-600";
-  if (index <= activeIndex) return "border-fuchsia-300/35 bg-fuchsia-300/10 text-fuchsia-100";
-  return "border-slate-800 bg-slate-950/20 text-slate-600";
+type StepState = "done" | "active" | "partial" | "failed" | "pending";
+
+const STEP_CLASS: Record<StepState, string> = {
+  done: "border-fuchsia-300/35 bg-fuchsia-300/10 text-fuchsia-100",
+  active: "border-fuchsia-300/60 bg-fuchsia-300/15 text-white ring-1 ring-fuchsia-300/30",
+  partial: "border-fuchsia-300/25 bg-fuchsia-300/[0.05] text-fuchsia-100/80",
+  failed: "border-rose-300/40 bg-rose-300/10 text-rose-100",
+  pending: "border-slate-800 bg-slate-950/20 text-slate-600",
+};
+
+/** Step chips from the run phase and the real per-shot progress reported by generateVideo. */
+function workflowSteps(phase: WorkflowPhase, progress: VideoRunProgressState | null): Array<{ label: string; state: StepState }> {
+  const total = progress?.total ?? 0;
+  const done = progress?.done ?? 0;
+  const counted = (label: string) => (total > 1 ? `${label} ${done}/${total}` : label);
+  // Each shot is downloaded and saved as soon as the provider finishes it, so
+  // these two steps are partly done from the first saved shot on.
+  const perShot: StepState = done > 0 ? "partial" : "pending";
+  const generating = total > 1 && progress?.currentShotNo ? `逐镜生成 ${progress.currentShotNo}/${total}` : "逐镜生成";
+  const started = Boolean(progress && (progress.currentShotNo !== null || progress.done > 0));
+  switch (phase) {
+    case "submitting":
+      return [{ label: "提交镜头", state: "active" }, { label: "逐镜生成", state: "pending" }, { label: "逐镜下载", state: "pending" }, { label: "分别保存", state: "pending" }];
+    case "processing":
+      return [{ label: "提交镜头", state: "done" }, { label: generating, state: "active" }, { label: counted("逐镜下载"), state: perShot }, { label: counted("分别保存"), state: perShot }];
+    case "completed":
+      return [{ label: "提交镜头", state: "done" }, { label: "逐镜生成", state: "done" }, { label: "逐镜下载", state: "done" }, { label: "分别保存", state: "done" }];
+    case "failed":
+      return started
+        ? [{ label: "提交镜头", state: "done" }, { label: generating, state: "failed" }, { label: counted("逐镜下载"), state: perShot }, { label: counted("分别保存"), state: perShot }]
+        : [{ label: "提交镜头", state: "failed" }, { label: "逐镜生成", state: "pending" }, { label: "逐镜下载", state: "pending" }, { label: "分别保存", state: "pending" }];
+    default:
+      return [{ label: "提交镜头", state: "pending" }, { label: "逐镜生成", state: "pending" }, { label: "逐镜下载", state: "pending" }, { label: "分别保存", state: "pending" }];
+  }
+}
+
+function formatElapsed(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+/**
+ * "第 k/N 镜 · 已用时 mm:ss". The once-a-second tick lives in this small
+ * component so it never re-renders the whole panel.
+ */
+function VideoRunProgressText() {
+  const progress = useRunStore((s) => s.videoProgress);
+  const busy = useRunStore((s) => s.videoBusy);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!busy) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [busy]);
+  if (!progress) return <>服务端排队 / 生成中</>;
+  const shotNo = progress.currentShotNo ?? Math.min(progress.done + 1, progress.total);
+  const saved = progress.done ? ` · 已保存 ${progress.done} 镜` : "";
+  return <>{`第 ${shotNo}/${progress.total} 镜${saved} · 已用时 ${formatElapsed(now - progress.startedAt)}`}</>;
+}
+
+/**
+ * Identity of a video request. Resuming skips shots by number, so it is only
+ * safe while the form still describes exactly the request whose shots were
+ * already paid for; any edit (or another project) makes it a new request.
+ */
+function videoRequestFingerprint(params: VideoParams, projectId: string | null): string {
+  return JSON.stringify({
+    projectId,
+    model: params.model,
+    mode: params.mode,
+    aspectRatio: params.aspectRatio,
+    resolution: params.resolution,
+    images: params.images,
+    videos: params.videos,
+    audios: params.audios,
+    storyboardSourceAssetId: params.storyboardSourceAssetId ?? null,
+    productionManifest: params.productionManifest ?? null,
+    shots: params.shots.map((shot) => ({
+      prompt: shot.prompt,
+      durationS: shot.durationS,
+      referenceStrategy: shot.referenceStrategy ?? null,
+      referenceAssetIds: shot.referenceAssetIds ?? [],
+      referenceImages: shot.referenceImages ?? [],
+      referenceVideos: shot.referenceVideos ?? [],
+      referenceLocalImages: shot.referenceLocalImages ?? [],
+    })),
+  });
 }
 
 /** Coalesce shot-prompt keystrokes before they touch the shared video store. */
@@ -277,6 +363,8 @@ export default function VideoPanel() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const phase = useRunStore((s) => s.videoPhase);
+  const progress = useRunStore((s) => s.videoProgress);
+  const resume = useRunStore((s) => s.videoResume);
   const setPhase = (videoPhase: WorkflowPhase) => useRunStore.getState().patch({ videoPhase });
   const [selectedVideoIds, setSelectedVideoIds] = useState<string[]>([]);
   const [joining, setJoining] = useState(false);
@@ -293,7 +381,6 @@ export default function VideoPanel() {
   const [hostingStatus, setHostingStatus] = useState<MediaHostingStatus | null>(null);
   const publishedMedia = useRef(new Map<string, { url: string; sha256?: string }>());
   const pickerSession = useRef(0);
-  const processingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const modelConvergeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (modelConvergeTimer.current) clearTimeout(modelConvergeTimer.current); }, []);
 
@@ -318,14 +405,13 @@ export default function VideoPanel() {
         if (modelsResult.status === "fulfilled") videoCatalog.setOptions(modelsResult.value);
         if (capabilitiesResult.status === "fulfilled") setCapabilities(capabilitiesResult.value);
         const failures = [
-          modelsResult.status === "rejected" ? `模型目录：${String(modelsResult.reason)}` : "",
-          capabilitiesResult.status === "rejected" ? `能力定义：${String(capabilitiesResult.reason)}` : "",
+          modelsResult.status === "rejected" ? `模型目录：${errorText(modelsResult.reason)}` : "",
+          capabilitiesResult.status === "rejected" ? `能力定义：${errorText(capabilitiesResult.reason)}` : "",
         ].filter(Boolean);
         if (failures.length) setError(`读取视频模型信息失败：${failures.join("；")}`);
       });
     return () => {
       disposed = true;
-      if (processingTimer.current) clearTimeout(processingTimer.current);
     };
     // 初始化只需运行一次；vid 是 zustand store 的合成对象。
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -341,6 +427,9 @@ export default function VideoPanel() {
     }).catch((cause) => logEvent("warn", "asset_import.comic_catalog_failed", { projectId, error: String(cause) }));
     return () => { cancelled = true; };
   }, [activeId, defaultId]);
+
+  // An import notice describes the previous project's library.
+  useEffect(() => { setNotice(null); }, [activeId]);
 
   useEffect(() => {
     if (!pendingImport || pendingImport.target !== "video") return;
@@ -375,6 +464,29 @@ export default function VideoPanel() {
   const hasMaterials = images.length + vid.videos.length > 0;
   const shots = vid.shots;
   const durationOptions = durationOptionsFor(capability, vid.mode);
+
+  const requestFingerprint = useMemo(() => videoRequestFingerprint(vid, activeId), [vid, activeId]);
+  useEffect(() => {
+    // Editing the form of the group's own project (here or while the panel
+    // was unmounted) makes it a different request; resuming would skip shots
+    // by number regardless. Another project's form leaves the group alone,
+    // including the moment of a switch before that project's draft is back.
+    // Unbound forms (the panel used outside the app shell) follow the active project.
+    const formsProject = formsProjectId() ?? (activeId ?? null);
+    if (resume && resume.projectId === formsProject && formsProject === (activeId ?? null) && resume.fingerprint !== requestFingerprint) {
+      useRunStore.getState().patch({ videoResume: null });
+    }
+  }, [resume, requestFingerprint, activeId]);
+  // Mirrors generateVideo: shots already saved under the group are skipped on resume.
+  const savedShotNos = useMemo(() => {
+    if (!resume || resume.fingerprint !== requestFingerprint) return null;
+    return new Set(allAssets
+      .filter((item) => item.projectId === activeId && item.params?.shotGroupId === resume.shotGroupId)
+      .map((item) => Number(item.params?.shotNo)));
+  }, [activeId, allAssets, requestFingerprint, resume]);
+  const remainingShots = savedShotNos ? shots.filter((_, index) => !savedShotNos.has(index + 1)) : shots;
+  const finishedShotCount = shots.length - remainingShots.length;
+  const resumable = Boolean(resume) && finishedShotCount > 0 && remainingShots.length > 0;
 
   const validationError = useMemo(() => {
     if (capabilities.length > 0 && !knownCapability) return `当前客户端没有 ${vid.model} 的能力定义，请选择已验证模型或更新客户端。`;
@@ -496,6 +608,7 @@ export default function VideoPanel() {
   const importTarget = shots.find((shot) => shot.id === importShotId) ?? shots[0];
   const applyImportedVideoAssets = async ({ action, referenceMode, localImageDelivery = "direct", entries }: { action: "prompt" | "merge_prompt" | "reference"; referenceMode: "replace" | "append"; localImageDelivery?: "direct" | "hosting"; entries: ImportEntry[] }) => {
     const sessionAtStart = pickerSession.current;
+    setNotice(null);
     if (vid.productionManifest) throw new Error("已加载审查生产清单；请先明确解除审查清单，才可导入普通视频素材。");
     if (!importTarget) throw new Error("没有可接收导入内容的视频镜头。");
     if (action !== "reference") {
@@ -517,7 +630,7 @@ export default function VideoPanel() {
       vid.set({ importedSources: action === "prompt"
         ? [...(vid.importedSources ?? []).filter((item) => item.targetShotId !== importTarget.id || item.action === "reference"), record]
         : [...(vid.importedSources ?? []), record] });
-      if (excluded.length) setError(`已排除 ${excluded.length} 项没有可见正文/已保存提示词的资源：${excluded.map((entry) => entry.entryType === "library_asset" ? entry.asset.source : entry.title).join("、")}`);
+      if (excluded.length) setNotice(`已排除 ${excluded.length} 项没有可见正文/已保存提示词的资源：${excluded.map((entry) => entry.entryType === "library_asset" ? entry.asset.source : entry.title).join("、")}`);
       return;
     }
 
@@ -644,6 +757,7 @@ export default function VideoPanel() {
   };
 
   const importExternalMedia = async () => {
+    setNotice(null);
     const projectId = activeId ?? defaultId;
     if (!projectId) throw new Error("请先选择项目，再将外部素材导入资产库。");
     const chosen = await openDialog({ multiple: true, filters: [{ name: "图片或视频", extensions: ["png", "jpg", "jpeg", "webp", "mp4", "mov", "webm"] }] });
@@ -779,12 +893,30 @@ export default function VideoPanel() {
     });
   };
 
-  const run = async () => {
+  /** "all" pays for every shot again; "resume" only for shots the failed group is missing. */
+  const run = async (scope: "all" | "resume" = "all") => {
     if (validationError || useRunStore.getState().videoBusy) return;
-    useRunStore.getState().patch({ videoBusy: true, videoError: null });
+    const resumeShotGroupId = scope === "resume" && resumable ? resume?.shotGroupId : undefined;
+    if (scope === "resume" && !resumeShotGroupId) return;
+    const billedShots = resumeShotGroupId ? remainingShots : shots;
+    if (billedShots.length > 1) {
+      const seconds = billedShots.reduce((sum, shot) => sum + shot.durationS, 0);
+      const rebilled = !resumeShotGroupId && resumable ? `其中已完成的 ${finishedShotCount} 镜将再次计费；` : "";
+      if (!(await confirmAction(`将生成 ${billedShots.length} 个镜头（共 ${seconds} 秒），每个镜头单独计费，${rebilled}继续？`))) return;
+      // Another click may have started a run while the dialog was open.
+      if (useRunStore.getState().videoBusy) return;
+    }
+    const fingerprint = requestFingerprint;
+    const startedAt = Date.now();
+    useRunStore.getState().patch({
+      videoBusy: true,
+      videoError: null,
+      videoPhase: "submitting",
+      videoProgress: { done: resumeShotGroupId ? finishedShotCount : 0, total: shots.length, currentShotNo: null, startedAt },
+    });
     setError(null);
-    setPhase("submitting");
-    processingTimer.current = setTimeout(() => setPhase("processing"), 350);
+    // Written from the progress callback; a plain `let` would be narrowed to null in the catch block.
+    const reported: { last: VideoRunProgress | null } = { last: null };
     try {
       const sourceMaterials = [
         ...(textSource ? [snapshotAsset(textSource, getDocumentMeta(textSource)?.text, "剧本/分镜原始资料")] : []),
@@ -797,15 +929,33 @@ export default function VideoPanel() {
         generationInput: combinedPrompt,
         sourceMaterials,
         parentAssetIds: [...new Set([textSource?.asset.id, guideAsset?.asset.id, videoGuideAsset?.asset.id].filter((id): id is string => Boolean(id)))],
+      }, {
+        resumeShotGroupId,
+        // Progress goes to the run store: the run outlives this panel on a tab switch.
+        onProgress: (progress) => {
+          reported.last = progress;
+          useRunStore.getState().patch({
+            videoPhase: "processing",
+            videoProgress: { done: progress.doneShotNos.length, total: progress.total, currentShotNo: progress.currentShotNo, startedAt },
+          });
+        },
       });
       setSelectedVideoIds(generatedAssets.map((asset) => asset.id));
-      setPhase("completed");
+      useRunStore.getState().patch({ videoPhase: "completed", videoResume: null });
     } catch (cause) {
-      setPhase("failed");
-      useRunStore.getState().patch({ videoError: String(cause) });
+      const last = reported.last;
+      const savedCount = last?.doneShotNos.length ?? 0;
+      useRunStore.getState().patch({
+        videoPhase: "failed",
+        videoError: errorText(cause),
+        // Keep the partly paid group so a retry only pays for the missing shots.
+        // A run that saved nothing leaves an earlier resumable group untouched;
+        // one that saved every shot has nothing left to resume.
+        ...(last && savedCount > 0
+          ? { videoResume: savedCount < last.total ? { shotGroupId: last.shotGroupId, fingerprint, projectId: activeId ?? null } : null }
+          : {}),
+      });
     } finally {
-      if (processingTimer.current) clearTimeout(processingTimer.current);
-      processingTimer.current = null;
       useRunStore.getState().patch({ videoBusy: false });
     }
   };
@@ -828,7 +978,7 @@ export default function VideoPanel() {
       const created = useLibraryStore.getState().assets.find((item) => item.asset.id === output.id);
       if (created) setPlaying(created);
     } catch (cause) {
-      setError(`拼接失败：${String(cause)}`);
+      setError(`拼接失败：${errorText(cause)}`);
     } finally {
       setJoining(false);
     }
@@ -925,7 +1075,7 @@ export default function VideoPanel() {
             </div>
             <div className="mt-2 flex items-center justify-between gap-2">
               <button type="button" onClick={() => updateShots([...shots, { id: `shot-${Date.now()}`, shotNo: shots.length + 1, prompt: "", durationS: durationOptions[0] ?? capability.minDurationS }])} className="flex items-center gap-1 rounded-lg border border-fuchsia-300/15 px-2.5 py-1.5 text-[10px] text-fuchsia-100 hover:bg-fuchsia-300/5"><Plus size={11} /> 新增镜头</button>
-              <div className="flex items-center gap-2"><select value={importTarget?.id ?? ""} onChange={(event) => setImportShotId(event.target.value)} aria-label="导入目标镜头" className="rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-[10px] text-slate-300">{shots.map((shot) => <option key={shot.id} value={shot.id}>导入到第 {shot.shotNo} 镜</option>)}</select><button type="button" onClick={() => setPickerOpen(true)} className="flex items-center gap-1 text-[10px] text-cyan-200/75 hover:text-white"><FileInput size={11} /> 从资产库导入</button><button type="button" onClick={() => void importExternalMedia().catch((cause) => setError(String(cause)))} className="flex items-center gap-1 text-[10px] text-cyan-200/75 hover:text-white"><Upload size={11} /> 上传到资产库</button></div>
+              <div className="flex items-center gap-2"><select value={importTarget?.id ?? ""} onChange={(event) => setImportShotId(event.target.value)} aria-label="导入目标镜头" className="rounded border border-slate-700 bg-slate-900 px-2 py-1.5 text-[10px] text-slate-300">{shots.map((shot) => <option key={shot.id} value={shot.id}>导入到第 {shot.shotNo} 镜</option>)}</select><button type="button" onClick={() => setPickerOpen(true)} className="flex items-center gap-1 text-[10px] text-cyan-200/75 hover:text-white"><FileInput size={11} /> 从资产库导入</button><button type="button" onClick={() => void importExternalMedia().catch((cause) => setError(errorText(cause)))} className="flex items-center gap-1 text-[10px] text-cyan-200/75 hover:text-white"><Upload size={11} /> 上传到资产库</button></div>
             </div>
             {guideAsset && (
               <div className="mt-2 flex items-center gap-2 rounded-xl border border-cyan-300/10 bg-cyan-300/[0.035] p-2">
@@ -936,7 +1086,7 @@ export default function VideoPanel() {
             )}
             {videoGuideAsset && (
               <div className="mt-2 flex items-center gap-2 rounded-xl border border-fuchsia-300/10 bg-fuchsia-300/[0.035] p-2">
-                <button type="button" onClick={() => setPlaying(videoGuideAsset)} title="查看本地视频作品参考" className="shrink-0"><video src={fileSrc(videoGuideAsset.asset.path)} muted className="h-12 w-20 rounded-lg object-cover" /></button>
+                <button type="button" onClick={() => setPlaying(videoGuideAsset)} title="查看本地视频作品参考" className="shrink-0"><video src={fileSrc(videoGuideAsset.asset.path)} muted preload="metadata" className="h-12 w-20 rounded-lg object-cover" /></button>
                 <div className="min-w-0 flex-1"><div className="truncate text-[10px] text-fuchsia-100">本地视频作品参考：{videoGuideAsset.source}</div><div className="mt-0.5 text-[9px] leading-snug text-slate-500">已导入创作链和溯源；当前视频服务仅支持公网 HTTPS 参考地址。</div></div>
                 <button type="button" onClick={() => setVideoGuideAsset(null)} className="rounded p-1 text-slate-500 hover:text-rose-300"><X size={12} /></button>
               </div>
@@ -976,13 +1126,26 @@ export default function VideoPanel() {
           {vid.productionManifest && <div className="rounded-xl border border-cyan-300/15 bg-cyan-300/[0.05] px-3 py-2 text-xs text-cyan-100"><div className="font-medium">已加载审查通过的生产清单</div><div className="mt-1 text-[10px] text-cyan-100/70">模型 {vid.productionManifest.approvedModel} · 画幅 {vid.productionManifest.approvedAspectRatio} · 分辨率 {vid.productionManifest.approvedResolution} · 分镜 {vid.productionManifest.storyboardAssetId}</div><button type="button" className="mt-2 text-[10px] text-amber-200 hover:text-amber-100" onClick={() => vid.set({ productionManifest: undefined })}>解除审查清单，转为普通未审查视频任务</button></div>}
 
           {(error ?? runError) && <div className="rounded-lg border border-rose-300/15 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">{error ?? runError}</div>}
-          {notice && <div role="status" className="rounded-lg border border-cyan-300/15 bg-cyan-300/[0.06] px-3 py-2 text-xs text-cyan-100">{notice}</div>}
+          {notice && <div role="status" className="rounded-lg border border-slate-700 bg-slate-800/50 px-3 py-2 text-xs text-slate-300">{notice}</div>}
           {validationError && <div className="rounded-lg border border-amber-300/15 bg-amber-300/[0.06] px-3 py-2 text-xs text-amber-100">{validationError}</div>}
 
-          <button type="button" onClick={() => void run()} disabled={Boolean(validationError) || busy} className="flex w-full items-center justify-center gap-2 rounded-lg bg-fuchsia-500 px-3 py-2.5 text-sm font-medium text-white transition hover:bg-fuchsia-400 disabled:cursor-not-allowed disabled:opacity-50">
-            {busy ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
-            {busy ? "正在逐镜生成…" : `生成 ${shots.length} 个视频镜头`}
-          </button>
+          {resumable && !busy ? (
+            <div className="space-y-2">
+              <button type="button" onClick={() => void run("resume")} disabled={Boolean(validationError)} className="flex w-full items-center justify-center gap-2 rounded-lg bg-fuchsia-500 px-3 py-2.5 text-sm font-medium text-white transition hover:bg-fuchsia-400 disabled:cursor-not-allowed disabled:opacity-50">
+                <Send size={15} />
+                {`继续生成剩余 ${remainingShots.length} 镜`}
+              </button>
+              <p className="text-[10px] leading-relaxed text-slate-500">上次生成已保存 {finishedShotCount} 镜；继续只为剩余镜头计费。修改表单后将按新请求重新生成。</p>
+              <button type="button" onClick={() => void run("all")} disabled={Boolean(validationError)} className="flex w-full items-center justify-center gap-2 rounded-lg border border-slate-600 px-3 py-2 text-xs text-slate-300 transition hover:border-slate-500 hover:text-white disabled:cursor-not-allowed disabled:opacity-50">
+                {`重新生成全部 ${shots.length} 镜（已完成 ${finishedShotCount} 镜将再次计费）`}
+              </button>
+            </div>
+          ) : (
+            <button type="button" onClick={() => void run()} disabled={Boolean(validationError) || busy} className="flex w-full items-center justify-center gap-2 rounded-lg bg-fuchsia-500 px-3 py-2.5 text-sm font-medium text-white transition hover:bg-fuchsia-400 disabled:cursor-not-allowed disabled:opacity-50">
+              {busy ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
+              {busy ? "正在逐镜生成…" : `生成 ${shots.length} 个视频镜头`}
+            </button>
+          )}
         </section>
 
         <section className="min-w-0 flex-1">
@@ -993,13 +1156,13 @@ export default function VideoPanel() {
                 <span className={`text-[10px] ${phase === "failed" ? "text-rose-300" : phase === "completed" ? "text-emerald-300" : "text-slate-500"}`}>
                   {phase === "idle" && "准备就绪"}
                   {phase === "submitting" && "正在提交任务"}
-                  {phase === "processing" && "服务端排队 / 生成中"}
+                  {phase === "processing" && <VideoRunProgressText />}
                   {phase === "completed" && "全部镜头已分别保存"}
                   {phase === "failed" && "任务失败，请修正后重试"}
                 </span>
               </div>
               <div className="grid gap-2 sm:grid-cols-4">
-                {["提交镜头", "逐镜生成", "逐镜下载", "分别保存"].map((label, index) => <div key={label} className={`rounded-lg border px-3 py-2 text-center text-[11px] ${workflowStepClass(phase, index)}`}>{label}</div>)}
+                {workflowSteps(phase, progress).map((step, index) => <div key={index} data-state={step.state} className={`rounded-lg border px-3 py-2 text-center text-[11px] ${STEP_CLASS[step.state]}`}>{step.label}</div>)}
               </div>
               {busy && <p className="mt-3 text-[10px] text-slate-500">视频服务以异步任务处理；每个镜头完成后立即作为独立资源保存，不自动拼接。</p>}
             </div>
@@ -1014,7 +1177,7 @@ export default function VideoPanel() {
             {videos.length > 0 && <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div><span className="text-xs font-semibold tracking-wide text-slate-400">视频镜头与历史</span><span className="ml-2 text-[10px] text-slate-600">已选 {selectedVideoIds.length} 镜</span></div><button type="button" onClick={() => void joinSelected()} disabled={selectedVideoIds.length < 2 || joining} className="flex items-center gap-1.5 rounded-lg border border-fuchsia-300/20 bg-fuchsia-300/[0.06] px-3 py-1.5 text-[10px] text-fuchsia-100 disabled:cursor-not-allowed disabled:opacity-40">{joining ? <Loader2 size={11} className="animate-spin" /> : <Clapperboard size={11} />}{joining ? "拼接中…" : "拼接所选镜头"}</button></div>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-                {videos.map((asset) => { const selected = selectedVideoIds.includes(asset.asset.id); return <article key={asset.asset.id} className={`overflow-hidden rounded-lg border bg-slate-800/60 ${selected ? "border-fuchsia-300/60 ring-1 ring-fuchsia-300/20" : "border-slate-700"}`}><div className="relative"><button type="button" onClick={() => setPlaying(asset)} onContextMenu={(event) => { event.preventDefault(); setMenu({ x: event.clientX, y: event.clientY, asset }); }} className="block aspect-video w-full"><video src={fileSrc(asset.asset.path)} muted title={`${asset.source}${asset.model ? ` · ${asset.model}` : ""}`} className="h-full w-full object-contain" /></button><button type="button" onClick={() => toggleVideoSelection(asset.asset.id)} className={`absolute left-2 top-2 flex h-6 w-6 items-center justify-center rounded-md border shadow ${selected ? "border-fuchsia-200 bg-fuchsia-500 text-white" : "border-white/20 bg-slate-950/75 text-transparent hover:text-slate-300"}`} title="选择用于拼接"><Check size={13} /></button></div><div className="border-t border-slate-700 p-2"><div className="truncate text-[10px] text-slate-300">{asset.source}</div><button type="button" onClick={() => reuseHistory(asset)} className="mt-1 text-[10px] text-cyan-200 hover:text-white">复用参数</button></div></article>; })}
+                {videos.map((asset) => { const selected = selectedVideoIds.includes(asset.asset.id); return <article key={asset.asset.id} className={`overflow-hidden rounded-lg border bg-slate-800/60 ${selected ? "border-fuchsia-300/60 ring-1 ring-fuchsia-300/20" : "border-slate-700"}`}><div className="relative"><button type="button" onClick={() => setPlaying(asset)} onContextMenu={(event) => { event.preventDefault(); setMenu({ x: event.clientX, y: event.clientY, asset }); }} className="block aspect-video w-full"><video src={fileSrc(asset.asset.path)} muted preload="metadata" title={`${asset.source}${asset.model ? ` · ${asset.model}` : ""}`} className="h-full w-full object-contain" /></button><button type="button" onClick={() => toggleVideoSelection(asset.asset.id)} className={`absolute left-2 top-2 flex h-6 w-6 items-center justify-center rounded-md border shadow ${selected ? "border-fuchsia-200 bg-fuchsia-500 text-white" : "border-white/20 bg-slate-950/75 text-transparent hover:text-slate-300"}`} title="选择用于拼接"><Check size={13} /></button></div><div className="border-t border-slate-700 p-2"><div className="truncate text-[10px] text-slate-300">{asset.source}</div><button type="button" onClick={() => reuseHistory(asset)} className="mt-1 text-[10px] text-cyan-200 hover:text-white">复用参数</button></div></article>; })}
               </div>
             </div>}
           </div>

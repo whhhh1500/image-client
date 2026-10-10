@@ -50,7 +50,7 @@ function localImageMaterials(shotNo: number, references: VideoLocalImageReferenc
 
 function validateLocalImages(
   references: VideoLocalImageReference[],
-  projectId: string,
+  projectId: string | undefined,
   assets: LibAsset[],
 ) {
   const seen = new Set<string>();
@@ -110,16 +110,45 @@ function orderedForConcat(assets: LibAsset[]): LibAsset[] {
   });
 }
 
+/** Shot progress of one generateVideo run. */
+export interface VideoRunProgress {
+  /** Group every shot of this run is saved under; pass it back as `resumeShotGroupId` to skip saved shots. */
+  shotGroupId: string;
+  total: number;
+  /** Shots saved in this group so far, including ones kept from an earlier attempt. */
+  doneShotNos: number[];
+  /** Shot being generated right now; null before the first request and between shots. */
+  currentShotNo: number | null;
+}
+
+export interface GenerateVideoOptions {
+  /** Retry into this group: shots already saved under it are not requested (and paid for) again. */
+  resumeShotGroupId?: string;
+  /**
+   * Project the run and its shots belong to. Omitted: the active project
+   * (required). `null` or "": no project — a retry of an unassigned history
+   * task must not land in whichever project happens to be open.
+   */
+  projectId?: string | null;
+  /**
+   * Reported once the task exists and around every shot. The last report of a
+   * failed run says which shots were saved and under which group to resume.
+   */
+  onProgress?: (progress: VideoRunProgress) => void;
+}
+
 export async function generateVideo(
   params: VideoParams,
   provenanceInput: Partial<Omit<HistoryProvenance, "schemaVersion" | "recordedAt">> = {},
-  options: { resumeShotGroupId?: string } = {},
+  options: GenerateVideoOptions = {},
 ): Promise<AssetRef[]> {
   const manifestIssue = productionManifestMismatch(params);
   if (manifestIssue) throw new Error(`已审查生产条件失效：${manifestIssue}`);
   const store = useLibraryStore.getState();
-  const projectId = useProjectStore.getState().activeId ?? undefined;
-  if (!projectId) throw new Error("请先选择当前项目，再生成视频");
+  const projectId = options.projectId === undefined
+    ? useProjectStore.getState().activeId ?? undefined
+    : options.projectId || undefined;
+  if (!projectId && options.projectId === undefined) throw new Error("请先选择当前项目，再生成视频");
   const taskId = createId("task");
   const shotGroupId = options.resumeShotGroupId ?? createId("video_shots");
   const nodeId = "gen_video_shots";
@@ -189,6 +218,15 @@ export async function generateVideo(
   };
   const started = performance.now();
   const generated: AssetRef[] = [];
+  const doneShotNos = shots.filter((shot) => resumedShotNos.has(shot.shotNo)).map((shot) => shot.shotNo);
+  const reportProgress = (currentShotNo: number | null) => {
+    // A broken progress listener must never fail (and so re-bill) a paid run.
+    try {
+      options.onProgress?.({ shotGroupId, total: shots.length, doneShotNos: [...doneShotNos], currentShotNo });
+    } catch (listenerError) {
+      logEvent("warn", "generation.video.progress_listener_failed", { taskId, error: String(listenerError) });
+    }
+  };
 
   try {
     // Both the in-memory task and its DB row must be created inside the guarded
@@ -196,10 +234,12 @@ export async function generateVideo(
     // "running" in the UI with no row to ever update it.
     store.addTask({ id: taskId, nodeId, label, model: params.model, projectId, kind: "video", status: "running", createdAt, params: taskParams });
     await persistTask({ id: taskId, nodeId, providerId: "zzone", status: "running", label, model: params.model, projectId, kind: "video", createdAt, params: taskParams });
+    reportProgress(null);
 
     for (let index = 0; index < shots.length; index += 1) {
       const shot = shots[index];
       if (resumedShotNos.has(shot.shotNo)) continue;
+      reportProgress(shot.shotNo);
       const shotLocalImages = shot.referenceLocalImages ?? [];
       const shotImages = shot.referenceImages?.length || shotLocalImages.length ? [...new Set(shot.referenceImages ?? [])] : images;
       const shotVideos = shot.referenceVideos?.length ? [...new Set(shot.referenceVideos)] : videos;
@@ -259,7 +299,9 @@ export async function generateVideo(
         store.addAssets([asset], source, meta);
         generated.push(asset);
       }
+      doneShotNos.push(shot.shotNo);
       logEvent("info", "generation.video.shot_end", { taskId, shotGroupId, shotNo: shot.shotNo, assetCount: result.assets.length });
+      reportProgress(null);
     }
 
     const finishedAt = Date.now();

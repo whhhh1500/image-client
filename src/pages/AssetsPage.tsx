@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fileSrc, openDialog, revealItemInDir } from "../lib/desktop";
 import { BookOpen, FileText, Image as ImageIcon, RotateCcw, Search, Upload, X } from "lucide-react";
-import { useLibraryStore, type LibAsset, type TaskRecord } from "../store/useLibraryStore";
+import { taskRetriedBy, useLibraryStore, type LibAsset, type TaskRecord } from "../store/useLibraryStore";
 import { useProjectStore } from "../store/useProjectStore";
 import { ContextMenu, menuIcons } from "../components/ContextMenu";
 import HistoryImageCard from "../components/HistoryImageCard";
@@ -14,7 +14,9 @@ import type { VideoParams } from "../store/useVideoStore";
 import { useRunStore } from "../store/useRunStore";
 import { logEvent } from "../lib/logger";
 import { getDocumentMeta } from "../lib/documents";
-import { refreshLibraryHistory } from "../lib/dbWrite";
+import { markTaskRetried, refreshLibraryHistory } from "../lib/dbWrite";
+import { confirmAction } from "../lib/confirm";
+import { errorText, readableErrorText } from "../lib/errors";
 import NovelAssetManager from "../components/novel/NovelAssetManager";
 import { novelWorkList, type NovelWork } from "../lib/novel/api";
 import { assetMatchesCatalogCategory, classifyAssetCatalog, groupCatalogAssets, type AssetCatalogCategory, type AssetCatalogGroupBucket, type ComicWorkspaceCatalogEntry } from "../lib/assetCatalog";
@@ -32,6 +34,8 @@ type ScopeFilter = "project" | "unassigned";
 type ImportTarget = "image" | "video";
 type ImportAction = "prompt" | "merge_prompt" | "reference";
 type ImportActions = Partial<Record<ImportTarget, ImportAction>>;
+/** Cards per grid before 加载更多: every card is a full-resolution file. */
+const GRID_PAGE_SIZE = 60;
 
 function matchesSearch(asset: LibAsset, query: string) {
   const term = query.trim().toLowerCase();
@@ -75,6 +79,20 @@ function uploadReferenceEntries(entries: ImportEntry[], target: ImportTarget): I
   const kind = target === "image" ? "image" : "video";
   return entries.filter((entry) => importEntryKind(entry) === kind);
 }
+/**
+ * Hide the paid retry of a task for good. The marker is persisted so a reload
+ * does not offer the button again; the new result is saved either way.
+ */
+async function recordRetried(task: TaskRecord, retriedBy: string) {
+  try {
+    await markTaskRetried(task.id, retriedBy);
+  } catch (error) {
+    logEvent("warn", "task.retry_mark_failed", { taskId: task.id, error: errorText(error) });
+  }
+  // A history reload during the run may have replaced the record: patch the current one.
+  const latest = useLibraryStore.getState().tasks.find((item) => item.id === task.id) ?? task;
+  useLibraryStore.getState().updateTask(task.id, { params: { ...(latest.params ?? {}), retriedBy } });
+}
 
 export default function AssetsPage({ onQueueImport }: { onQueueImport: (entries: ImportEntry[], target: ImportTarget, action: ImportAction) => void }) {
   const allAssets = useLibraryStore((state) => state.assets);
@@ -89,6 +107,10 @@ export default function AssetsPage({ onQueueImport }: { onQueueImport: (entries:
   const [comicPreview, setComicPreview] = useState<ComicWorkspaceCatalogEntry | null>(null);
   const retrying = useRunStore((s) => s.retryingTaskId);
   const setRetrying = (retryingTaskId: string | null) => useRunStore.getState().patch({ retryingTaskId });
+  // Result of a retry, shown on its own row instead of in the distant filter bar.
+  const [retryOutcome, setRetryOutcome] = useState<Record<string, { ok: boolean; text: string }>>({});
+  // Extra cards revealed per grid; they belong to one filter state and reset with it.
+  const [gridLimits, setGridLimits] = useState<{ key: string; limits: Record<string, number> }>({ key: "", limits: {} });
   const [refreshing, setRefreshing] = useState(false);
   const [refreshMessage, setRefreshMessage] = useState<string | null>(null);
   const [novelSource, setNovelSource] = useState<{ projectId: string; works: NovelWork[] }>();
@@ -106,8 +128,8 @@ export default function AssetsPage({ onQueueImport }: { onQueueImport: (entries:
     setNovelSource(undefined); setComicSource(undefined); setNovelError(undefined); setComicError(undefined);
     const [novels, comics] = await Promise.allSettled([novelWorkList(projectId), comicMdCatalogList({ projectId })]);
     if (sourceRequest.current !== requestId || useProjectStore.getState().activeId !== projectId) return { novels: 0, comics: 0, current: false, failed: false };
-    if (novels.status === "fulfilled") setNovelSource({ projectId, works: novels.value }); else setNovelError({ projectId, message: String(novels.reason) });
-    if (comics.status === "fulfilled") setComicSource({ projectId, entries: comics.value.map(comicWorkspaceEntry) }); else setComicError({ projectId, message: String(comics.reason) });
+    if (novels.status === "fulfilled") setNovelSource({ projectId, works: novels.value }); else setNovelError({ projectId, message: errorText(novels.reason) });
+    if (comics.status === "fulfilled") setComicSource({ projectId, entries: comics.value.map(comicWorkspaceEntry) }); else setComicError({ projectId, message: errorText(comics.reason) });
     return { novels: novels.status === "fulfilled" ? novels.value.length : 0, comics: comics.status === "fulfilled" ? comics.value.length : 0, current: true, failed: novels.status === "rejected" || comics.status === "rejected" };
   }, []);
   useEffect(() => {
@@ -131,14 +153,14 @@ export default function AssetsPage({ onQueueImport }: { onQueueImport: (entries:
   const visibleNovelWorks = useMemo(() => (currentNovelWorks ?? []).filter(() => media === "all" || media === "text").filter((work) => !query.trim() || work.title.toLowerCase().includes(query.trim().toLowerCase())), [currentNovelWorks, media, query]);
   const comicEntries = useMemo(() => (currentComicEntries ?? []).filter((entry) => media === "all" || entry.kind === media).filter((entry) => !query.trim() || [entry.title, entry.text, entry.effectivePrompt, entry.chapterTitle, entry.documentKind].filter(Boolean).some((value) => String(value).toLowerCase().includes(query.trim().toLowerCase()))).sort((left, right) => (left.classification.group?.id ?? "").localeCompare(right.classification.group?.id ?? "") || (left.pageNo ?? 0) - (right.pageNo ?? 0) || right.createdAt - left.createdAt), [currentComicEntries, media, query]);
   const comicGroups = useMemo(() => {
-    const grouped = new Map<string, { label: string; entries: ComicWorkspaceCatalogEntry[] }>();
+    const grouped = new Map<string, { id: string; label: string; entries: ComicWorkspaceCatalogEntry[] }>();
     const workTitles = new Map((currentNovelWorks ?? []).map((work) => [work.id, work.title]));
     for (const entry of comicEntries) {
       const id = entry.classification.group?.id ?? entry.sourceUri;
       const fallbackLabel = entry.classification.group?.label ?? "漫画作品";
       const workTitle = workTitles.get(entry.novelWorkId);
       const label = workTitle ? `${workTitle} · ${fallbackLabel}` : fallbackLabel;
-      const group = grouped.get(id) ?? { label, entries: [] };
+      const group = grouped.get(id) ?? { id, label, entries: [] };
       group.entries.push(entry);
       grouped.set(id, group);
     }
@@ -152,26 +174,56 @@ export default function AssetsPage({ onQueueImport }: { onQueueImport: (entries:
     return <div className={`mt-2 flex flex-wrap gap-1.5 ${className}`}><button type="button" onClick={(event) => { event.stopPropagation(); queueEntries(entriesForTarget?.("image") ?? entries, "image", actionFor("image")); }} className="rounded border border-cyan-300/20 px-2 py-1 text-[10px] text-cyan-100 hover:bg-cyan-300/10">用于生图</button><button type="button" onClick={(event) => { event.stopPropagation(); queueEntries(entriesForTarget?.("video") ?? entries, "video", actionFor("video")); }} className="rounded border border-fuchsia-300/20 px-2 py-1 text-[10px] text-fuchsia-100 hover:bg-fuchsia-300/10">用于视频</button></div>;
   };
   const retry = async (task: TaskRecord) => {
-    if (!task.params || useRunStore.getState().retryingTaskId) return;
-    setRetrying(task.id);
-    setRefreshMessage(null);
+    if (!task.params || taskRetriedBy(task) || useRunStore.getState().retryingTaskId) return;
+    if (!(await confirmAction("按原参数重新生成，将再次计费，继续？"))) return;
+    // The dialog is async: another retry may have started, or this task been
+    // retried, while it was open.
+    const current = useLibraryStore.getState().tasks.find((item) => item.id === task.id) ?? task;
+    const params = current.params;
+    if (!params || taskRetriedBy(current) || useRunStore.getState().retryingTaskId) return;
+    setRetrying(current.id);
+    setRetryOutcome((prev) => { const next = { ...prev }; delete next[current.id]; return next; });
     try {
-      if (task.kind === "video") {
+      let newTaskId: string | undefined;
+      // The new result belongs to the task's own project (none for an
+      // unassigned task), not to whichever project is open now.
+      if (current.kind === "video") {
         // Resume the original shot group so already-produced shots are not paid for twice.
-        const groupId = typeof task.params.shotGroupId === "string" ? task.params.shotGroupId : undefined;
-        await generateVideo(task.params as unknown as VideoParams, {}, { resumeShotGroupId: groupId });
+        const groupId = typeof params.shotGroupId === "string" ? params.shotGroupId : undefined;
+        const before = new Set(useLibraryStore.getState().tasks.map((item) => item.id));
+        await generateVideo(params as unknown as VideoParams, {}, { resumeShotGroupId: groupId, projectId: current.projectId || null });
+        newTaskId = useLibraryStore.getState().tasks.find((item) => !before.has(item.id) && item.kind === "video" && (!groupId || item.params?.shotGroupId === groupId))?.id;
       } else {
-        await generateImage(task.params as unknown as GenParams);
+        await generateImage(params as unknown as GenParams, {}, { projectId: current.projectId || null, onTaskCreated: (id) => { newTaskId = id; } });
       }
-      setRefreshMessage("重试已完成");
+      await recordRetried(current, newTaskId ?? "unknown");
+      setRetryOutcome((prev) => ({ ...prev, [current.id]: { ok: true, text: "重试成功，新结果已保存" } }));
     } catch (error) {
-      logEvent("warn", "task.retry_failed", { taskId: task.id, error: String(error) });
-      setRefreshMessage(`重试失败：${String(error)}`);
+      logEvent("warn", "task.retry_failed", { taskId: current.id, error: errorText(error) });
+      setRetryOutcome((prev) => ({ ...prev, [current.id]: { ok: false, text: `重试失败：${errorText(error)}` } }));
     } finally {
       setRetrying(null);
     }
   };
-  const refresh = async () => { if (refreshing) return; setRefreshing(true); setRefreshMessage(null); try { const [history, sources] = await Promise.all([refreshLibraryHistory("asset_center_refresh"), scope === "project" && activeId ? loadProjectSources(activeId) : Promise.resolve({ novels: 0, comics: 0, current: true, failed: false })]); setRefreshMessage(sources.current ? sources.failed ? `历史已刷新；小说或漫画资料读取失败` : `已刷新 · ${history.assets.length} 个资源、${sources.novels} 部小说、${sources.comics} 条漫画资料` : `已刷新 · ${history.assets.length} 个资源`); } catch (error) { setRefreshMessage(`刷新失败：${String(error)}`); } finally { setRefreshing(false); } };
+  const refresh = async () => { if (refreshing) return; setRefreshing(true); setRefreshMessage(null); try { const [history, sources] = await Promise.all([refreshLibraryHistory("asset_center_refresh"), scope === "project" && activeId ? loadProjectSources(activeId) : Promise.resolve({ novels: 0, comics: 0, current: true, failed: false })]); setRefreshMessage(sources.current ? sources.failed ? `历史已刷新；小说或漫画资料读取失败` : `已刷新 · ${history.assets.length} 个资源、${sources.novels} 部小说、${sources.comics} 条漫画资料` : `已刷新 · ${history.assets.length} 个资源`); } catch (error) { setRefreshMessage(`刷新失败：${errorText(error)}`); } finally { setRefreshing(false); } };
+  const filterKey = [scope, activeId ?? "", tab, media, query].join("\u0000");
+  const gridLimit = (gridId: string) => (gridLimits.key === filterKey ? gridLimits.limits[gridId] : undefined) ?? GRID_PAGE_SIZE;
+  const showMore = (gridId: string) => setGridLimits((prev) => {
+    const limits = prev.key === filterKey ? prev.limits : {};
+    return { key: filterKey, limits: { ...limits, [gridId]: (limits[gridId] ?? GRID_PAGE_SIZE) + GRID_PAGE_SIZE } };
+  });
+  const moreButton = (gridId: string, total: number) => {
+    const remaining = total - gridLimit(gridId);
+    return remaining > 0 ? <button type="button" onClick={() => showMore(gridId)} className="mt-3 w-full rounded-lg border border-white/8 py-2 text-xs text-slate-400 transition hover:border-cyan-300/20 hover:text-cyan-100">加载更多（剩余 {remaining}）</button> : null;
+  };
+  const taskRow = (task: TaskRecord) => {
+    const outcome = retryOutcome[task.id];
+    const retried = Boolean(taskRetriedBy(task)) || outcome?.ok === true;
+    const running = retrying === task.id;
+    return <div key={task.id} className="flex items-center justify-between gap-3 rounded-lg border border-white/5 bg-white/[0.015] px-3 py-2 text-xs"><div className="min-w-0"><div className="truncate font-medium text-slate-200">{task.label}</div><div className="truncate text-[10px] text-slate-600">{new Date(task.createdAt).toLocaleString()}</div>{task.error && <div className="truncate text-[10px] text-rose-300/80" title={task.error}>{readableErrorText(task.error)}</div>}{outcome && <div role={outcome.ok ? "status" : "alert"} className={`mt-0.5 text-[10px] ${outcome.ok ? "text-emerald-300/90" : "text-rose-200"}`}>{outcome.text}</div>}</div>{task.status === "error" && task.params && (retried
+      ? <span className="shrink-0 rounded-lg border border-emerald-300/15 px-2.5 py-1.5 text-[11px] text-emerald-200/80">已重试</span>
+      : <span className="shrink-0" title="按原参数重新生成，将再次计费"><button type="button" aria-label={`按原参数重试：${task.label}`} onClick={() => void retry(task)} disabled={Boolean(retrying)} className="flex min-h-8 items-center gap-1.5 rounded-lg border border-white/10 px-3 py-1.5 text-[11px] text-slate-300 transition hover:border-cyan-300/30 hover:text-cyan-100 disabled:cursor-not-allowed disabled:opacity-40"><RotateCcw size={13} className={running ? "animate-spin" : ""} />{running ? "重试中…" : "重试"}</button></span>)}</div>;
+  };
   // Counts are computed once per data change instead of once per tab button on
   // every render (8 x N classifyAssetCatalog calls previously).
   const counts = useMemo(() => {
@@ -191,16 +243,16 @@ export default function AssetsPage({ onQueueImport }: { onQueueImport: (entries:
   }, [currentComicEntries, currentNovelWorks, scope, scopedAssets]);
   const count = (category: AssetCatalogCategory | "all") => counts.get(category) ?? 0;
   const openFolder = (asset: LibAsset) => void revealItemInDir(asset.asset.path).catch((error) => logEvent("warn", "asset.reveal_failed", { error: String(error) }));
-  const uploadFiles = async () => { if (!activeId || uploading) return; setUploadError(null); const selected = await openDialog({ multiple: true, directory: false, filters: [{ name: "图片或视频", extensions: ["png", "jpg", "jpeg", "webp", "gif", "mp4", "webm", "mov"] }] }); const paths = Array.isArray(selected) ? selected : selected ? [selected] : []; if (!paths.length) return; setUploading(true); try { await importExternalAssets({ projectId: activeId, importEntry: "asset_library_upload", files: paths.map((path) => ({ path })) }); await refresh(); } catch (error) { setUploadError(String(error)); } finally { setUploading(false); } };
+  const uploadFiles = async () => { if (!activeId || uploading) return; setUploadError(null); const selected = await openDialog({ multiple: true, directory: false, filters: [{ name: "图片或视频", extensions: ["png", "jpg", "jpeg", "webp", "gif", "mp4", "webm", "mov"] }] }); const paths = Array.isArray(selected) ? selected : selected ? [selected] : []; if (!paths.length) return; setUploading(true); try { await importExternalAssets({ projectId: activeId, importEntry: "asset_library_upload", files: paths.map((path) => ({ path })) }); await refresh(); } catch (error) { setUploadError(errorText(error)); } finally { setUploading(false); } };
 
   return <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
     <div className="flex flex-wrap items-center gap-2 border-b border-white/5 bg-slate-950/25 px-6 py-3">{tabs.map((item) => <button key={item.id} type="button" onClick={() => setTab(item.id)} className={`rounded-lg border px-3 py-1.5 text-xs transition ${tab === item.id ? "border-cyan-300/25 bg-cyan-300/10 text-cyan-100" : "border-white/5 text-slate-500 hover:border-white/15 hover:text-slate-300"}`}>{item.label}<span className="ml-1.5 text-[9px] opacity-60">{count(item.id)}</span></button>)}<label className="relative ml-auto min-w-56 flex-1 sm:max-w-sm"><Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索标题、正文、模型或提示词" className="w-full rounded-lg border border-white/8 bg-slate-950/60 py-2 pl-8 pr-3 text-xs text-slate-200 outline-none focus:border-cyan-300/30" /></label><button type="button" onClick={() => void uploadFiles()} disabled={!activeId || uploading} className="flex items-center gap-1.5 rounded-lg border border-white/8 px-3 py-2 text-xs text-slate-400 disabled:opacity-50"><Upload size={13} />{uploading ? "上传中" : "上传图片/视频"}</button><button type="button" onClick={() => void refresh()} disabled={refreshing} className="flex items-center gap-1.5 rounded-lg border border-white/8 px-3 py-2 text-xs text-slate-400 disabled:opacity-50"><RotateCcw size={13} className={refreshing ? "animate-spin" : ""} />{refreshing ? "刷新中" : "刷新全部"}</button></div>
     <div className="flex flex-wrap items-center gap-3 border-b border-white/5 px-6 py-2 text-[11px]"><span className="text-slate-500">范围</span><button type="button" onClick={() => setScope("project")} className={scope === "project" ? "text-cyan-100" : "text-slate-500"}>当前项目</button><button type="button" onClick={() => setScope("unassigned")} className={scope === "unassigned" ? "text-cyan-100" : "text-slate-500"}>未归属资源</button><span className="ml-2 text-slate-500">媒体</span>{(["all", "text", "image", "video"] as MediaFilter[]).map((kind) => <button key={kind} type="button" onClick={() => setMedia(kind)} className={media === kind ? "text-cyan-100" : "text-slate-500"}>{kind === "all" ? "全部" : kind === "text" ? "文本" : kind === "image" ? "图片" : "视频"}</button>)}{refreshMessage && <span className="ml-auto text-slate-500">{refreshMessage}</span>}</div>
     <div className="min-h-0 flex-1 space-y-6 overflow-y-auto p-6">{uploadError && <p role="alert" className="text-xs text-rose-200">上传失败：{uploadError}</p>}
       {showNovel && <section className="dream-panel rounded-2xl border border-white/6 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="flex items-center gap-2 text-sm font-semibold text-slate-100"><BookOpen size={15} /> 小说资料</h2><p className="mt-1 text-xs text-slate-500">按作品查看小说，进入管理可编辑章节和原文版本。</p></div><button type="button" onClick={() => { setFocusedNovelWorkId(undefined); setNovelManagerOpen(true); }} className="rounded-lg border border-cyan-300/15 px-3 py-1.5 text-xs text-cyan-100">管理小说和章节</button></div>{currentNovelError && <p role="alert" className="mt-3 text-xs text-rose-200">读取小说失败：{currentNovelError}</p>}{currentNovelWorks === undefined && !currentNovelError ? <p className="mt-4 text-xs text-slate-500">正在读取小说资料…</p> : currentNovelWorks ? <><div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">{visibleNovelWorks.map((work) => <button key={work.id} type="button" onClick={() => { setFocusedNovelWorkId(work.id); setNovelManagerOpen(true); }} className="rounded-xl border border-white/8 bg-slate-950/30 p-3 text-left hover:border-cyan-300/20"><div className="truncate text-sm text-slate-200">{work.title}</div><div className="mt-1 text-[10px] text-slate-500">{typeof work.chapterCount === "number" ? `${work.chapterCount} 章` : "查看章节"} · {work.status === "archived" ? "已归档" : "进行中"}</div></button>)}</div>{!visibleNovelWorks.length && !currentNovelError && <p className="mt-4 text-xs text-slate-500">{currentNovelWorks.length ? "没有匹配的小说资料。" : "当前项目还没有小说。可从管理入口创建第一章。"}</p>}</> : null}</section>}
-      {showComic && <section><h2 className="flex items-center gap-2 text-sm font-semibold text-slate-100"><ImageIcon size={15} /> 漫画资料</h2><p className="mt-1 text-xs text-slate-500">按作品、章节和页码排列；整组优先预选页面提示词，无页面提示词时才回退到文档或图片参考。</p>{currentComicError && <p role="alert" className="mt-3 text-xs text-rose-200">读取漫画资料失败：{currentComicError}</p>}{currentComicEntries === undefined && !currentComicError ? <p className="mt-3 text-xs text-slate-500">正在读取漫画资料…</p> : comicGroups.map((group) => <div key={group.entries[0]?.sourceUri ?? group.label} className="mt-4"><div className="mb-2 flex flex-wrap items-center justify-between gap-2"><h3 className="text-xs font-medium text-fuchsia-100">{group.label} · {group.entries.length} 项</h3>{(() => { const preset = comicGroupImport(group.entries); return importButtons(preset.entries, "mt-0", preset.action); })()}</div><div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(230px,1fr))]">{group.entries.map((entry) => <article key={entry.sourceUri} className="overflow-hidden rounded-xl border border-fuchsia-300/15 bg-fuchsia-300/[0.03]"><button type="button" onClick={() => setComicPreview(entry)} className="w-full text-left hover:text-white">{entry.kind === "image" ? entry.path ? <img src={fileSrc(entry.path)} alt={entry.title} className="aspect-[4/3] w-full bg-slate-950 object-cover" /> : <div className="flex aspect-[4/3] items-center justify-center bg-slate-950/60 px-3 text-center text-[10px] text-slate-500">页面图片文件不可用</div> : <div className="p-3"><div className="flex items-center gap-2 text-xs text-fuchsia-100"><FileText size={13} /><span className="truncate">{entry.title}</span></div><p className="mt-2 line-clamp-3 whitespace-pre-wrap text-[10px] leading-5 text-slate-400">{entry.text ?? "没有已保存的文档正文"}</p></div>}<div className="px-3 pb-2 pt-2">{entry.kind === "image" && <><div className="flex items-center gap-2 text-xs text-fuchsia-100"><ImageIcon size={13} /><span className="truncate">{entry.title}</span></div><p className="mt-1 line-clamp-2 whitespace-pre-wrap text-[10px] leading-5 text-slate-400">{entry.effectivePrompt ?? "没有已保存的页面提示词"}</p></>}<div className="mt-2 text-[9px] text-slate-600">{entry.pageNo ? `第 ${entry.pageNo} 页` : "作品级资料"}{entry.stale ? " · 已过期" : ""}</div></div></button>{importButtons([comicImportEntry(entry)], "mx-3 mb-3 mt-0")}</article>)}</div></div>)}</section>}
-      {tasks.length > 0 && <section className="dream-panel rounded-2xl border border-white/6 p-4"><div className="mb-3 text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">生成历史 · {tasks.length}</div><div className="max-h-64 space-y-1.5 overflow-y-auto pr-1">{tasks.map((task) => <div key={task.id} className="flex items-center justify-between rounded-lg border border-white/5 bg-white/[0.015] px-3 py-2 text-xs"><div className="min-w-0"><div className="truncate font-medium text-slate-200">{task.label}</div><div className="truncate text-[10px] text-slate-600">{new Date(task.createdAt).toLocaleString()}</div>{task.error && <div className="truncate text-[10px] text-rose-300/80">{task.error}</div>}</div>{task.status === "error" && task.params && <button title="按原参数重试" onClick={() => void retry(task)} disabled={Boolean(retrying)} className="rounded p-1 text-slate-500 hover:text-cyan-200 disabled:opacity-40"><RotateCcw size={12} className={retrying === task.id ? "animate-spin" : ""} /></button>}</div>)}</div></section>}
-      {!groups.length && !showNovel && !showComic ? <div className="flex min-h-72 items-center justify-center rounded-2xl border border-dashed border-white/8 text-center"><div><div className="text-sm text-slate-400">{scope === "unassigned" ? "没有未归属资源" : "没有匹配的资源"}</div><div className="mt-2 text-xs text-slate-600">旧数据会保留在“其他历史”中。</div></div></div> : groups.map((bucket) => <section key={bucket.id}><div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">{groupLabel(bucket)}</div>{bucket.group && (() => { const entries = bucket.assets.map(({ asset }) => libraryImportEntry(asset)); return bucket.group.type === "upload_batch" ? importButtons(entries, "mt-0", { image: "reference", video: "reference" }, (target) => uploadReferenceEntries(entries, target)) : importButtons(entries, "mt-0", "merge_prompt"); })()}</div><div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(170px,1fr))]">{bucket.assets.map(({ asset }) => { const entry = libraryImportEntry(asset); return asset.asset.kind === "text" ? <article key={asset.asset.id} className="rounded-xl border border-white/6 bg-slate-900/40 p-3 text-left"><button type="button" onClick={() => setPreview(asset)} className="w-full text-left hover:text-white"><div className="flex gap-2 text-xs text-slate-200"><FileText size={13} /><span className="truncate">{getDocumentMeta(asset)?.title ?? asset.source}</span></div><p className="mt-2 line-clamp-4 whitespace-pre-wrap text-[10px] leading-5 text-slate-500">{getDocumentMeta(asset)?.text || "点击读取完整文档"}</p></button>{importButtons([entry])}</article> : asset.asset.kind === "image" ? <article key={asset.asset.id} className="dream-panel overflow-hidden rounded-xl border border-white/6"><HistoryImageCard asset={asset} onOpen={() => setPreview(asset)} onMenu={(x, y) => setMenu({ x, y, asset })} /><div className="p-2.5"><div className="truncate text-[11px] text-slate-300">{asset.source}</div>{importButtons([entry])}</div></article> : <article key={asset.asset.id} className="dream-panel overflow-hidden rounded-xl border border-white/6 text-left"><button type="button" onClick={() => setPreview(asset)} onContextMenu={(event) => { event.preventDefault(); setMenu({ x: event.clientX, y: event.clientY, asset }); }} className="w-full text-left"><video src={fileSrc(asset.asset.path)} muted className="aspect-video w-full bg-black object-cover" /><div className="p-2.5"><div className="truncate text-[11px] text-slate-300">{asset.source}</div></div></button><div className="px-2.5 pb-2.5">{importButtons([entry], "mt-0")}</div></article>; })}</div></section>)}</div>
+      {showComic && <section><h2 className="flex items-center gap-2 text-sm font-semibold text-slate-100"><ImageIcon size={15} /> 漫画资料</h2><p className="mt-1 text-xs text-slate-500">按作品、章节和页码排列；整组优先预选页面提示词，无页面提示词时才回退到文档或图片参考。</p>{currentComicError && <p role="alert" className="mt-3 text-xs text-rose-200">读取漫画资料失败：{currentComicError}</p>}{currentComicEntries === undefined && !currentComicError ? <p className="mt-3 text-xs text-slate-500">正在读取漫画资料…</p> : comicGroups.map((group) => <div key={group.entries[0]?.sourceUri ?? group.label} className="mt-4"><div className="mb-2 flex flex-wrap items-center justify-between gap-2"><h3 className="text-xs font-medium text-fuchsia-100">{group.label} · {group.entries.length} 项</h3>{(() => { const preset = comicGroupImport(group.entries); return importButtons(preset.entries, "mt-0", preset.action); })()}</div><div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(230px,1fr))]">{group.entries.slice(0, gridLimit(`comic:${group.id}`)).map((entry) => <article key={entry.sourceUri} className="overflow-hidden rounded-xl border border-fuchsia-300/15 bg-fuchsia-300/[0.03]"><button type="button" onClick={() => setComicPreview(entry)} className="w-full text-left hover:text-white">{entry.kind === "image" ? entry.path ? <img src={fileSrc(entry.path)} alt={entry.title} loading="lazy" decoding="async" className="aspect-[4/3] w-full bg-slate-950 object-cover" /> : <div className="flex aspect-[4/3] items-center justify-center bg-slate-950/60 px-3 text-center text-[10px] text-slate-500">页面图片文件不可用</div> : <div className="p-3"><div className="flex items-center gap-2 text-xs text-fuchsia-100"><FileText size={13} /><span className="truncate">{entry.title}</span></div><p className="mt-2 line-clamp-3 whitespace-pre-wrap text-[10px] leading-5 text-slate-400">{entry.text ?? "没有已保存的文档正文"}</p></div>}<div className="px-3 pb-2 pt-2">{entry.kind === "image" && <><div className="flex items-center gap-2 text-xs text-fuchsia-100"><ImageIcon size={13} /><span className="truncate">{entry.title}</span></div><p className="mt-1 line-clamp-2 whitespace-pre-wrap text-[10px] leading-5 text-slate-400">{entry.effectivePrompt ?? "没有已保存的页面提示词"}</p></>}<div className="mt-2 text-[9px] text-slate-600">{entry.pageNo ? `第 ${entry.pageNo} 页` : "作品级资料"}{entry.stale ? " · 已过期" : ""}</div></div></button>{importButtons([comicImportEntry(entry)], "mx-3 mb-3 mt-0")}</article>)}</div>{moreButton(`comic:${group.id}`, group.entries.length)}</div>)}</section>}
+      {tasks.length > 0 && <section className="dream-panel rounded-2xl border border-white/6 p-4"><div className="mb-3 text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">生成历史 · {tasks.length}</div><div className="max-h-64 space-y-1.5 overflow-y-auto pr-1">{tasks.map(taskRow)}</div></section>}
+      {!groups.length && !showNovel && !showComic ? <div className="flex min-h-72 items-center justify-center rounded-2xl border border-dashed border-white/8 text-center"><div><div className="text-sm text-slate-400">{scope === "unassigned" ? "没有未归属资源" : "没有匹配的资源"}</div><div className="mt-2 text-xs text-slate-600">旧数据会保留在“其他历史”中。</div></div></div> : groups.map((bucket) => <section key={bucket.id}><div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">{groupLabel(bucket)}</div>{bucket.group && (() => { const entries = bucket.assets.map(({ asset }) => libraryImportEntry(asset)); return bucket.group.type === "upload_batch" ? importButtons(entries, "mt-0", { image: "reference", video: "reference" }, (target) => uploadReferenceEntries(entries, target)) : importButtons(entries, "mt-0", "merge_prompt"); })()}</div><div className="grid gap-3 [grid-template-columns:repeat(auto-fill,minmax(170px,1fr))]">{bucket.assets.slice(0, gridLimit(bucket.id)).map(({ asset }) => { const entry = libraryImportEntry(asset); return asset.asset.kind === "text" ? <article key={asset.asset.id} className="rounded-xl border border-white/6 bg-slate-900/40 p-3 text-left"><button type="button" onClick={() => setPreview(asset)} className="w-full text-left hover:text-white"><div className="flex gap-2 text-xs text-slate-200"><FileText size={13} /><span className="truncate">{getDocumentMeta(asset)?.title ?? asset.source}</span></div><p className="mt-2 line-clamp-4 whitespace-pre-wrap text-[10px] leading-5 text-slate-500">{getDocumentMeta(asset)?.text || "点击读取完整文档"}</p></button>{importButtons([entry])}</article> : asset.asset.kind === "image" ? <article key={asset.asset.id} className="dream-panel overflow-hidden rounded-xl border border-white/6"><HistoryImageCard asset={asset} onOpen={() => setPreview(asset)} onMenu={(x, y) => setMenu({ x, y, asset })} /><div className="p-2.5"><div className="truncate text-[11px] text-slate-300">{asset.source}</div>{importButtons([entry])}</div></article> : <article key={asset.asset.id} className="dream-panel overflow-hidden rounded-xl border border-white/6 text-left"><button type="button" onClick={() => setPreview(asset)} onContextMenu={(event) => { event.preventDefault(); setMenu({ x: event.clientX, y: event.clientY, asset }); }} className="w-full text-left"><video src={fileSrc(asset.asset.path)} muted preload="metadata" className="aspect-video w-full bg-black object-cover" /><div className="p-2.5"><div className="truncate text-[11px] text-slate-300">{asset.source}</div></div></button><div className="px-2.5 pb-2.5">{importButtons([entry], "mt-0")}</div></article>; })}</div>{moreButton(bucket.id, bucket.assets.length)}</section>)}</div>
     {menu && <ContextMenu x={menu.x} y={menu.y} onClose={() => setMenu(null)} items={menu.asset.asset.kind === "image" ? imageHistoryMenu({ asset: menu.asset, onPreview: setPreview, onReference: (asset) => queueEntries([libraryImportEntry(asset)], "image", "reference") }) : [{ label: "查看完整详情", icon: menuIcons.preview, onClick: () => setPreview(menu.asset) }, { label: "复制文件路径", icon: menuIcons.copy, onClick: () => void navigator.clipboard?.writeText(menu.asset.asset.path).catch((error) => logEvent("warn", "clipboard.write_failed", { error: String(error) })) }, { label: "打开所在文件夹", icon: menuIcons.open, onClick: () => openFolder(menu.asset) }]} />}
     <AssetDetailModal asset={preview} onClose={() => setPreview(null)} onUseReference={(asset) => queueEntries([libraryImportEntry(asset)], "image", "reference")} />
     {comicPreview && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-4" onClick={() => setComicPreview(null)}><section className="max-h-[85vh] w-full max-w-3xl overflow-auto rounded-2xl border border-fuchsia-300/20 bg-slate-950 p-5" onClick={(event) => event.stopPropagation()}><div className="flex items-start gap-3"><div className="min-w-0 flex-1"><h2 className="text-sm font-semibold text-fuchsia-100">{comicPreview.title}</h2><p className="mt-1 text-[10px] text-slate-500">漫画资料 · 只读</p></div><button type="button" onClick={() => setComicPreview(null)} className="text-slate-500 hover:text-white"><X size={16} /></button></div>{comicPreview.kind === "text" ? <pre className="mt-4 whitespace-pre-wrap break-words text-sm leading-7 text-slate-300">{comicPreview.text}</pre> : comicPreview.path ? <img src={fileSrc(comicPreview.path)} alt={comicPreview.title} className="mt-4 max-h-[65vh] w-full object-contain" /> : null}<div className="mt-4">{importButtons([comicImportEntry(comicPreview)], "mt-0")}</div><p className="mt-4 text-[10px] text-slate-500">此资料由漫画工作区维护，不能从这里删除。</p></section></div>}

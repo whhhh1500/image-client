@@ -12,6 +12,8 @@ import { isPublicHttpsUrl } from "../lib/video/referenceUrl";
 vi.mock("../lib/desktop", () => ({ fileSrc: (path: string) => path, revealItemInDir: vi.fn() }));
 const videoApi = vi.hoisted(() => ({ concatVideoAssets: vi.fn(), generateVideo: vi.fn().mockResolvedValue([]) }));
 vi.mock("../lib/generateVideo", () => videoApi);
+// Paid-run confirmations are covered in VideoPanel.runs.test.tsx.
+vi.mock("../lib/confirm", () => ({ confirmAction: vi.fn().mockResolvedValue(true) }));
 const mediaHosting = vi.hoisted(() => ({
   get: vi.fn().mockResolvedValue({ endpoint: "https://host.example/upload", fileField: "file", urlField: "url", authMode: "bearer", hasToken: true, configured: true }),
   publish: vi.fn(),
@@ -109,7 +111,7 @@ describe("VideoPanel storyboard import", () => {
       expect.objectContaining({ path: "D:/local-video.mp4", publishedUrl: "https://cdn.example/local-video.mp4", sha256: "video-sha" }),
     ]));
     fireEvent.click(screen.getByRole("button", { name: /生成 1 个视频镜头/ }));
-    await waitFor(() => expect(videoApi.generateVideo).toHaveBeenCalledWith(expect.objectContaining({ shots: [expect.objectContaining({ referenceLocalImages: [expect.objectContaining({ assetId: "local-image" })], referenceVideos: ["https://cdn.example/local-video.mp4"] })] }), expect.any(Object)));
+    await waitFor(() => expect(videoApi.generateVideo).toHaveBeenCalledWith(expect.objectContaining({ shots: [expect.objectContaining({ referenceLocalImages: [expect.objectContaining({ assetId: "local-image" })], referenceVideos: ["https://cdn.example/local-video.mp4"] })] }), expect.any(Object), expect.objectContaining({ resumeShotGroupId: undefined })));
   });
 
   it("sends one local image directly as a first frame and submits the enabled generation form", async () => {
@@ -127,7 +129,7 @@ describe("VideoPanel storyboard import", () => {
     const generate = screen.getByRole("button", { name: /生成 1 个视频镜头/ }) as HTMLButtonElement;
     expect(generate.disabled).toBe(false);
     fireEvent.click(generate);
-    await waitFor(() => expect(videoApi.generateVideo).toHaveBeenCalledWith(expect.objectContaining({ shots: [expect.objectContaining({ referenceLocalImages: [expect.objectContaining({ assetId: "direct-image" })] })] }), expect.any(Object)));
+    await waitFor(() => expect(videoApi.generateVideo).toHaveBeenCalledWith(expect.objectContaining({ shots: [expect.objectContaining({ referenceLocalImages: [expect.objectContaining({ assetId: "direct-image" })] })] }), expect.any(Object), expect.objectContaining({ resumeShotGroupId: undefined })));
   });
 
   it("keeps canonical comic images as direct local identities", async () => {

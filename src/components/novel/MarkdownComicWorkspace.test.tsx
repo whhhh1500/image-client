@@ -5,6 +5,8 @@ import userEvent from "@testing-library/user-event";
 import type { MdWorkspace } from "../../lib/comic/markdownApi";
 const api = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), workspace: vi.fn(), save: vi.fn(), generate: vi.fn(), render: vi.fn(), history: vi.fn(), export: vi.fn(), optimize: vi.fn(), options: vi.fn(), sync: vi.fn(), visualSave: vi.fn(), visualExtract: vi.fn() }));
 const manager = vi.hoisted(() => ({ props: null as unknown }));
+const confirm = vi.hoisted(() => ({ confirmAction: vi.fn() }));
+vi.mock("../../lib/confirm", () => confirm);
 vi.mock("../../store/useProjectStore", () => ({ useProjectStore: (selector: (state: { activeId: string }) => unknown) => selector({ activeId: "p" }) }));
 vi.mock("../../lib/novel/api", () => ({ novelWorkList: api.list, novelWorkGet: api.get }));
 vi.mock("../../lib/desktop", () => ({ fileSrc: (path: string) => path, openPath: vi.fn(), revealItemInDir: vi.fn() }));
@@ -15,6 +17,7 @@ import { useLibraryStore } from "../../store/useLibraryStore";
 let data: MdWorkspace;
 beforeEach(() => {
   vi.clearAllMocks(); localStorage.clear();
+  confirm.confirmAction.mockResolvedValue(true);
   useLibraryStore.getState().loadAssets([]);
   data = { sourceRevisionId: "r1", sourceContent: "原著正文", documents: [], jobs: [], images: [], textReady: false, imageReady: false };
   api.list.mockResolvedValue([{ id: "w", projectId: "p", title: "测试小说", status: "active" }]);
@@ -483,5 +486,39 @@ describe("Markdown comic workflow", () => {
 
     fireEvent.click(screen.getByText("作品视觉设定与画风参考（统一视觉宪法）"));
     expect(details.open).toBe(true);
+  });
+  it("asks before rendering several remaining pages and sends nothing when cancelled", async () => {
+    data.documents = [1, 2, 3, 4].map((pageNo) => ({ id: `d${pageNo}`, kind: "page_prompt" as const, pageNo, markdown: "Prompt", revision: 2, stale: false, issues: [], updatedAt: 1 }));
+    confirm.confirmAction.mockResolvedValueOnce(false);
+    await open(); fireEvent.click(screen.getByRole("button", { name: "6. 漫画" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成剩余页（4 页）" }));
+    await waitFor(() => expect(confirm.confirmAction).toHaveBeenCalledWith("将生成 4 页图片，每页单独计费，继续？"));
+    await act(async () => {});
+    expect(api.render).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "生成剩余页（4 页）" }));
+    await waitFor(() => expect(api.render).toHaveBeenCalledWith(expect.objectContaining({ pages: ["d1", "d2", "d3", "d4"].map((documentId) => ({ documentId, revision: 2 })) })));
+    expect(confirm.confirmAction).toHaveBeenCalledTimes(2);
+  });
+  it("asks before redrawing every page in the current style, while single-page buttons stay one click", async () => {
+    data.documents = [1, 2].map((pageNo) => ({ id: `d${pageNo}`, kind: "page_prompt" as const, pageNo, markdown: "Prompt", revision: 2, stale: false, issues: [], updatedAt: 1 }));
+    data.images = [{ id: "i1", documentId: "d1", documentRevision: 2, pageNo: 1, path: "img", promptInjection: "", visualProfileRevision: 1, stale: false, createdAt: 1 }];
+    data.workVisualProfile = { constitutionMarkdown: "## 总体风格\n水墨", revision: 1, references: [] };
+    await open(); fireEvent.click(screen.getByRole("button", { name: "6. 漫画" }));
+    fireEvent.click(screen.getByRole("button", { name: "生成剩余页（1 页）" }));
+    await waitFor(() => expect(api.render).toHaveBeenCalledWith(expect.objectContaining({ pages: [{ documentId: "d2", revision: 2 }] })));
+    await waitFor(() => expect((screen.getByRole("button", { name: "生成第一页（1 页）" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole("button", { name: "生成第一页（1 页）" }));
+    await waitFor(() => expect(api.render).toHaveBeenCalledTimes(2));
+    expect(confirm.confirmAction).not.toHaveBeenCalled();
+
+    confirm.confirmAction.mockResolvedValueOnce(false);
+    await waitFor(() => expect((screen.getByRole("button", { name: "按当前画风重画全部（2 页）" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole("button", { name: "按当前画风重画全部（2 页）" }));
+    await waitFor(() => expect(confirm.confirmAction).toHaveBeenCalledWith("将生成 2 页图片，每页单独计费，继续？"));
+    await act(async () => {});
+    expect(api.render).toHaveBeenCalledTimes(2);
+    fireEvent.click(screen.getByRole("button", { name: "按当前画风重画全部（2 页）" }));
+    await waitFor(() => expect(api.render).toHaveBeenCalledTimes(3));
+    expect(api.render).toHaveBeenLastCalledWith(expect.objectContaining({ pages: ["d1", "d2"].map((documentId) => ({ documentId, revision: 2 })) }));
   });
 });

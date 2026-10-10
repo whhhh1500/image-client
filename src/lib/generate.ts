@@ -10,6 +10,7 @@ import { createId } from "./id";
 import { createHistoryProvenance, snapshotAsset, type HistoryProvenance } from "./provenance";
 import { catalogMetadata } from "./assetCatalog";
 import { listenImageProgress, type ImageProgressEvent } from "./imageProgress";
+import { errorText } from "./errors";
 
 function importedSourceMaterials(params: GenParams) {
   return (params.importedSources ?? []).flatMap((record) => record.sourceMaterials);
@@ -72,6 +73,14 @@ function assertFreshGeneratedAssetIds(assets: AssetRef[], preexistingAssetIds: R
 export interface GenerateImageOptions {
   /** Backend steps of this run (waiting, receiving, downloading, retrying, saving). */
   onProgress?: (event: ImageProgressEvent) => void;
+  /**
+   * Project the run and its output belong to. Omitted: the active project.
+   * `null` or "": no project — a retry of an unassigned history task must not
+   * land in whichever project happens to be open.
+   */
+  projectId?: string | null;
+  /** Receives the history task id of this run as soon as the task exists. */
+  onTaskCreated?: (taskId: string) => void;
 }
 
 /** Generate an image via the active gateway config. Records project + params. */
@@ -81,7 +90,9 @@ export async function generateImage(
   options: GenerateImageOptions = {},
 ): Promise<AssetRef[]> {
   const store = useLibraryStore.getState();
-  const projectId = useProjectStore.getState().activeId ?? undefined;
+  const projectId = options.projectId === undefined
+    ? useProjectStore.getState().activeId ?? undefined
+    : options.projectId || undefined;
   const references = normalizedReferences(params);
   const isImg2Img = references.length > 0;
   const label = isImg2Img ? "图生图" : "文生图";
@@ -193,6 +204,7 @@ export async function generateImage(
     : undefined;
 
   try {
+    options.onTaskCreated?.(taskId);
     await persistTask({ id: taskId, nodeId, providerId: "zzone", status: "running", label, model: params.model, projectId, kind: "image", createdAt, params: taskParams });
     const result = await (unlisten ? runNode(req, taskId) : runNode(req));
     assertFreshGeneratedAssetIds(result.assets, preexistingAssetIds);
@@ -206,7 +218,7 @@ export async function generateImage(
     // reflect params in the form as-is (unchanged)
     return result.assets;
   } catch (e) {
-    const msg = String(e);
+    const msg = errorText(e);
     const finishedAt = Date.now();
     store.updateTask(taskId, { status: "error", finishedAt, error: msg });
     await persistTask({ id: taskId, nodeId, providerId: "zzone", status: "error", label, model: params.model, projectId, kind: "image", createdAt, finishedAt, error: msg, params: taskParams })

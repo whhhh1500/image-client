@@ -61,6 +61,33 @@ export async function persistTask(t: {
   }
 }
 
+/**
+ * Record on a failed history task which task re-ran it after a confirmed retry.
+ * The marker lives in input_json's params (the tasks table schema is
+ * unchanged) so the asset center keeps the paid retry button hidden after a
+ * reload. Only that key is added; everything else in the row stays as stored.
+ */
+export async function markTaskRetried(taskId: string, retriedBy: string) {
+  const rows = await dbSelect<{ input_json: string | null }[]>(
+    "SELECT input_json FROM tasks WHERE id = ?",
+    [taskId],
+  );
+  if (!rows.length) throw new Error("任务记录不存在，无法标记为已重试");
+  // An unreadable row is left alone: rewriting it would drop its label,
+  // model and project.
+  const input: unknown = JSON.parse(rows[0].input_json ?? "{}");
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("任务记录格式无效，无法标记为已重试");
+  const record = input as Record<string, unknown>;
+  const params = record.params && typeof record.params === "object" && !Array.isArray(record.params)
+    ? record.params as Record<string, unknown>
+    : {};
+  const result = await dbExecute("UPDATE tasks SET input_json = ? WHERE id = ?", [
+    JSON.stringify({ ...record, params: { ...params, retriedBy } }),
+    taskId,
+  ]);
+  if (!result.rowsAffected) throw new Error("任务记录不存在，无法标记为已重试");
+}
+
 export async function updateAssetMetadata(asset: LibAsset, source: string, params: Record<string, unknown>) {
   const rows = await dbSelect<{ metadata: string | null }[]>(
     "SELECT metadata FROM assets WHERE id = ?",

@@ -21,7 +21,18 @@ export interface TaskRecord {
   createdAt: number;
   finishedAt?: number;
   error?: string;
+  /** Request params; `retriedBy` marks a failed task that a confirmed retry replaced. */
   params?: Record<string, unknown>;
+}
+
+/**
+ * Id of the task that re-ran this failed one. It is kept in the params (and so
+ * in the tasks row's input_json) because the retry button must stay hidden
+ * after a reload: a second click pays for the same work again.
+ */
+export function taskRetriedBy(task: TaskRecord): string | undefined {
+  const value = task.params?.retriedBy;
+  return typeof value === "string" && value ? value : undefined;
 }
 
 export interface AssetMeta {
